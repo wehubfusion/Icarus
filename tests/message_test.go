@@ -1,0 +1,584 @@
+package tests
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/amirhy/nats-sdk/pkg/client"
+	message "github.com/amirhy/nats-sdk/pkg/messaging"
+	"github.com/google/uuid"
+	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
+)
+
+// TestServer represents a test NATS server
+type TestServer struct {
+	server *server.Server
+	url    string
+}
+
+// StartTestServer starts a test NATS server with JetStream enabled
+func StartTestServer(t *testing.T) *TestServer {
+	t.Helper()
+
+	// Create a test server with JetStream
+	opts := &server.Options{
+		Host:     "127.0.0.1",
+		Port:     -1, // Let the server choose a port
+		HTTPPort: -1,
+		Cluster: server.ClusterOpts{
+			Name: "test-cluster",
+		},
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+	}
+
+	srv, err := server.NewServer(opts)
+	if err != nil {
+		t.Fatalf("Failed to create test server: %v", err)
+	}
+
+	srv.Start()
+
+	if !srv.ReadyForConnections(2 * time.Second) {
+		t.Fatal("Server didn't start in time")
+	}
+
+	url := srv.ClientURL()
+	return &TestServer{
+		server: srv,
+		url:    url,
+	}
+}
+
+// Stop stops the test server
+func (ts *TestServer) Stop() {
+	ts.server.Shutdown()
+	ts.server.WaitForShutdown()
+}
+
+// URL returns the client URL
+func (ts *TestServer) URL() string {
+	return ts.url
+}
+
+// SetupJetStream configures JetStream streams for testing
+func SetupJetStream(t *testing.T, client *client.Client) {
+	t.Helper()
+
+	js := client.JetStream()
+	if js == nil {
+		t.Fatal("JetStream not available")
+	}
+
+	// Create test streams
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST_EVENTS",
+		Subjects: []string{"test.events.>"},
+		Storage:  nats.MemoryStorage,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create test events stream: %v", err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST_TASKS",
+		Subjects: []string{"test.tasks.>"},
+		Storage:  nats.MemoryStorage,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create test tasks stream: %v", err)
+	}
+
+	// Create a pull consumer for testing
+	_, err = js.AddConsumer("TEST_EVENTS", &nats.ConsumerConfig{
+		Durable:   "test_pull_consumer",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create test pull consumer: %v", err)
+	}
+}
+
+func TestMessageCreation(t *testing.T) {
+	// Test basic message creation
+	msg := message.NewMessage()
+	if msg.CreatedAt == "" {
+		t.Error("Expected CreatedAt to be set")
+	}
+	if msg.UpdatedAt == "" {
+		t.Error("Expected UpdatedAt to be set")
+	}
+
+	// Test workflow message creation
+	workflowMsg := message.NewWorkflowMessage("workflow-123", "run-456")
+	if workflowMsg.Workflow.WorkflowID != "workflow-123" {
+		t.Errorf("Expected workflow ID 'workflow-123', got %s", workflowMsg.Workflow.WorkflowID)
+	}
+	if workflowMsg.Workflow.RunID != "run-456" {
+		t.Errorf("Expected run ID 'run-456', got %s", workflowMsg.Workflow.RunID)
+	}
+}
+
+func TestMessageWithComponents(t *testing.T) {
+	msg := message.NewMessage().
+		WithNode("node-123", map[string]interface{}{"type": "processor"}).
+		WithPayload("source1", "test data", "ref-456").
+		WithOutput("stream")
+
+	if msg.Node.NodeID != "node-123" {
+		t.Errorf("Expected node ID 'node-123', got %s", msg.Node.NodeID)
+	}
+	if msg.Node.Configuration.(map[string]interface{})["type"] != "processor" {
+		t.Errorf("Expected node config type 'processor', got %v", msg.Node.Configuration)
+	}
+	if msg.Payload.Source != "source1" {
+		t.Errorf("Expected payload source 'source1', got %s", msg.Payload.Source)
+	}
+	if msg.Payload.Data != "test data" {
+		t.Errorf("Expected payload data 'test data', got %s", msg.Payload.Data)
+	}
+	if msg.Payload.Reference != "ref-456" {
+		t.Errorf("Expected payload reference 'ref-456', got %s", msg.Payload.Reference)
+	}
+	if msg.Output.DestinationType != "stream" {
+		t.Errorf("Expected output destination 'stream', got %s", msg.Output.DestinationType)
+	}
+}
+
+func TestMessageSerialization(t *testing.T) {
+	original := message.NewWorkflowMessage("workflow-123", "run-456").
+		WithNode("node-789", map[string]interface{}{"priority": "high"}).
+		WithPayload("test-source", "test data content", "ref-123").
+		WithOutput("stream")
+
+	// Serialize to bytes
+	data, err := original.ToBytes()
+	if err != nil {
+		t.Fatalf("Failed to serialize message: %v", err)
+	}
+
+	// Deserialize from bytes
+	deserialized, err := message.FromBytes(data)
+	if err != nil {
+		t.Fatalf("Failed to deserialize message: %v", err)
+	}
+
+	// Compare fields
+	if deserialized.Workflow.WorkflowID != original.Workflow.WorkflowID {
+		t.Errorf("Workflow ID mismatch: expected %s, got %s", original.Workflow.WorkflowID, deserialized.Workflow.WorkflowID)
+	}
+	if deserialized.Workflow.RunID != original.Workflow.RunID {
+		t.Errorf("Run ID mismatch: expected %s, got %s", original.Workflow.RunID, deserialized.Workflow.RunID)
+	}
+	if deserialized.Node.NodeID != original.Node.NodeID {
+		t.Errorf("Node ID mismatch: expected %s, got %s", original.Node.NodeID, deserialized.Node.NodeID)
+	}
+	if deserialized.Payload.Source != original.Payload.Source {
+		t.Errorf("Payload source mismatch: expected %s, got %s", original.Payload.Source, deserialized.Payload.Source)
+	}
+	if deserialized.Payload.Data != original.Payload.Data {
+		t.Errorf("Payload data mismatch: expected %s, got %s", original.Payload.Data, deserialized.Payload.Data)
+	}
+	if deserialized.Output.DestinationType != original.Output.DestinationType {
+		t.Errorf("Output destination mismatch: expected %s, got %s", original.Output.DestinationType, deserialized.Output.DestinationType)
+	}
+}
+
+func TestClientConnection(t *testing.T) {
+	ts := StartTestServer(t)
+	defer ts.Stop()
+
+	// Test successful connection
+	c := client.NewClient(ts.URL())
+	ctx := context.Background()
+
+	err := c.Connect(ctx)
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer c.Close()
+
+	if !c.IsConnected() {
+		t.Error("Expected client to be connected")
+	}
+
+	if c.JetStream() == nil {
+		t.Error("Expected JetStream to be available")
+	}
+}
+
+func TestMessagePublishing(t *testing.T) {
+	ts := StartTestServer(t)
+	defer ts.Stop()
+
+	c := client.NewClient(ts.URL())
+	ctx := context.Background()
+
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer c.Close()
+
+	SetupJetStream(t, c)
+
+	// Test publishing a message
+	msg := message.NewWorkflowMessage("workflow-test", uuid.New().String()).
+		WithPayload("test", "test message", "ref-123")
+
+	err := c.Messages.Publish(ctx, "test.events.user.created", msg)
+	if err != nil {
+		t.Fatalf("Failed to publish message: %v", err)
+	}
+}
+
+func TestMessageSubscription(t *testing.T) {
+	ts := StartTestServer(t)
+	defer ts.Stop()
+
+	c := client.NewClient(ts.URL())
+	ctx := context.Background()
+
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer c.Close()
+
+	SetupJetStream(t, c)
+
+	var receivedMsg *message.NATSMsg
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	// Subscribe to messages
+	handler := func(ctx context.Context, msg *message.NATSMsg) error {
+		receivedMsg = msg
+		msg.Ack() // Acknowledge the message
+		wg.Done()
+		return nil
+	}
+
+	sub, err := c.Messages.Subscribe(ctx, "test.events.user.created", handler)
+	if err != nil {
+		t.Fatalf("Failed to subscribe: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	// Give subscription time to be ready
+	time.Sleep(100 * time.Millisecond)
+
+	// Publish a message
+	testMsg := message.NewWorkflowMessage("workflow-sub", uuid.New().String()).
+		WithPayload("test", "subscription test", "ref-sub")
+
+	err = c.Messages.Publish(ctx, "test.events.user.created", testMsg)
+	if err != nil {
+		t.Fatalf("Failed to publish test message: %v", err)
+	}
+
+	// Wait for message to be received
+	done := make(chan bool, 1)
+	go func() {
+		wg.Wait()
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for message")
+	}
+
+	// Verify received message
+	if receivedMsg == nil {
+		t.Fatal("No message received")
+	}
+	if receivedMsg.Workflow.WorkflowID != testMsg.Workflow.WorkflowID {
+		t.Errorf("Workflow ID mismatch: expected %s, got %s", testMsg.Workflow.WorkflowID, receivedMsg.Workflow.WorkflowID)
+	}
+	if receivedMsg.Workflow.RunID != testMsg.Workflow.RunID {
+		t.Errorf("Run ID mismatch: expected %s, got %s", testMsg.Workflow.RunID, receivedMsg.Workflow.RunID)
+	}
+	if receivedMsg.Payload.Data != testMsg.Payload.Data {
+		t.Errorf("Payload data mismatch: expected %s, got %s", testMsg.Payload.Data, receivedMsg.Payload.Data)
+	}
+}
+
+func TestQueueSubscription(t *testing.T) {
+	ts := StartTestServer(t)
+	defer ts.Stop()
+
+	c := client.NewClient(ts.URL())
+	ctx := context.Background()
+
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer c.Close()
+
+	SetupJetStream(t, c)
+
+	var receivedCount int
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(3) // Expect 3 messages
+
+	handler := func() message.Handler {
+		return func(ctx context.Context, msg *message.NATSMsg) error {
+			mu.Lock()
+			receivedCount++
+			mu.Unlock()
+			msg.Ack()
+			wg.Done()
+			return nil
+		}
+	}
+
+	// Create 2 queue subscribers
+	queueName := "test_workers"
+	sub1, err := c.Messages.QueueSubscribe(ctx, "test.tasks.process", queueName, handler())
+	if err != nil {
+		t.Fatalf("Failed to create queue subscriber 1: %v", err)
+	}
+	defer sub1.Unsubscribe()
+
+	sub2, err := c.Messages.QueueSubscribe(ctx, "test.tasks.process", queueName, handler())
+	if err != nil {
+		t.Fatalf("Failed to create queue subscriber 2: %v", err)
+	}
+	defer sub2.Unsubscribe()
+
+	time.Sleep(100 * time.Millisecond) // Wait for subscriptions
+
+	// Publish 3 messages
+	for i := 1; i <= 3; i++ {
+		msg := message.NewWorkflowMessage("workflow-queue", uuid.New().String()).
+			WithPayload("queue", "task "+string(rune(i+'0')), "task-"+string(rune(i+'0')))
+		err := c.Messages.Publish(ctx, "test.tasks.process", msg)
+		if err != nil {
+			t.Fatalf("Failed to publish message %d: %v", i, err)
+		}
+	}
+
+	// Wait for all messages to be processed
+	done := make(chan bool, 1)
+	go func() {
+		wg.Wait()
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(3 * time.Second):
+		t.Fatal("Timeout waiting for messages")
+	}
+
+	if receivedCount != 3 {
+		t.Errorf("Expected 3 messages received, got %d", receivedCount)
+	}
+}
+
+func TestPullMessages(t *testing.T) {
+	ts := StartTestServer(t)
+	defer ts.Stop()
+
+	c := client.NewClient(ts.URL())
+	ctx := context.Background()
+
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer c.Close()
+
+	SetupJetStream(t, c)
+
+	// Publish a message first
+	msg := message.NewWorkflowMessage("workflow-pull", uuid.New().String()).
+		WithPayload("pull-test", "pull test message", "ref-pull")
+
+	err := c.Messages.Publish(ctx, "test.events.user.created", msg)
+	if err != nil {
+		t.Fatalf("Failed to publish message: %v", err)
+	}
+
+	// Wait for message to be stored
+	time.Sleep(100 * time.Millisecond)
+
+	// Pull messages
+	messages, err := c.Messages.PullMessages(ctx, "TEST_EVENTS", "test_pull_consumer", 10)
+	if err != nil {
+		t.Fatalf("Failed to pull messages: %v", err)
+	}
+
+	if len(messages) != 1 {
+		t.Errorf("Expected 1 message, got %d", len(messages))
+	}
+
+	if len(messages) > 0 {
+		if messages[0].Workflow.WorkflowID != msg.Workflow.WorkflowID {
+			t.Errorf("Workflow ID mismatch: expected %s, got %s", msg.Workflow.WorkflowID, messages[0].Workflow.WorkflowID)
+		}
+		if messages[0].Payload.Data != msg.Payload.Data {
+			t.Errorf("Payload data mismatch: expected %s, got %s", msg.Payload.Data, messages[0].Payload.Data)
+		}
+	}
+}
+
+func TestMiddleware(t *testing.T) {
+	ts := StartTestServer(t)
+	defer ts.Stop()
+
+	c := client.NewClient(ts.URL())
+	ctx := context.Background()
+
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer c.Close()
+
+	SetupJetStream(t, c)
+
+	// Add validation middleware
+	c.Messages = c.Messages.WithMiddleware(message.ValidationMiddleware())
+
+	var received bool
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	handler := func(ctx context.Context, msg *message.NATSMsg) error {
+		received = true
+		msg.Ack()
+		wg.Done()
+		return nil
+	}
+
+	sub, err := c.Messages.Subscribe(ctx, "test.events.user.created", handler)
+	if err != nil {
+		t.Fatalf("Failed to subscribe: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Test with valid message
+	validMsg := message.NewWorkflowMessage("workflow-middleware", uuid.New().String()).
+		WithPayload("middleware-test", "valid content", "ref-middleware")
+
+	err = c.Messages.Publish(ctx, "test.events.user.created", validMsg)
+	if err != nil {
+		t.Fatalf("Failed to publish valid message: %v", err)
+	}
+
+	// Wait for processing
+	done := make(chan bool, 1)
+	go func() {
+		wg.Wait()
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		if !received {
+			t.Error("Expected message to be received")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for message processing")
+	}
+}
+
+func TestAcknowledgment(t *testing.T) {
+	ts := StartTestServer(t)
+	defer ts.Stop()
+
+	c := client.NewClient(ts.URL())
+	ctx := context.Background()
+
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer c.Close()
+
+	SetupJetStream(t, c)
+
+	t.Run("TestAck", func(t *testing.T) {
+		var ackCalled bool
+		var wg sync.WaitGroup
+		wg.Add(1)
+
+		handler := func(ctx context.Context, msg *message.NATSMsg) error {
+			err := msg.Ack()
+			if err != nil {
+				t.Errorf("Ack failed: %v", err)
+			}
+			ackCalled = true
+			wg.Done()
+			return nil
+		}
+
+		sub, err := c.Messages.Subscribe(ctx, "test.events.ack", handler)
+		if err != nil {
+			t.Fatalf("Failed to subscribe: %v", err)
+		}
+		defer sub.Unsubscribe()
+
+		time.Sleep(50 * time.Millisecond)
+
+		msg := message.NewWorkflowMessage("workflow-ack", uuid.New().String()).
+			WithPayload("ack-test", "ack test", "ref-ack")
+		err = c.Messages.Publish(ctx, "test.events.ack", msg)
+		if err != nil {
+			t.Fatalf("Failed to publish: %v", err)
+		}
+
+		wg.Wait()
+
+		if !ackCalled {
+			t.Error("Ack was not called")
+		}
+	})
+
+	t.Run("TestNak", func(t *testing.T) {
+		var nakCalled bool
+		var wg sync.WaitGroup
+		wg.Add(1)
+
+		handler := func(ctx context.Context, msg *message.NATSMsg) error {
+			err := msg.Nak()
+			if err != nil {
+				t.Errorf("Nak failed: %v", err)
+			}
+			nakCalled = true
+			wg.Done()
+			return nil
+		}
+
+		sub, err := c.Messages.Subscribe(ctx, "test.events.nak", handler)
+		if err != nil {
+			t.Fatalf("Failed to subscribe: %v", err)
+		}
+		defer sub.Unsubscribe()
+
+		time.Sleep(50 * time.Millisecond)
+
+		msg := message.NewWorkflowMessage("workflow-nak", uuid.New().String()).
+			WithPayload("nak-test", "nak test", "ref-nak")
+		err = c.Messages.Publish(ctx, "test.events.nak", msg)
+		if err != nil {
+			t.Fatalf("Failed to publish: %v", err)
+		}
+
+		wg.Wait()
+
+		if !nakCalled {
+			t.Error("Nak was not called")
+		}
+	})
+}
+
+// Note: JetStream requirement testing is handled in client_test.go
+// The SDK requires JetStream to be enabled on the NATS server.
+// All tests in this file assume JetStream is available.
