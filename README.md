@@ -542,16 +542,3 @@ c.Messages.Publish(ctx, "subject", msg)
 
 - Go 1.25.1 or higher
 - NATS Server 2.x or higher with JetStream enabled (required for all operations)
-
-## Contributing
-
-Contributions are welcome! Please ensure:
-
-- Code follows Go conventions and passes `go vet` and `golint`
-- All public functions have GoDoc comments
-- Tests are included for new features
-- Examples are updated if API changes
-
-## License
-
-MIT License - See LICENSE file for details
