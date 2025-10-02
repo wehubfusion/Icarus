@@ -167,7 +167,7 @@ type NATSMsg struct {
 // The message will not be redelivered after acknowledgment.
 // Handlers should call this after successfully processing a message.
 func (m *NATSMsg) Ack() error {
-	if m.natsMsg == nil {
+	if m.natsMsg == nil || m.natsMsg.Reply == "" {
 		return nil
 	}
 	return m.natsMsg.Ack()
@@ -177,7 +177,7 @@ func (m *NATSMsg) Ack() error {
 // The message will be redelivered according to the consumer's configuration.
 // Handlers should call this when processing fails and the message should be retried.
 func (m *NATSMsg) Nak() error {
-	if m.natsMsg == nil {
+	if m.natsMsg == nil || m.natsMsg.Reply == "" {
 		return nil
 	}
 	return m.natsMsg.Nak()
@@ -187,7 +187,7 @@ func (m *NATSMsg) Nak() error {
 // This extends the acknowledgment deadline to prevent redelivery.
 // Use this for long-running message processing to avoid timeout-based redelivery.
 func (m *NATSMsg) InProgress() error {
-	if m.natsMsg == nil {
+	if m.natsMsg == nil || m.natsMsg.Reply == "" {
 		return nil
 	}
 	return m.natsMsg.InProgress()
@@ -196,7 +196,7 @@ func (m *NATSMsg) InProgress() error {
 // Term terminates delivery of the message to JetStream, removing it from the stream.
 // Use this when a message cannot be processed and should not be retried.
 func (m *NATSMsg) Term() error {
-	if m.natsMsg == nil {
+	if m.natsMsg == nil || m.natsMsg.Reply == "" {
 		return nil
 	}
 	return m.natsMsg.Term()

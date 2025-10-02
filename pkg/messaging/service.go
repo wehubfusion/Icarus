@@ -5,20 +5,88 @@ import (
 	"fmt"
 	"time"
 
-	sdkerrors "github.com/amirhy/nats-sdk/pkg/errors"
 	"github.com/nats-io/nats.go"
+	sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
 )
+
+// JSContext defines the minimal subset of JetStream operations the service depends on.
+// This allows tests to provide a mock without requiring a running NATS server.
+type JSContext interface {
+	Publish(subj string, data []byte, opts ...nats.PubOpt) (*nats.PubAck, error)
+	Subscribe(subj string, cb nats.MsgHandler, opts ...nats.SubOpt) (JSSubscription, error)
+	QueueSubscribe(subj, queue string, cb nats.MsgHandler, opts ...nats.SubOpt) (JSSubscription, error)
+	PullSubscribe(subj, durable string, opts ...nats.SubOpt) (JSSubscription, error)
+}
+
+// JSSubscription abstracts operations used by the SDK from a subscription.
+// Implemented by the real nats.Subscription via adapter and by test doubles.
+type JSSubscription interface {
+	Unsubscribe() error
+	Drain() error
+	IsValid() bool
+	Pending() (int, int, error)
+	Fetch(batch int, opts ...nats.PullOpt) ([]*nats.Msg, error)
+}
+
+// WrapNATSJetStream adapts a nats.JetStreamContext to the JSContext interface.
+func WrapNATSJetStream(js nats.JetStreamContext) JSContext {
+	return &natsJSAdapter{js: js}
+}
+
+type natsJSAdapter struct {
+	js nats.JetStreamContext
+}
+
+func (a *natsJSAdapter) Publish(subj string, data []byte, opts ...nats.PubOpt) (*nats.PubAck, error) {
+	return a.js.Publish(subj, data, opts...)
+}
+
+func (a *natsJSAdapter) Subscribe(subj string, cb nats.MsgHandler, opts ...nats.SubOpt) (JSSubscription, error) {
+	sub, err := a.js.Subscribe(subj, cb, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &natsSubAdapter{sub: sub}, nil
+}
+
+func (a *natsJSAdapter) QueueSubscribe(subj, queue string, cb nats.MsgHandler, opts ...nats.SubOpt) (JSSubscription, error) {
+	sub, err := a.js.QueueSubscribe(subj, queue, cb, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &natsSubAdapter{sub: sub}, nil
+}
+
+func (a *natsJSAdapter) PullSubscribe(subj, durable string, opts ...nats.SubOpt) (JSSubscription, error) {
+	sub, err := a.js.PullSubscribe(subj, durable, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &natsSubAdapter{sub: sub}, nil
+}
+
+type natsSubAdapter struct {
+	sub *nats.Subscription
+}
+
+func (s *natsSubAdapter) Unsubscribe() error         { return s.sub.Unsubscribe() }
+func (s *natsSubAdapter) Drain() error               { return s.sub.Drain() }
+func (s *natsSubAdapter) IsValid() bool              { return s.sub.IsValid() }
+func (s *natsSubAdapter) Pending() (int, int, error) { return s.sub.Pending() }
+func (s *natsSubAdapter) Fetch(batch int, opts ...nats.PullOpt) ([]*nats.Msg, error) {
+	return s.sub.Fetch(batch, opts...)
+}
 
 // MessageService provides methods for publishing, subscribing, and managing messages over JetStream.
 // All operations use JetStream exclusively with proper acknowledgment handling.
 type MessageService struct {
-	js         nats.JetStreamContext
+	js         JSContext
 	middleware Middleware
 }
 
 // NewMessageService creates a new message service with the given JetStream context.
-// This service uses JetStream exclusively for all messaging operations.
-func NewMessageService(js nats.JetStreamContext) (*MessageService, error) {
+// Any implementation that satisfies JSContext (including nats.JetStreamContext) can be used.
+func NewMessageService(js JSContext) (*MessageService, error) {
 	if js == nil {
 		return nil, fmt.Errorf("JetStream context cannot be nil")
 	}
@@ -357,7 +425,7 @@ func (s *MessageService) PullMessagesWithHandler(ctx context.Context, stream, co
 
 // Subscription represents an active JetStream subscription.
 type Subscription struct {
-	sub     *nats.Subscription
+	sub     JSSubscription
 	subject string
 	queue   string
 }

@@ -7,24 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amirhy/nats-sdk/pkg/client"
-	message "github.com/amirhy/nats-sdk/pkg/messaging"
 	"github.com/google/uuid"
+	"github.com/wehubfusion/Icarus/pkg/client"
+	message "github.com/wehubfusion/Icarus/pkg/messaging"
 )
 
 func TestRecoveryMiddleware(t *testing.T) {
-	ts := StartTestServer(t)
-	defer ts.Stop()
-
-	c := client.NewClient(ts.URL())
+	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
-
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	SetupJetStream(t, c)
 
 	// Apply recovery middleware
 	c.Messages = c.Messages.WithMiddleware(message.RecoveryMiddleware())
@@ -41,7 +31,7 @@ func TestRecoveryMiddleware(t *testing.T) {
 	}
 	defer sub.Unsubscribe()
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 
 	msg := message.NewWorkflowMessage("workflow-panic", uuid.New().String()).
 		WithPayload("panic-test", "panic test", "ref-panic")
@@ -60,18 +50,8 @@ func TestRecoveryMiddleware(t *testing.T) {
 }
 
 func TestLoggingMiddleware(t *testing.T) {
-	ts := StartTestServer(t)
-	defer ts.Stop()
-
-	c := client.NewClient(ts.URL())
+	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
-
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	SetupJetStream(t, c)
 
 	// Apply logging middleware
 	c.Messages = c.Messages.WithMiddleware(message.LoggingMiddleware())
@@ -89,7 +69,7 @@ func TestLoggingMiddleware(t *testing.T) {
 	}
 	defer sub.Unsubscribe()
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 
 	msg := message.NewWorkflowMessage("workflow-logging", uuid.New().String()).
 		WithPayload("logging-test", "logging test", "ref-logging")
@@ -107,18 +87,8 @@ func TestLoggingMiddleware(t *testing.T) {
 }
 
 func TestValidationMiddleware(t *testing.T) {
-	ts := StartTestServer(t)
-	defer ts.Stop()
-
-	c := client.NewClient(ts.URL())
+	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
-
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	SetupJetStream(t, c)
 
 	// Apply validation middleware
 	c.Messages = c.Messages.WithMiddleware(message.ValidationMiddleware())
@@ -136,7 +106,7 @@ func TestValidationMiddleware(t *testing.T) {
 	}
 	defer sub.Unsubscribe()
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 
 	// Test with valid message
 	validMsg := message.NewWorkflowMessage("workflow-valid", uuid.New().String()).
@@ -154,18 +124,8 @@ func TestValidationMiddleware(t *testing.T) {
 }
 
 func TestMultipleMiddleware(t *testing.T) {
-	ts := StartTestServer(t)
-	defer ts.Stop()
-
-	c := client.NewClient(ts.URL())
+	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
-
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	SetupJetStream(t, c)
 
 	// Apply multiple middleware in chain
 	c.Messages = c.Messages.WithMiddleware(message.Chain(
@@ -187,7 +147,7 @@ func TestMultipleMiddleware(t *testing.T) {
 	}
 	defer sub.Unsubscribe()
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 
 	msg := message.NewWorkflowMessage("workflow-multi", uuid.New().String()).
 		WithPayload("multi-test", "multi middleware test", "ref-multi")
@@ -271,18 +231,8 @@ func TestMiddlewareChain(t *testing.T) {
 }
 
 func TestCustomMiddleware(t *testing.T) {
-	ts := StartTestServer(t)
-	defer ts.Stop()
-
-	c := client.NewClient(ts.URL())
+	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
-
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	SetupJetStream(t, c)
 
 	// Create custom middleware that adds metadata
 	customMiddleware := func(next message.Handler) message.Handler {
@@ -318,7 +268,7 @@ func TestCustomMiddleware(t *testing.T) {
 	}
 	defer sub.Unsubscribe()
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 
 	msg := message.NewWorkflowMessage("workflow-custom", uuid.New().String()).
 		WithPayload("custom-test", "custom middleware test", "ref-custom")
@@ -344,18 +294,8 @@ func TestCustomMiddleware(t *testing.T) {
 }
 
 func TestMiddlewareErrorHandling(t *testing.T) {
-	ts := StartTestServer(t)
-	defer ts.Stop()
-
-	c := client.NewClient(ts.URL())
+	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
-
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	SetupJetStream(t, c)
 
 	// Middleware that can fail
 	errorMiddleware := func(next message.Handler) message.Handler {
@@ -383,7 +323,7 @@ func TestMiddlewareErrorHandling(t *testing.T) {
 	}
 	defer sub.Unsubscribe()
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 
 	// Test with error content
 	errorMsg := message.NewWorkflowMessage("workflow-error", uuid.New().String()).

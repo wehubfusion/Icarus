@@ -6,10 +6,10 @@ import (
 	"log"
 	"time"
 
-	"github.com/amirhy/nats-sdk/pkg/client"
-	message "github.com/amirhy/nats-sdk/pkg/messaging"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"github.com/wehubfusion/Icarus/pkg/client"
+	message "github.com/wehubfusion/Icarus/pkg/messaging"
 )
 
 func main() {
