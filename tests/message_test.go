@@ -6,101 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amirhy/nats-sdk/pkg/client"
-	message "github.com/amirhy/nats-sdk/pkg/messaging"
 	"github.com/google/uuid"
-	"github.com/nats-io/nats-server/v2/server"
-	"github.com/nats-io/nats.go"
+	"github.com/wehubfusion/Icarus/pkg/client"
+	message "github.com/wehubfusion/Icarus/pkg/messaging"
 )
 
-// TestServer represents a test NATS server
-type TestServer struct {
-	server *server.Server
-	url    string
-}
-
-// StartTestServer starts a test NATS server with JetStream enabled
-func StartTestServer(t *testing.T) *TestServer {
-	t.Helper()
-
-	// Create a test server with JetStream
-	opts := &server.Options{
-		Host:     "127.0.0.1",
-		Port:     -1, // Let the server choose a port
-		HTTPPort: -1,
-		Cluster: server.ClusterOpts{
-			Name: "test-cluster",
-		},
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-	}
-
-	srv, err := server.NewServer(opts)
-	if err != nil {
-		t.Fatalf("Failed to create test server: %v", err)
-	}
-
-	srv.Start()
-
-	if !srv.ReadyForConnections(2 * time.Second) {
-		t.Fatal("Server didn't start in time")
-	}
-
-	url := srv.ClientURL()
-	return &TestServer{
-		server: srv,
-		url:    url,
-	}
-}
-
-// Stop stops the test server
-func (ts *TestServer) Stop() {
-	ts.server.Shutdown()
-	ts.server.WaitForShutdown()
-}
-
-// URL returns the client URL
-func (ts *TestServer) URL() string {
-	return ts.url
-}
-
-// SetupJetStream configures JetStream streams for testing
-func SetupJetStream(t *testing.T, client *client.Client) {
-	t.Helper()
-
-	js := client.JetStream()
-	if js == nil {
-		t.Fatal("JetStream not available")
-	}
-
-	// Create test streams
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST_EVENTS",
-		Subjects: []string{"test.events.>"},
-		Storage:  nats.MemoryStorage,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create test events stream: %v", err)
-	}
-
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     "TEST_TASKS",
-		Subjects: []string{"test.tasks.>"},
-		Storage:  nats.MemoryStorage,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create test tasks stream: %v", err)
-	}
-
-	// Create a pull consumer for testing
-	_, err = js.AddConsumer("TEST_EVENTS", &nats.ConsumerConfig{
-		Durable:   "test_pull_consumer",
-		AckPolicy: nats.AckExplicitPolicy,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create test pull consumer: %v", err)
-	}
-}
+// With the in-memory mock JetStream, no server or stream setup is required.
 
 func TestMessageCreation(t *testing.T) {
 	// Test basic message creation
@@ -188,41 +99,16 @@ func TestMessageSerialization(t *testing.T) {
 }
 
 func TestClientConnection(t *testing.T) {
-	ts := StartTestServer(t)
-	defer ts.Stop()
-
-	// Test successful connection
-	c := client.NewClient(ts.URL())
-	ctx := context.Background()
-
-	err := c.Connect(ctx)
-	if err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	if !c.IsConnected() {
-		t.Error("Expected client to be connected")
-	}
-
-	if c.JetStream() == nil {
-		t.Error("Expected JetStream to be available")
+	// Using mock JS: no real connection; ensure service initializes via helper
+	c := client.NewClientWithJSContext(NewMockJS())
+	if c.Messages == nil {
+		t.Fatal("Messages service should be initialized with mock JS")
 	}
 }
 
 func TestMessagePublishing(t *testing.T) {
-	ts := StartTestServer(t)
-	defer ts.Stop()
-
-	c := client.NewClient(ts.URL())
+	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
-
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	SetupJetStream(t, c)
 
 	// Test publishing a message
 	msg := message.NewWorkflowMessage("workflow-test", uuid.New().String()).
@@ -235,18 +121,8 @@ func TestMessagePublishing(t *testing.T) {
 }
 
 func TestMessageSubscription(t *testing.T) {
-	ts := StartTestServer(t)
-	defer ts.Stop()
-
-	c := client.NewClient(ts.URL())
+	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
-
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	SetupJetStream(t, c)
 
 	var receivedMsg *message.NATSMsg
 	var wg sync.WaitGroup
@@ -267,7 +143,7 @@ func TestMessageSubscription(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	// Give subscription time to be ready
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 
 	// Publish a message
 	testMsg := message.NewWorkflowMessage("workflow-sub", uuid.New().String()).
@@ -287,8 +163,7 @@ func TestMessageSubscription(t *testing.T) {
 
 	select {
 	case <-done:
-		// Success
-	case <-time.After(2 * time.Second):
+	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for message")
 	}
 
@@ -308,18 +183,8 @@ func TestMessageSubscription(t *testing.T) {
 }
 
 func TestQueueSubscription(t *testing.T) {
-	ts := StartTestServer(t)
-	defer ts.Stop()
-
-	c := client.NewClient(ts.URL())
+	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
-
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	SetupJetStream(t, c)
 
 	var receivedCount int
 	var mu sync.Mutex
@@ -351,7 +216,7 @@ func TestQueueSubscription(t *testing.T) {
 	}
 	defer sub2.Unsubscribe()
 
-	time.Sleep(100 * time.Millisecond) // Wait for subscriptions
+	time.Sleep(10 * time.Millisecond)
 
 	// Publish 3 messages
 	for i := 1; i <= 3; i++ {
@@ -373,7 +238,7 @@ func TestQueueSubscription(t *testing.T) {
 	select {
 	case <-done:
 		// Success
-	case <-time.After(3 * time.Second):
+	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for messages")
 	}
 
@@ -383,18 +248,8 @@ func TestQueueSubscription(t *testing.T) {
 }
 
 func TestPullMessages(t *testing.T) {
-	ts := StartTestServer(t)
-	defer ts.Stop()
-
-	c := client.NewClient(ts.URL())
+	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
-
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	SetupJetStream(t, c)
 
 	// Publish a message first
 	msg := message.NewWorkflowMessage("workflow-pull", uuid.New().String()).
@@ -406,7 +261,7 @@ func TestPullMessages(t *testing.T) {
 	}
 
 	// Wait for message to be stored
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 
 	// Pull messages
 	messages, err := c.Messages.PullMessages(ctx, "TEST_EVENTS", "test_pull_consumer", 10)
@@ -429,18 +284,8 @@ func TestPullMessages(t *testing.T) {
 }
 
 func TestMiddleware(t *testing.T) {
-	ts := StartTestServer(t)
-	defer ts.Stop()
-
-	c := client.NewClient(ts.URL())
+	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
-
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	SetupJetStream(t, c)
 
 	// Add validation middleware
 	c.Messages = c.Messages.WithMiddleware(message.ValidationMiddleware())
@@ -462,7 +307,7 @@ func TestMiddleware(t *testing.T) {
 	}
 	defer sub.Unsubscribe()
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 
 	// Test with valid message
 	validMsg := message.NewWorkflowMessage("workflow-middleware", uuid.New().String()).
@@ -485,24 +330,14 @@ func TestMiddleware(t *testing.T) {
 		if !received {
 			t.Error("Expected message to be received")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for message processing")
 	}
 }
 
 func TestAcknowledgment(t *testing.T) {
-	ts := StartTestServer(t)
-	defer ts.Stop()
-
-	c := client.NewClient(ts.URL())
+	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
-
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	SetupJetStream(t, c)
 
 	t.Run("TestAck", func(t *testing.T) {
 		var ackCalled bool
@@ -525,7 +360,7 @@ func TestAcknowledgment(t *testing.T) {
 		}
 		defer sub.Unsubscribe()
 
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 
 		msg := message.NewWorkflowMessage("workflow-ack", uuid.New().String()).
 			WithPayload("ack-test", "ack test", "ref-ack")
@@ -562,7 +397,7 @@ func TestAcknowledgment(t *testing.T) {
 		}
 		defer sub.Unsubscribe()
 
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 
 		msg := message.NewWorkflowMessage("workflow-nak", uuid.New().String()).
 			WithPayload("nak-test", "nak test", "ref-nak")

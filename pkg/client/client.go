@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/amirhy/nats-sdk/internal/nats"
-	sdkerrors "github.com/amirhy/nats-sdk/pkg/errors"
-	message "github.com/amirhy/nats-sdk/pkg/messaging"
 	natsclient "github.com/nats-io/nats.go"
+	"github.com/wehubfusion/Icarus/internal/nats"
+	sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
+	message "github.com/wehubfusion/Icarus/pkg/messaging"
 )
 
 // Client is the central JetStream client that manages the connection and provides access to services.
@@ -115,8 +115,8 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 	c.js = js
 
-	// Initialize message service with JetStream
-	msgService, err := message.NewMessageService(c.js)
+	// Initialize message service with JetStream (wrapped to interface for testability)
+	msgService, err := message.NewMessageService(message.WrapNATSJetStream(c.js))
 	if err != nil {
 		// Clean up connection on service initialization failure
 		_ = nats.Close(c.conn)
@@ -127,6 +127,13 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.Messages = msgService
 
 	return nil
+}
+
+// NewClientWithJSContext creates a client wired to a provided JSContext implementation.
+// Useful for tests to avoid connecting to a real NATS server.
+func NewClientWithJSContext(js message.JSContext) *Client {
+	svc, _ := message.NewMessageService(js)
+	return &Client{Messages: svc}
 }
 
 // Close gracefully closes the NATS connection and cleans up all resources.
