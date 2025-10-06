@@ -7,7 +7,7 @@ import (
 	natsclient "github.com/nats-io/nats.go"
 	"github.com/wehubfusion/Icarus/internal/nats"
 	sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
-	message "github.com/wehubfusion/Icarus/pkg/messaging"
+	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
 // Client is the central JetStream client that manages the connection and provides access to services.

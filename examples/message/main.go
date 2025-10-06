@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/wehubfusion/Icarus/pkg/client"
-	message "github.com/wehubfusion/Icarus/pkg/messaging"
+	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
 func main() {

@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/wehubfusion/Icarus/pkg/client"
 	sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
-	message "github.com/wehubfusion/Icarus/pkg/messaging"
+	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
 func TestErrorTypes(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/wehubfusion/Icarus/pkg/client"
-	message "github.com/wehubfusion/Icarus/pkg/messaging"
+	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
 // With the in-memory mock JetStream, no server or stream setup is required.

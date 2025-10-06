@@ -5,7 +5,7 @@ import (
 	"time"
 
 	nats "github.com/nats-io/nats.go"
-	message "github.com/wehubfusion/Icarus/pkg/messaging"
+	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
 // MockJS is a lightweight in-memory implementation of message.JSContext
