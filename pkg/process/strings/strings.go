@@ -136,8 +136,8 @@ func Format(template string, data map[string]string) string {
 	result := template
 	for k, v := range data {
 		// Support {key} and ${key}
-		result = stdstrings.ReplaceAll(result, "{"+k+"}", v)
 		result = stdstrings.ReplaceAll(result, "${"+k+"}", v)
+		result = stdstrings.ReplaceAll(result, "{"+k+"}", v)
 	}
 	return result
 }

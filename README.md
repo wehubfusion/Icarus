@@ -1,4 +1,4 @@
-# NATS JetStream SDK for Go
+# Icarus - NATS JetStream SDK for Go
 
 A clean, future-proof Go SDK for messaging over NATS JetStream with idiomatic patterns, comprehensive error handling, and built-in support for advanced JetStream messaging patterns.
 
@@ -18,12 +18,12 @@ A clean, future-proof Go SDK for messaging over NATS JetStream with idiomatic pa
 - **Robust Error Handling**: SDK-specific errors with proper error wrapping
 - **Connection Management**: Automatic reconnection and connection health monitoring
 - **Full JetStream Integration**: Automatic JetStream context initialization and advanced operations
-- **Future-Proof**: Designed for easy extension (process management coming soon)
+- **Future-Proof**: Designed for easy extension with growing process management capabilities
 
 ## Installation
 
 ```bash
-go get github.com/amirhy/nats-sdk
+go get github.com/wehubfusion/Icarus
 ```
 
 ## Quick Start
@@ -33,8 +33,8 @@ go get github.com/amirhy/nats-sdk
 ```go
 import (
     "context"
-    "github.com/amirhy/nats-sdk/pkg/client"
-    "github.com/amirhy/nats-sdk/pkg/messaging"
+    "github.com/wehubfusion/Icarus/pkg/client"
+    "github.com/wehubfusion/Icarus/pkg/messaging"
 )
 
 // Create and connect client
@@ -51,7 +51,7 @@ defer c.Close()
 
 ```go
 // Create a message
-msg := message.NewWorkflowMessage("user-events", "run-123").
+msg := message.NewWorkflowMessage("workflow-123", "run-456").
     WithPayload("api-server", "Hello, NATS!", "msg-123").
     WithMetadata("priority", "high")
 
@@ -163,7 +163,7 @@ if js != nil {
 ### Custom Connection Configuration
 
 ```go
-import "github.com/amirhy/nats-sdk/internal/nats"
+import "github.com/wehubfusion/Icarus/internal/nats"
 
 config := &nats.ConnectionConfig{
     URL:           "nats://localhost:4222",
@@ -243,7 +243,7 @@ if err := c.Messages.Publish(ctx, "events.test", msg); err != nil {
 ## Project Structure
 
 ```text
-my-nats-sdk/
+Icarus/
 ├── go.mod
 ├── README.md
 ├── internal/                 # Private helpers
@@ -252,18 +252,21 @@ my-nats-sdk/
 ├── pkg/                      # Public API
 │   ├── client/               # Central NATS client
 │   │   └── client.go         # Client with connection management
-│   ├── message/              # Messaging functionality
+│   ├── messaging/            # Messaging functionality
 │   │   ├── message.go        # Message struct and serialization
 │   │   ├── handler.go        # Handler types and middleware
 │   │   └── service.go        # Message service with pub/sub operations
 │   ├── errors/               # SDK-specific errors
 │   │   └── errors.go         # Error types and utilities
-│   └── process/              # Process management (coming soon)
+│   └── process/              # Process management utilities
+│       └── strings/          # String processing utilities
 └── examples/                 # Usage examples
     ├── message/              # JetStream messaging patterns
     │   └── main.go           # All messaging patterns with the client
-    └── process/              # Process management (coming soon)
-        └── main.go           # Process management examples (placeholder)
+    └── process/              # Process management examples
+        ├── main.go           # Entry point and overview of process examples
+        └── strings/          # String processing utilities
+            └── main.go      # Comprehensive string processing demo
 ```
 
 ## Error Handling
@@ -271,7 +274,7 @@ my-nats-sdk/
 The SDK provides structured error handling:
 
 ```go
-import sdkerrors "github.com/amirhy/nats-sdk/pkg/errors"
+import sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
 
 err := c.Messages.Publish(ctx, "test", msg)
 if err != nil {
@@ -341,6 +344,52 @@ msg = message.NewMessage().
     WithOutput("payment-gateway")
 ```
 
+## String Processing Utilities
+
+The SDK includes comprehensive string processing utilities for workflow orchestration and data manipulation:
+
+```go
+import "github.com/wehubfusion/Icarus/pkg/process/strings"
+
+// Basic operations
+result := strings.Concatenate("-", "hello", "world", "test") // "hello-world-test"
+parts := strings.Split("a,b,c", ",")                         // ["a", "b", "c"]
+joined := strings.Join([]string{"x", "y", "z"}, " ")         // "x y z"
+
+// Case manipulation
+upper := strings.ToUpper("hello")        // "HELLO"
+lower := strings.ToLower("WORLD")        // "world"
+title := strings.TitleCase("hello world") // "Hello World"
+cap := strings.Capitalize("hello")        // "Hello"
+
+// Search and replace
+contains, _ := strings.Contains("hello world", "world", false) // true
+replaced, _ := strings.Replace("hello 123", "\\d+", "456", -1, true) // "hello 456"
+
+// Encoding/Decoding
+encoded := strings.Base64Encode("hello")     // "aGVsbG8="
+decoded, _ := strings.Base64Decode(encoded)   // "hello"
+urlSafe := strings.URIEncode("hello world")  // "hello%20world"
+
+// Template formatting
+formatted := strings.Format("Hello {name}!", map[string]string{"name": "Alice"}) // "Hello Alice!"
+
+// Text normalization (removes diacritics)
+normalized := strings.Normalize("café") // "cafe"
+```
+
+### Available Functions
+
+- **Basic Operations**: `Concatenate`, `Split`, `Join`, `Trim`, `Substring`
+- **Search & Replace**: `Replace` (with regex support), `Contains`
+- **Case Operations**: `ToUpper`, `ToLower`, `TitleCase`, `Capitalize`
+- **Encoding**: `Base64Encode`, `Base64Decode`, `URIEncode`, `URIDecode`
+- **Text Processing**: `Format` (template replacement), `Normalize` (diacritic removal)
+- **Regex Operations**: `RegexExtract`
+- **Utilities**: `Length` (rune-aware character count)
+
+All functions are Unicode-aware and handle multi-byte characters correctly.
+
 ## Complete Example
 
 Here's a comprehensive example showing the client usage pattern:
@@ -354,8 +403,8 @@ import (
     "log"
     "time"
 
-    "github.com/amirhy/nats-sdk/pkg/client"
-    "github.com/amirhy/nats-sdk/pkg/messaging"
+    "github.com/wehubfusion/Icarus/pkg/client"
+    "github.com/wehubfusion/Icarus/pkg/messaging"
     "github.com/google/uuid"
 )
 
@@ -369,13 +418,13 @@ func main() {
     }
     defer c.Close()
 
-    // Apply middleware
-    c.Messages = c.Messages.WithMiddleware(
-        message.Chain(
-            message.RecoveryMiddleware(),
-            message.LoggingMiddleware(),
-        ),
-    )
+// Apply middleware
+c.Messages = c.Messages.WithMiddleware(
+    message.Chain(
+        RecoveryMiddleware(),
+        LoggingMiddleware(),
+    ),
+)
 
     // Subscribe
     handler := func(ctx context.Context, msg *message.NATSMsg) error {
@@ -428,13 +477,14 @@ for _, msg := range messages {
 }
 ```
 
-
 ## Examples
 
 See the `examples/` directory for complete working examples:
 
 - **examples/message/main.go**: Demonstrates JetStream messaging patterns including publish/subscribe, queue subscriptions, and pull-based consumers
-- **examples/process/main.go**: Placeholder for future process management examples
+- **examples/process/**: Process management examples organized by functionality
+  - **examples/process/main.go**: Entry point for process examples with overview
+  - **examples/process/strings/main.go**: Comprehensive string processing utilities demo
 
 To run examples:
 
@@ -444,6 +494,11 @@ docker run -p 4222:4222 nats:latest
 
 # Run message example
 go run examples/message/main.go
+
+# Run process examples
+go run examples/process/main.go                    # Show available examples
+go run examples/process/main.go strings           # Run string processing demo
+go run examples/process/strings/main.go           # Direct run of string demo
 ```
 
 ## Migration Guide
@@ -532,7 +587,7 @@ c.Messages.Publish(ctx, "subject", msg)
 
 ## Future Roadmap
 
-- **Process Management**: Service registration, discovery, and health monitoring
+- **Process Management**: Service registration, discovery, and health monitoring (string processing utilities implemented)
 - **Metrics and Tracing**: Built-in observability support
 - **Advanced JetStream Features**: Streams, consumers, and persistence
 - **Message Encryption**: End-to-end encryption support
