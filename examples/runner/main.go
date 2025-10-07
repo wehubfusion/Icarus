@@ -4,6 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,149 +16,244 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/client"
 	"github.com/wehubfusion/Icarus/pkg/message"
 	"github.com/wehubfusion/Icarus/pkg/runner"
+	"go.uber.org/zap"
 )
 
-// SimpleProcessor implements the Processor interface for basic message handling
+// SimpleProcessor implements the runner.Processor interface
+// This is a simple processor that simulates processing work
 type SimpleProcessor struct {
 	name string
 }
 
+// Process implements the Processor interface
+// This is where your business logic would go
 func (p *SimpleProcessor) Process(ctx context.Context, msg *message.Message) error {
-	// Extract message info
-	workflowID := "unknown"
-	runID := "unknown"
-	data := "no data"
+	// Simulate some processing time
+	processingTime := time.Duration(rand.Intn(2000)+500) * time.Millisecond
 
+	// Log the message we received
+	log.Printf("Processor '%s' received message:", p.name)
 	if msg.Workflow != nil {
-		workflowID = msg.Workflow.WorkflowID
-		runID = msg.Workflow.RunID
+		log.Printf("  - Workflow ID: %s, Run ID: %s", msg.Workflow.WorkflowID, msg.Workflow.RunID)
+	}
+	if msg.Node != nil {
+		log.Printf("  - Node ID: %s", msg.Node.NodeID)
 	}
 	if msg.Payload != nil {
-		data = msg.Payload.Data
+		log.Printf("  - Payload Data: %s", msg.Payload.Data)
 	}
 
-	fmt.Printf("[%s] Processing: workflow=%s run=%s data=%s\n",
-		p.name, workflowID, runID, data)
+	// Simulate processing work
+	log.Printf("Processor '%s' working for %v...", p.name, processingTime)
 
-	// Simulate some processing time
-	time.Sleep(2000 * time.Millisecond)
-
-	// Simple success/failure logic based on message content
-	if data == "fail" {
-		return fmt.Errorf("simulated failure for message: %s", data)
+	select {
+	case <-time.After(processingTime):
+		// Processing completed successfully
+		log.Printf("Processor '%s' completed processing", p.name)
+		return nil
+	case <-ctx.Done():
+		// Processing was cancelled
+		return ctx.Err()
 	}
-
-	fmt.Printf("[%s] ✓ Successfully processed message\n", p.name)
-	return nil
 }
 
 func main() {
-	fmt.Println("=== Simple Icarus Runner Example ===")
+	fmt.Println("=== Icarus Runner Example ===")
+	fmt.Println("This example demonstrates how to:")
+	fmt.Println("1. Set up NATS JetStream streams and consumers")
+	fmt.Println("2. Publish some test messages")
+	fmt.Println("3. Use the Runner to process messages concurrently")
+	fmt.Println()
 
-	// Connect to NATS
+	// Create and connect to NATS with JetStream
 	c := client.NewClient("nats://localhost:4222")
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	if err := c.Connect(ctx); err != nil {
-		log.Fatalf("Failed to connect: %v", err)
+		log.Fatalf("Failed to connect to NATS: %v", err)
 	}
 	defer c.Close()
 
-	// Setup streams
-	setupStreams(c.JetStream())
-
-	// Create processor and runner
-	processor := &SimpleProcessor{name: "Worker-1"}
-	r := runner.NewRunner(c, processor, "WORKFLOW", "workflow-consumer", 5, 2)
-
-	// Publish test messages
-	publishTestMessages(ctx, c)
-
-	// Run the runner for 10 seconds
-	fmt.Println("Starting runner for 10 seconds...")
-	runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	if err := r.Run(runCtx); err != nil {
-		log.Printf("Runner error: %v", err)
+	// Get JetStream context for stream/consumer setup
+	js := c.JetStream()
+	if js == nil {
+		log.Fatal("JetStream not available")
 	}
 
-	// Check results
-	checkResults(ctx, c)
-	fmt.Println("✓ Runner example completed!")
-}
-
-func setupStreams(js nats.JetStreamContext) {
-	// Create WORKFLOW stream
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "WORKFLOW",
-		Subjects: []string{"workflow.>"},
-		Storage:  nats.MemoryStorage,
-	})
-	if err != nil {
-		log.Printf("Warning: Could not create WORKFLOW stream: %v", err)
+	// Setup streams and consumers
+	if err := setupStreams(js); err != nil {
+		log.Fatalf("Failed to setup streams: %v", err)
 	}
 
-	// Create RESULTS stream
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     "RESULTS",
-		Subjects: []string{"result"},
-		Storage:  nats.MemoryStorage,
-	})
-	if err != nil {
-		log.Printf("Warning: Could not create RESULTS stream: %v", err)
-	}
-
-	// Create consumer
-	_, err = js.AddConsumer("WORKFLOW", &nats.ConsumerConfig{
-		Durable:   "workflow-consumer",
-		AckPolicy: nats.AckExplicitPolicy,
-	})
-	if err != nil {
-		log.Printf("Warning: Could not create consumer: %v", err)
-	}
-}
-
-func publishTestMessages(ctx context.Context, c *client.Client) {
+	// Publish some test messages
 	fmt.Println("Publishing test messages...")
-
-	workflowID := "test-workflow"
-	runID := uuid.New().String()
-
-	messages := []string{"task-1", "task-2", "fail", "task-3"}
-
-	for _, data := range messages {
-		msg := message.NewWorkflowMessage(workflowID, runID).
-			WithPayload("test", data, fmt.Sprintf("ref-%s", data))
-
-		subject := fmt.Sprintf("workflow.%s", workflowID)
-		if err := c.Messages.Publish(ctx, subject, msg); err != nil {
-			log.Printf("Failed to publish: %v", err)
-		}
+	if err := publishTestMessages(c, ctx); err != nil {
+		log.Fatalf("Failed to publish test messages: %v", err)
 	}
 
-	fmt.Printf("✓ Published %d messages\n", len(messages))
+	// Create a simple processor
+	processor := &SimpleProcessor{name: "StringProcessor"}
+
+	// Create a logger for the runner
+	logger, err := zap.NewProduction()
+	if err != nil {
+		log.Fatalf("Failed to create logger: %v", err)
+	}
+	defer logger.Sync()
+
+	// Create the runner
+	// - Pull from the "TASKS" stream using "task-processor" consumer
+	// - Process 5 messages at a time (batch size)
+	// - Use 3 worker goroutines for concurrent processing
+	taskRunner, err := runner.NewRunner(
+		c,                // client
+		processor,        // processor implementation
+		"TASKS",          // stream name
+		"task-processor", // consumer name
+		5,                // batch size
+		5,                // number of workers
+		logger,           // zap logger
+	)
+	if err != nil {
+		log.Fatalf("Failed to create runner: %v", err)
+	}
+
+	// Setup graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start the runner in a goroutine
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fmt.Println("🚀 Starting message processor...")
+		if err := taskRunner.Run(ctx); err != nil && err != context.Canceled {
+			log.Printf("Runner error: %v", err)
+		}
+	}()
+
+	// Wait for shutdown signal
+	fmt.Println("Press Ctrl+C to stop the processor...")
+	<-sigChan
+	fmt.Println("\n🛑 Shutdown signal received, stopping processor...")
+
+	// Cancel context to stop the runner
+	cancel()
+
+	// Wait for runner to stop
+	wg.Wait()
+	fmt.Println("✅ Processor stopped gracefully")
 }
 
-func checkResults(ctx context.Context, c *client.Client) {
-	fmt.Println("Checking results...")
+// setupStreams creates the necessary streams and consumers for the example
+func setupStreams(js nats.JetStreamContext) error {
+	fmt.Println("Setting up JetStream streams and consumers...")
 
-	results, err := c.Messages.PullMessages(ctx, "RESULTS", "results-consumer", 10)
+	// Create TASKS stream for incoming messages to process
+	fmt.Println("Creating TASKS stream...")
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TASKS",
+		Description: "Stream for task messages to be processed",
+		Subjects:    []string{"tasks.>"},
+		Storage:     nats.FileStorage,
+		Replicas:    1,
+		MaxAge:      24 * time.Hour, // Keep messages for 24 hours
+	})
 	if err != nil {
-		log.Printf("Failed to pull results: %v", err)
-		return
+		log.Printf("Warning: Could not create TASKS stream (might already exist): %v", err)
+	} else {
+		fmt.Println("✓ Created TASKS stream")
 	}
 
-	fmt.Printf("Found %d result messages:\n", len(results))
-	for i, result := range results {
-		resultType := "unknown"
-		if result.Metadata != nil {
-			resultType = result.Metadata["result_type"]
-		}
-		content := "no content"
-		if result.Payload != nil {
-			content = result.Payload.Data
-		}
-		fmt.Printf("  %d. [%s] %s\n", i+1, resultType, content)
+	// Create RESULTS stream for callback reporting
+	fmt.Println("Creating RESULTS stream...")
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:        "RESULTS",
+		Description: "Results stream for success/error callback reporting",
+		Subjects:    []string{"result"},
+		Storage:     nats.FileStorage,
+		Replicas:    1,
+		MaxAge:      24 * time.Hour, // Keep results for 24 hours
+	})
+	if err != nil {
+		log.Printf("Warning: Could not create RESULTS stream (might already exist): %v", err)
+	} else {
+		fmt.Println("✓ Created RESULTS stream")
 	}
+
+	// Create consumer for the TASKS stream
+	fmt.Println("Creating task processor consumer...")
+	_, err = js.AddConsumer("TASKS", &nats.ConsumerConfig{
+		Durable:       "task-processor",
+		Description:   "Consumer for processing task messages",
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxDeliver:    3,                // Retry failed messages up to 3 times
+		AckWait:       30 * time.Second, // Wait 30 seconds for acknowledgment
+		MaxAckPending: 100,              // Allow up to 100 unacknowledged messages
+	})
+	if err != nil {
+		log.Printf("Warning: Could not create task processor consumer (might already exist): %v", err)
+	} else {
+		fmt.Println("✓ Created task processor consumer")
+	}
+
+	fmt.Println("✅ Stream and consumer setup complete")
+	return nil
+}
+
+// publishTestMessages publishes some sample messages to the TASKS stream
+func publishTestMessages(c *client.Client, ctx context.Context) error {
+	workflowID := uuid.New().String()
+
+	// Create different types of test messages
+	messages := []struct {
+		subject string
+		data    string
+		runID   string
+	}{
+		{"tasks.process.string", "Hello, World!", uuid.New().String()},
+		{"tasks.process.string", "Process this text", uuid.New().String()},
+		{"tasks.process.string", "Another message to process", uuid.New().String()},
+		{"tasks.process.data", "Some data processing task", uuid.New().String()},
+		{"tasks.process.data", "More data to handle", uuid.New().String()},
+		{"tasks.process.string", "Final test message", uuid.New().String()},
+	}
+
+	for i, msgData := range messages {
+		// Create a structured message
+		msg := message.NewWorkflowMessage(workflowID, msgData.runID)
+
+		// Add node information
+		msg.WithNode(fmt.Sprintf("node-%d", i+1), map[string]interface{}{
+			"type":       "processor",
+			"priority":   rand.Intn(10) + 1,
+			"retryCount": 0,
+		})
+
+		// Add payload
+		msg.Payload = &message.Payload{
+			Source:    "example-generator",
+			Data:      msgData.data,
+			Reference: fmt.Sprintf("ref-%d", i+1),
+		}
+
+		// Add some metadata
+		msg.WithMetadata("messageType", "task")
+		msg.WithMetadata("batchId", fmt.Sprintf("batch-%d", (i/2)+1))
+
+		// Publish the message
+		if err := c.Messages.Publish(ctx, msgData.subject, msg); err != nil {
+			return fmt.Errorf("failed to publish message %d: %w", i+1, err)
+		}
+
+		fmt.Printf("✓ Published message %d to %s: %s\n", i+1, msgData.subject, msgData.data)
+
+		// Small delay between messages to make the output clearer
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	fmt.Printf("✅ Published %d test messages\n\n", len(messages))
+	return nil
 }

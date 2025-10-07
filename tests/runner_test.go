@@ -11,7 +11,13 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/client"
 	"github.com/wehubfusion/Icarus/pkg/message"
 	"github.com/wehubfusion/Icarus/pkg/runner"
+	"go.uber.org/zap"
 )
+
+// createTestLogger creates a no-op logger for testing
+func createTestLogger() *zap.Logger {
+	return zap.NewNop()
+}
 
 // mockProcessor implements the Processor interface for testing
 type mockProcessor struct {
@@ -166,7 +172,10 @@ func TestNewRunner(t *testing.T) {
 	batchSize := 5
 	numWorkers := 3
 
-	r := runner.NewRunner(mockClient.Client, mockProc, stream, consumer, batchSize, numWorkers)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, stream, consumer, batchSize, numWorkers, createTestLogger())
+	if err != nil {
+		t.Fatalf("NewRunner returned error: %v", err)
+	}
 
 	if r == nil {
 		t.Fatal("NewRunner returned nil")
@@ -174,6 +183,53 @@ func TestNewRunner(t *testing.T) {
 
 	// We can't directly access private fields, but we can verify the runner works
 	// by testing RegisterProcessor and Run methods
+}
+
+func TestNewRunnerValidation(t *testing.T) {
+	mockClient := newMockClient()
+	mockProc := &mockProcessor{}
+
+	// Test nil client
+	_, err := runner.NewRunner(nil, mockProc, "stream", "consumer", 1, 1, createTestLogger())
+	if err == nil {
+		t.Error("Expected error for nil client")
+	}
+
+	// Test nil processor
+	_, err = runner.NewRunner(mockClient.Client, nil, "stream", "consumer", 1, 1, createTestLogger())
+	if err == nil {
+		t.Error("Expected error for nil processor")
+	}
+
+	// Test empty stream
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "", "consumer", 1, 1, createTestLogger())
+	if err == nil {
+		t.Error("Expected error for empty stream")
+	}
+
+	// Test empty consumer
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "", 1, 1, createTestLogger())
+	if err == nil {
+		t.Error("Expected error for empty consumer")
+	}
+
+	// Test invalid batch size
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 0, 1, createTestLogger())
+	if err == nil {
+		t.Error("Expected error for zero batch size")
+	}
+
+	// Test invalid worker count
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 1, 0, createTestLogger())
+	if err == nil {
+		t.Error("Expected error for zero workers")
+	}
+
+	// Test nil logger
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 1, 1, nil)
+	if err == nil {
+		t.Error("Expected error for nil logger")
+	}
 }
 
 func TestRunnerRunWithSuccessfulProcessor(t *testing.T) {
@@ -191,14 +247,20 @@ func TestRunnerRunWithSuccessfulProcessor(t *testing.T) {
 		},
 	}
 
-	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, createTestLogger())
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err := r.Run(ctx)
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
+	runErr := r.Run(ctx)
+	// With timeout context, we expect context deadline exceeded
+	if runErr == nil {
+		t.Error("Expected context deadline exceeded error")
+	} else if runErr != context.DeadlineExceeded {
+		t.Errorf("Expected context deadline exceeded, got: %v", runErr)
 	}
 
 	// Wait for processing to complete
@@ -225,14 +287,20 @@ func TestRunnerRunWithFailingProcessor(t *testing.T) {
 		},
 	}
 
-	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, createTestLogger())
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err := r.Run(ctx)
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
+	runErr := r.Run(ctx)
+	// With timeout context, we expect context deadline exceeded
+	if runErr == nil {
+		t.Error("Expected context deadline exceeded error")
+	} else if runErr != context.DeadlineExceeded {
+		t.Errorf("Expected context deadline exceeded, got: %v", runErr)
 	}
 
 	// Wait for processing to complete
@@ -262,14 +330,20 @@ func TestRunnerRunWithMultipleMessages(t *testing.T) {
 		},
 	}
 
-	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 2, 2)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 2, 2, createTestLogger())
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err := r.Run(ctx)
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
+	runErr := r.Run(ctx)
+	// With timeout context, we expect context deadline exceeded
+	if runErr == nil {
+		t.Error("Expected context deadline exceeded error")
+	} else if runErr != context.DeadlineExceeded {
+		t.Errorf("Expected context deadline exceeded, got: %v", runErr)
 	}
 
 	// Wait for processing to complete
@@ -289,16 +363,22 @@ func TestRunnerRunWithPullError(t *testing.T) {
 
 	mockProc := &mockProcessor{}
 
-	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, createTestLogger())
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	// The Run method should not return an error even if PullMessages fails,
-	// it just logs the error and continues
-	err := r.Run(ctx)
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
+	// it just logs the error and continues, but with timeout it returns context deadline exceeded
+	runErr := r.Run(ctx)
+	// With timeout context, we expect context deadline exceeded
+	if runErr == nil {
+		t.Error("Expected context deadline exceeded error")
+	} else if runErr != context.DeadlineExceeded {
+		t.Errorf("Expected context deadline exceeded, got: %v", runErr)
 	}
 }
 
@@ -320,16 +400,22 @@ func TestRunnerRunWithReportError(t *testing.T) {
 		},
 	}
 
-	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, createTestLogger())
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	// The Run method should not return an error even if reporting fails,
-	// it just logs the error and continues
-	err := r.Run(ctx)
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
+	// it just logs the error and continues, but with timeout it returns context deadline exceeded
+	runErr := r.Run(ctx)
+	// With timeout context, we expect context deadline exceeded
+	if runErr == nil {
+		t.Error("Expected context deadline exceeded error")
+	} else if runErr != context.DeadlineExceeded {
+		t.Errorf("Expected context deadline exceeded, got: %v", runErr)
 	}
 
 	// Wait for processing to complete
@@ -359,14 +445,20 @@ func TestRunnerRunContextCancellation(t *testing.T) {
 		},
 	}
 
-	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, createTestLogger())
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	err := r.Run(ctx)
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
+	runErr := r.Run(ctx)
+	// With timeout context, we expect context deadline exceeded
+	if runErr == nil {
+		t.Error("Expected context deadline exceeded error")
+	} else if runErr != context.DeadlineExceeded {
+		t.Errorf("Expected context deadline exceeded, got: %v", runErr)
 	}
 
 	// Wait for processing to complete
@@ -386,14 +478,20 @@ func TestRunnerRunEmptyMessages(t *testing.T) {
 
 	mockProc := &mockProcessor{}
 
-	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, createTestLogger())
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err := r.Run(ctx)
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
+	runErr := r.Run(ctx)
+	// With timeout context, we expect context deadline exceeded
+	if runErr == nil {
+		t.Error("Expected context deadline exceeded error")
+	} else if runErr != context.DeadlineExceeded {
+		t.Errorf("Expected context deadline exceeded, got: %v", runErr)
 	}
 
 	// Processor should not be called since there are no messages

@@ -181,6 +181,7 @@ func (s *MessageService) Publish(ctx context.Context, subject string, msg *Messa
 //   - batchSize: The maximum number of messages to fetch (defaults to 10 if <= 0)
 //
 // Returns the fetched messages or an error if the operation fails.
+// Note: Returns empty slice (not error) when no messages are available within timeout.
 func (s *MessageService) PullMessages(ctx context.Context, stream, consumer string, batchSize int) ([]*Message, error) {
 	if stream == "" || consumer == "" {
 		return nil, fmt.Errorf("stream and consumer names are required")
@@ -206,9 +207,22 @@ func (s *MessageService) PullMessages(ctx context.Context, stream, consumer stri
 		}
 		defer sub.Unsubscribe()
 
-		// Fetch messages with timeout
-		natsMessages, err := sub.Fetch(batchSize, nats.MaxWait(5*time.Second))
+		// Fetch messages with timeout - use context deadline if available, otherwise default to 3 seconds
+		timeout := 3 * time.Second
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining > 0 && remaining < timeout {
+				timeout = remaining
+			}
+		}
+
+		natsMessages, err := sub.Fetch(batchSize, nats.MaxWait(timeout))
 		if err != nil {
+			// Check if this is a timeout error - this is normal when no messages are available
+			if err == nats.ErrTimeout {
+				// Return empty slice for timeout, not an error
+				resultCh <- result{msgs: []*Message{}}
+				return
+			}
 			resultCh <- result{err: err}
 			return
 		}
