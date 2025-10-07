@@ -55,6 +55,9 @@ type Message struct {
 
 	// UpdatedAt is the timestamp when the message was last updated
 	UpdatedAt string `json:"updatedAt"`
+
+	// natsMsg holds the original NATS message for acknowledgment (not serialized)
+	natsMsg *nats.Msg `json:"-"`
 }
 
 // NewMessage creates a new message with timestamps
@@ -215,4 +218,37 @@ func (m *NATSMsg) Respond(response *Message) error {
 	}
 
 	return m.natsMsg.Respond(data)
+}
+
+// Ack acknowledges the message, indicating successful processing.
+// This tells NATS that the message has been processed and should not be redelivered.
+func (m *Message) Ack() error {
+	if m.natsMsg == nil {
+		return nil // No NATS message to acknowledge
+	}
+	return m.natsMsg.Ack()
+}
+
+// Nak negatively acknowledges the message, indicating processing failure.
+// This tells NATS that the message processing failed and it may be redelivered.
+func (m *Message) Nak() error {
+	if m.natsMsg == nil {
+		return nil // No NATS message to nak
+	}
+	return m.natsMsg.Nak()
+}
+
+// Term terminates the message, indicating it should not be redelivered.
+// Use this when a message cannot be processed and should not be retried.
+func (m *Message) Term() error {
+	if m.natsMsg == nil {
+		return nil // No NATS message to terminate
+	}
+	return m.natsMsg.Term()
+}
+
+// GetNATSMsg returns the underlying NATS message for acknowledgment purposes.
+// Returns nil if this message was not created from a NATS message.
+func (m *Message) GetNATSMsg() *nats.Msg {
+	return m.natsMsg
 }

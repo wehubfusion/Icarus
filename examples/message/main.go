@@ -4,196 +4,283 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
 	"github.com/wehubfusion/Icarus/pkg/client"
+	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
 func main() {
-	fmt.Println("Setting up JetStream streams and consumers...")
+	fmt.Println("=== Icarus Messaging System Demo ===")
+	fmt.Println("Demonstrating JetStream-based messaging capabilities")
+	fmt.Println()
 
-	// Create and connect to NATS with JetStream
-	c := client.NewClient("nats://localhost:4222")
+	// Create a new client instance
+	// In production, you would configure with your NATS server URL
+	natsURL := "nats://localhost:4222"
+	if url := os.Getenv("NATS_URL"); url != "" {
+		natsURL = url
+	}
+
+	client := client.NewClient(natsURL)
 	ctx := context.Background()
-	if err := c.Connect(ctx); err != nil {
-		log.Fatalf("Failed to connect: %v", err)
+
+	// Connect to NATS JetStream
+	fmt.Printf("Connecting to NATS at %s...\n", natsURL)
+	if err := client.Connect(ctx); err != nil {
+		log.Fatalf("Failed to connect to NATS: %v", err)
 	}
-	defer c.Close()
+	defer client.Close()
+	fmt.Println("✓ Connected to NATS JetStream")
+	fmt.Println()
 
-	// Get JetStream context
-	js := c.JetStream()
-	if js == nil {
-		log.Fatal("JetStream not available")
-	}
+	// Set up graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Create RESULTS stream for callback reporting examples
-	fmt.Println("Creating RESULTS stream...")
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:        "RESULTS",
-		Description: "Results stream for success/error callback reporting",
-		Subjects:    []string{"result"},
-		Storage:     nats.FileStorage,
-		Replicas:    1,
-	})
-	if err != nil {
-		log.Printf("Warning: Could not create RESULTS stream (might already exist): %v", err)
-	} else {
-		fmt.Println("✓ Created RESULTS stream")
-	}
-
-	// Create a consumer for the results stream to demonstrate callback reporting
-	fmt.Println("Creating results consumer...")
-	_, err = js.AddConsumer("RESULTS", &nats.ConsumerConfig{
-		Durable:       "results-consumer",
-		Description:   "Consumer for callback result messages",
-		AckPolicy:     nats.AckExplicitPolicy,
-		DeliverPolicy: nats.DeliverAllPolicy,
-	})
-	if err != nil {
-		log.Printf("Warning: Could not create results consumer (might already exist): %v", err)
-	} else {
-		fmt.Println("✓ Created results consumer")
-	}
-
-	fmt.Println("\nJetStream setup complete!")
-	fmt.Println("Running message examples...")
-
-	// Example 1: Pull-based consumers with publish-then-pull workflow (JetStream)
-	pullBasedConsumer()
-
-	// Example 2: Callback reporting for success/error handling
-	callbackReporting()
+	// Run different messaging examples
+	runExamples(ctx, client, sigChan)
 }
 
-// pullBasedConsumer demonstrates pull-based message consumption using JetStream
-// This example first publishes messages, then pulls them back
-func pullBasedConsumer() {
-	fmt.Println("=== Example 1: JetStream Pull-Based Consumer ===")
+func runExamples(ctx context.Context, client *client.Client, sigChan chan os.Signal) {
+	// Example 1: Basic Message Publishing
+	fmt.Println("1. Basic Message Publishing")
+	fmt.Println("===========================")
 
-	// Create and connect to NATS with JetStream
-	c := client.NewClient("nats://localhost:4222")
-	ctx := context.Background()
-	if err := c.Connect(ctx); err != nil {
-		log.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
+	// Create a basic message
+	basicMsg := message.NewMessage()
+	basicMsg.WithPayload("example-service", "Hello from Icarus!", "ref-001")
+	basicMsg.WithMetadata("example", "basic-publish")
+	basicMsg.WithMetadata("timestamp", time.Now().Format(time.RFC3339))
 
-	// First, publish some messages to demonstrate the publish-then-pull workflow
-	fmt.Println("Publishing messages to demonstrate publish-then-pull...")
-
-	workflowID := "pull-demo"
-	runID1 := uuid.New().String()
-	runID2 := uuid.New().String()
-
-	// Report success for first workflow run
-	fmt.Printf("Reporting success for workflow %s run %s...\n", workflowID, runID1)
-	if err := c.Messages.ReportSuccess(ctx, workflowID, runID1, "Task completed successfully"); err != nil {
-		log.Printf("Failed to report success: %v", err)
+	// Publish the message
+	subject := "events.example.basic"
+	fmt.Printf("Publishing basic message to subject: %s\n", subject)
+	if err := client.Messages.Publish(ctx, subject, basicMsg); err != nil {
+		log.Printf("Failed to publish basic message: %v", err)
 	} else {
-		fmt.Println("✓ Published success message")
+		fmt.Println("✓ Basic message published successfully")
 	}
+	fmt.Println()
 
-	// Report error for second workflow run
-	fmt.Printf("Reporting error for workflow %s run %s...\n", workflowID, runID2)
-	if err := c.Messages.ReportError(ctx, workflowID, runID2, "Task failed with validation error"); err != nil {
-		log.Printf("Failed to report error: %v", err)
+	// Example 2: Workflow Message
+	fmt.Println("2. Workflow Message")
+	fmt.Println("===================")
+
+	workflowID := uuid.New().String()
+	runID := uuid.New().String()
+
+	workflowMsg := message.NewWorkflowMessage(workflowID, runID)
+	workflowMsg.WithNode("data-processor", map[string]interface{}{
+		"processor_type": "json",
+		"timeout":        30,
+		"retry_count":    3,
+	})
+	workflowMsg.WithPayload("workflow-engine", `{"user_id": 12345, "action": "purchase", "amount": 99.99}`, "order-789")
+	workflowMsg.WithOutput("database")
+	workflowMsg.WithMetadata("priority", "high")
+	workflowMsg.WithMetadata("environment", "production")
+
+	subject = "workflows.orders.processing"
+	fmt.Printf("Publishing workflow message to subject: %s\n", subject)
+	fmt.Printf("  - Workflow ID: %s\n", workflowID)
+	fmt.Printf("  - Run ID: %s\n", runID)
+	if err := client.Messages.Publish(ctx, subject, workflowMsg); err != nil {
+		log.Printf("Failed to publish workflow message: %v", err)
 	} else {
-		fmt.Println("✓ Published error message")
+		fmt.Println("✓ Workflow message published successfully")
 	}
+	fmt.Println()
 
-	// Wait for messages to be published
-	time.Sleep(200 * time.Millisecond)
+	// Example 3: Pull-based Message Processing
+	fmt.Println("3. Pull-based Message Processing")
+	fmt.Println("=================================")
 
-	// Now pull the messages we just published
-	streamName := "RESULTS"
-	consumerName := "results-consumer"
-	batchSize := 10
+	// Note: In a real application, you would need to create streams and consumers first
+	// This example demonstrates the pull-based approach using the available API
+	streamName := "EVENTS"
+	consumerName := "example-consumer"
 
-	fmt.Println("\nPulling messages from JetStream...")
-	messages, err := c.Messages.PullMessages(ctx, streamName, consumerName, batchSize)
-	if err != nil {
-		log.Printf("Failed to pull messages: %v", err)
-		return
-	}
+	fmt.Printf("Using stream: %s\n", streamName)
+	fmt.Printf("Consumer name: %s\n", consumerName)
 
-	if len(messages) == 0 {
-		fmt.Println("No messages available in the stream.")
-	} else {
-		fmt.Printf("Successfully pulled %d messages:\n", len(messages))
+	// Function to process messages using pull-based approach
+	pullAndProcessMessages := func() {
+		fmt.Println("Attempting to pull messages...")
+
+		// Pull messages from the consumer
+		messages, err := client.Messages.PullMessages(ctx, streamName, consumerName, 5)
+		if err != nil {
+			log.Printf("Failed to pull messages: %v", err)
+			return
+		}
+
+		if len(messages) == 0 {
+			fmt.Println("No messages available")
+			return
+		}
+
+		fmt.Printf("📨 Pulled %d messages\n", len(messages))
+
+		// Process each message
 		for i, msg := range messages {
-			// Create a message identifier from workflow or node information
-			var msgID string
+			fmt.Printf("Processing message %d:\n", i+1)
+
+			// Display message details
 			if msg.Workflow != nil {
-				msgID = fmt.Sprintf("workflow:%s/run:%s", msg.Workflow.WorkflowID, msg.Workflow.RunID)
-			} else if msg.Node != nil {
-				msgID = fmt.Sprintf("node:%s", msg.Node.NodeID)
-			} else {
-				msgID = "unknown"
+				fmt.Printf("  - Workflow: %s (Run: %s)\n", msg.Workflow.WorkflowID, msg.Workflow.RunID)
 			}
-			var content string
+			if msg.Node != nil {
+				fmt.Printf("  - Node: %s\n", msg.Node.NodeID)
+			}
 			if msg.Payload != nil {
-				content = msg.Payload.Data
+				fmt.Printf("  - Payload: %s\n", msg.Payload.Data)
 			}
-			var resultType string
-			if msg.Metadata != nil {
-				resultType = msg.Metadata["result_type"]
+			if len(msg.Metadata) > 0 {
+				fmt.Printf("  - Metadata: %v\n", msg.Metadata)
 			}
-			fmt.Printf("  [%d] ID=%s, Type=%s, Content=%s\n",
-				i+1, msgID, resultType, content)
+			fmt.Printf("  - Created: %s\n", msg.CreatedAt)
+
+			// Acknowledge the message (important for JetStream)
+			if err := msg.Ack(); err != nil {
+				log.Printf("Failed to acknowledge message: %v", err)
+			} else {
+				fmt.Println("  ✓ Message acknowledged")
+			}
+			fmt.Println()
 		}
 	}
 
+	// For this demo, let's call the pull function once
+	// In a real application, you would run this in a loop or on a schedule
+	pullAndProcessMessages()
+
+	fmt.Println("Pull-based message processing ready")
+	fmt.Println("Note: Stream and consumer must be created externally")
 	fmt.Println()
-}
 
-// callbackReporting demonstrates the callback reporting functionality for success and error handling
-func callbackReporting() {
-	fmt.Println("=== Example 2: Callback Reporting ===")
+	// Example 4: Publish some test messages for the subscriber
+	fmt.Println("4. Publishing Test Messages")
+	fmt.Println("===========================")
 
-	// Create and connect to NATS with JetStream
-	c := client.NewClient("nats://localhost:4222")
-	ctx := context.Background()
-	if err := c.Connect(ctx); err != nil {
-		log.Fatalf("Failed to connect: %v", err)
+	// Publish a few test messages with different types
+	testMessages := []struct {
+		subject string
+		msgType string
+		data    string
+	}{
+		{"events.example.user", "user-event", `{"user_id": 123, "event": "login"}`},
+		{"events.example.order", "order-event", `{"order_id": 456, "status": "completed"}`},
+		{"events.example.notification", "notification", `{"recipient": "user@example.com", "message": "Order shipped"}`},
 	}
-	defer c.Close()
 
-	// Create workflow messages for processing
-	workflowID := "callback-demo"
-	runID1 := uuid.New().String()
-	runID2 := uuid.New().String()
-	runID3 := uuid.New().String()
+	for i, test := range testMessages {
+		testMsg := message.NewMessage()
+		testMsg.WithPayload("test-publisher", test.data, fmt.Sprintf("test-ref-%d", i+1))
+		testMsg.WithMetadata("message_type", test.msgType)
+		testMsg.WithMetadata("test_sequence", fmt.Sprintf("%d", i+1))
 
-	fmt.Printf("Processing workflow %s with multiple runs...\n", workflowID)
+		fmt.Printf("Publishing test message %d to %s\n", i+1, test.subject)
+		if err := client.Messages.Publish(ctx, test.subject, testMsg); err != nil {
+			log.Printf("Failed to publish test message: %v", err)
+		}
 
-	// Simulate successful processing - report success
-	fmt.Printf("Reporting success for run %s...\n", runID1)
-	if err := c.Messages.ReportSuccess(ctx, workflowID, runID1, "Workflow completed successfully with result data"); err != nil {
+		// Small delay between messages
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	fmt.Println("✓ Test messages published")
+	fmt.Println()
+
+	// Example 5: Callback Reporting
+	fmt.Println("5. Callback Reporting")
+	fmt.Println("=====================")
+
+	// Demonstrate success callback reporting
+	callbackWorkflowID := uuid.New().String()
+	callbackRunID := uuid.New().String()
+
+	fmt.Printf("Reporting success for workflow: %s, run: %s\n", callbackWorkflowID, callbackRunID)
+
+	// Report a successful workflow execution
+	successData := `{"status": "completed", "processed_items": 150, "duration": "45.2s"}`
+	resultMessage := message.NewWorkflowMessage(callbackWorkflowID, callbackRunID).
+		WithPayload("callback-service", successData, fmt.Sprintf("success-%s-%s", callbackWorkflowID, callbackRunID))
+
+	if err := client.Messages.ReportSuccess(ctx, *resultMessage, nil); err != nil {
 		log.Printf("Failed to report success: %v", err)
 	} else {
-		fmt.Println("✓ Successfully reported success callback")
+		fmt.Println("✓ Success callback reported")
 	}
 
-	// Simulate another successful processing
-	fmt.Printf("Reporting success for run %s...\n", runID2)
-	if err := c.Messages.ReportSuccess(ctx, workflowID, runID2, "Another task completed successfully"); err != nil {
-		log.Printf("Failed to report success: %v", err)
-	} else {
-		fmt.Println("✓ Successfully reported success callback")
-	}
+	// Demonstrate error callback reporting
+	errorWorkflowID := uuid.New().String()
+	errorRunID := uuid.New().String()
 
-	// Simulate failed processing - report error
-	fmt.Printf("Reporting error for run %s...\n", runID3)
-	if err := c.Messages.ReportError(ctx, workflowID, runID3, "Workflow failed due to validation error: invalid input data"); err != nil {
+	fmt.Printf("Reporting error for workflow: %s, run: %s\n", errorWorkflowID, errorRunID)
+
+	// Report a failed workflow execution
+	errorData := `{"error": "Database connection timeout", "retry_count": 3, "last_attempt": "2024-10-07T10:30:00Z"}`
+	if err := client.Messages.ReportError(ctx, errorWorkflowID, errorRunID, errorData, nil); err != nil {
 		log.Printf("Failed to report error: %v", err)
 	} else {
-		fmt.Println("✓ Successfully reported error callback")
+		fmt.Println("✓ Error callback reported")
+	}
+	fmt.Println()
+
+	// Example 6: Message Serialization
+	fmt.Println("6. Message Serialization")
+	fmt.Println("========================")
+
+	// Create a complex message
+	complexMsg := message.NewWorkflowMessage("wf-serialization-test", "run-001")
+	complexMsg.WithNode("serializer", map[string]interface{}{
+		"format":  "json",
+		"version": "v1.0",
+		"options": map[string]interface{}{
+			"pretty":   true,
+			"validate": true,
+		},
+	})
+	complexMsg.WithPayload("serialization-demo", `{"complex": true, "nested": {"data": [1,2,3]}}`, "serial-ref")
+	complexMsg.WithOutput("file-system")
+	complexMsg.WithMetadata("encoding", "utf-8")
+	complexMsg.WithMetadata("compression", "gzip")
+
+	// Serialize to bytes
+	msgBytes, err := complexMsg.ToBytes()
+	if err != nil {
+		log.Printf("Failed to serialize message: %v", err)
+	} else {
+		fmt.Printf("✓ Message serialized to %d bytes\n", len(msgBytes))
 	}
 
-	fmt.Println("Callback messages have been published to the RESULTS stream.")
-	fmt.Println("Use pull-based consumers (like in Example 1) to retrieve these messages.")
-
+	// Deserialize from bytes
+	deserializedMsg, err := message.FromBytes(msgBytes)
+	if err != nil {
+		log.Printf("Failed to deserialize message: %v", err)
+	} else {
+		fmt.Println("✓ Message deserialized successfully")
+		fmt.Printf("  - Workflow ID: %s\n", deserializedMsg.Workflow.WorkflowID)
+		fmt.Printf("  - Node ID: %s\n", deserializedMsg.Node.NodeID)
+		fmt.Printf("  - Payload: %s\n", deserializedMsg.Payload.Data)
+		fmt.Printf("  - Metadata count: %d\n", len(deserializedMsg.Metadata))
+	}
 	fmt.Println()
+
+	// Wait for shutdown signal or let it run for a bit
+	fmt.Println("Demo running... Press Ctrl+C to stop")
+
+	select {
+	case <-sigChan:
+		fmt.Println("\n📟 Shutdown signal received, cleaning up...")
+	case <-time.After(30 * time.Second):
+		fmt.Println("\n⏰ Demo timeout reached, shutting down...")
+	}
+
+	fmt.Println("✓ Demo completed successfully")
 }

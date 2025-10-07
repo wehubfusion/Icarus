@@ -172,8 +172,9 @@ func (s *MessageService) Publish(ctx context.Context, subject string, msg *Messa
 // PullMessages pulls messages from a JetStream pull-based consumer.
 // This method fetches messages in batches on demand, providing explicit flow control.
 //
-// Messages are automatically acknowledged upon successful deserialization.
-// Use this method when you want explicit control over when messages are fetched.
+// Messages are NOT automatically acknowledged - the caller must handle acknowledgment
+// by calling Ack(), Nak(), or Term() on the returned messages as appropriate.
+// Use this method when you want explicit control over when messages are fetched and acknowledged.
 //
 // Parameters:
 //   - stream: The name of the JetStream stream
@@ -235,8 +236,9 @@ func (s *MessageService) PullMessages(ctx context.Context, stream, consumer stri
 				_ = natsMsg.Nak()
 				continue
 			}
-			// Acknowledge successful deserialization
-			_ = natsMsg.Ack()
+			// Do NOT acknowledge - let the application handle acknowledgment
+			// Store the NATS message reference in the Message for later acknowledgment
+			msg.natsMsg = natsMsg
 			messages = append(messages, msg)
 		}
 
@@ -265,28 +267,37 @@ const (
 )
 
 // ReportSuccess publishes a success callback message for a workflow execution.
-// The message contains the provided data and is published to the "result" subject
-// with metadata indicating it represents a successful result.
-//
-// Parameters:
-//   - workflowID: The unique identifier of the workflow that completed successfully
-//   - runID: The unique identifier of this specific workflow execution run
-//   - data: The success data or result payload to include in the message
-//
-// Returns an error if the message cannot be published.
-func (s *MessageService) ReportSuccess(ctx context.Context, workflowID, runID string, data string) error {
-	msg := NewWorkflowMessage(workflowID, runID).
-		WithPayload("callback-service", data, fmt.Sprintf("success-%s-%s", workflowID, runID)).
-		WithMetadata("result_type", string(ResultTypeSuccess)).
-		WithMetadata("correlation_id", fmt.Sprintf("%s-%s", workflowID, runID))
+// It takes the result message directly and publishes it to the "result" subject.
+// The source message (msg) will be acknowledged if the publish succeeds, or nak'd if it fails.
+// The result message should already contain the workflow information and any result data.
+// Returns an error if publishing fails or if the message validation fails.
+func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Message, msg *nats.Msg) error {
+	// Add result type metadata to the result message
+	resultMessage.WithMetadata("result_type", string(ResultTypeSuccess))
 
 	// Validate message
-	if err := s.validateMessage(msg); err != nil {
+	if err := s.validateMessage(&resultMessage); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
 	// Attempt to publish with retries (using default retry settings)
-	return s.publishWithRetry(ctx, "result", msg, 3, time.Second)
+	if err := s.publishWithRetry(ctx, "result", &resultMessage, 3, time.Second); err != nil {
+		// If we have a source message and publishing failed, nak it
+		if msg != nil {
+			_ = msg.Nak()
+		}
+		return err
+	}
+
+	// If we have a source message and publishing succeeded, ack it
+	if msg != nil {
+		if err := msg.Ack(); err != nil {
+			// Log but don't fail - the callback was published successfully
+			return fmt.Errorf("failed to acknowledge source message: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // ReportError publishes an error callback message for a failed workflow execution.
@@ -297,19 +308,37 @@ func (s *MessageService) ReportSuccess(ctx context.Context, workflowID, runID st
 //   - workflowID: The unique identifier of the workflow that failed
 //   - runID: The unique identifier of this specific workflow execution run
 //   - errorMsg: The error message or details describing what went wrong
+//   - msg: NATS message to negatively acknowledge after error reporting (can be nil)
 //
 // Returns an error if the message cannot be published.
-func (s *MessageService) ReportError(ctx context.Context, workflowID, runID string, errorMsg string) error {
-	msg := NewWorkflowMessage(workflowID, runID).
+func (s *MessageService) ReportError(ctx context.Context, workflowID, runID string, errorMsg string, msg *nats.Msg) error {
+	message := NewWorkflowMessage(workflowID, runID).
 		WithPayload("callback-service", errorMsg, fmt.Sprintf("error-%s-%s", workflowID, runID)).
 		WithMetadata("result_type", string(ResultTypeError)).
 		WithMetadata("correlation_id", fmt.Sprintf("%s-%s", workflowID, runID))
 
 	// Validate message
-	if err := s.validateMessage(msg); err != nil {
+	if err := s.validateMessage(message); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
 	// Attempt to publish with retries (using default retry settings)
-	return s.publishWithRetry(ctx, "result", msg, 3, time.Second)
+	if err := s.publishWithRetry(ctx, "result", message, 3, time.Second); err != nil {
+		// If we have a source message, nak it since both processing and reporting failed
+		if msg != nil {
+			_ = msg.Nak()
+		}
+		return err
+	}
+
+	// If we have a source message and error reporting succeeded, still nak it
+	// because the original processing failed (that's why we're reporting an error)
+	if msg != nil {
+		if err := msg.Nak(); err != nil {
+			// Log but don't fail - the error callback was published successfully
+			return fmt.Errorf("failed to negatively acknowledge source message: %w", err)
+		}
+	}
+
+	return nil
 }

@@ -17,20 +17,21 @@ import (
 // Processor defines the interface for message processing implementations.
 // Implementations should handle the business logic for processing individual messages.
 type Processor interface {
-	Process(ctx context.Context, msg *message.Message) error
+	Process(ctx context.Context, msg *message.Message) (message message.Message, err error)
 }
 
 // Runner manages concurrent message processing from a NATS JetStream consumer.
 // It pulls messages in batches and distributes them to worker goroutines for processing,
 // with automatic success and error reporting to the "result" subject.
 type Runner struct {
-	client     *client.Client
-	processor  Processor
-	stream     string
-	consumer   string
-	batchSize  int
-	numWorkers int
-	logger     *zap.Logger
+	client         *client.Client
+	processor      Processor
+	stream         string
+	consumer       string
+	batchSize      int
+	numWorkers     int
+	logger         *zap.Logger
+	processTimeout time.Duration
 }
 
 // NewRunner creates a new Runner instance with a connected client and stream/consumer configuration.
@@ -38,9 +39,10 @@ type Runner struct {
 // The processor must implement the Processor interface for message handling.
 // batchSize specifies how many messages to pull at once from the stream.
 // numWorkers specifies the number of worker goroutines for processing messages.
+// processTimeout specifies the maximum time allowed for processing a single message.
 // logger is the zap logger instance for structured logging.
 // Returns an error if any of the parameters are invalid.
-func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, numWorkers int, logger *zap.Logger) (*Runner, error) {
+func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, numWorkers int, processTimeout time.Duration, logger *zap.Logger) (*Runner, error) {
 	if client == nil {
 		return nil, errors.New("client cannot be nil")
 	}
@@ -59,18 +61,22 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 	if numWorkers <= 0 {
 		return nil, errors.New("numWorkers must be greater than 0")
 	}
+	if processTimeout <= 0 {
+		return nil, errors.New("processTimeout must be greater than 0")
+	}
 	if logger == nil {
 		return nil, errors.New("logger cannot be nil")
 	}
 
 	return &Runner{
-		client:     client,
-		processor:  processor,
-		stream:     stream,
-		consumer:   consumer,
-		batchSize:  batchSize,
-		numWorkers: numWorkers,
-		logger:     logger,
+		client:         client,
+		processor:      processor,
+		stream:         stream,
+		consumer:       consumer,
+		batchSize:      batchSize,
+		numWorkers:     numWorkers,
+		processTimeout: processTimeout,
+		logger:         logger,
 	}, nil
 }
 
@@ -95,9 +101,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Start message puller goroutine
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
 		defer close(messageChan) // Close channel when done
 
 		backoffDelay := 100 * time.Millisecond
@@ -153,19 +157,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	}()
 
 	// Wait for all goroutines to finish or context cancellation
-	// Use a separate context for the wait goroutine to prevent leaks
-	waitCtx, waitCancel := context.WithCancel(context.Background())
-	defer waitCancel()
-
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		select {
-		case <-waitCtx.Done():
-			return // Cancelled, exit without waiting
-		default:
-			wg.Wait()
-		}
+		wg.Wait()
 	}()
 
 	// Wait for completion or context cancellation
@@ -175,7 +170,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		r.logger.Info("Runner stopped due to context cancellation")
-		waitCancel() // Cancel the wait goroutine to prevent leak
 		return ctx.Err()
 	}
 }
@@ -208,8 +202,8 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		runID = msg.Workflow.RunID
 	}
 
-	// Create a timeout context for message processing (30 seconds default)
-	processCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Create a timeout context for message processing (configurable timeout)
+	processCtx, cancel := context.WithTimeout(ctx, r.processTimeout)
 	defer cancel()
 
 	start := time.Now()
@@ -219,7 +213,7 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		zap.String("runID", runID))
 
 	// Process the message
-	processErr := r.processor.Process(processCtx, msg)
+	resultMessage, processErr := r.processor.Process(processCtx, msg)
 	processingTime := time.Since(start)
 
 	if processErr != nil {
@@ -234,7 +228,7 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		// Use a background context with timeout to ensure reporting works even if parent context is cancelled
 		if workflowID != "" && runID != "" {
 			reportCtx, reportCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if reportErr := r.client.Messages.ReportError(reportCtx, workflowID, runID, processErr.Error()); reportErr != nil {
+			if reportErr := r.client.Messages.ReportError(reportCtx, workflowID, runID, processErr.Error(), msg.GetNATSMsg()); reportErr != nil {
 				r.logger.Error("Error reporting failure",
 					zap.Int("workerID", workerID),
 					zap.String("workflowID", workflowID),
@@ -242,10 +236,15 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 					zap.Error(reportErr))
 			}
 			reportCancel()
+		} else {
+			// If we don't have workflow info, still nak the message since processing failed
+			if nakErr := msg.Nak(); nakErr != nil {
+				r.logger.Error("Error naking message after processing failure",
+					zap.Int("workerID", workerID),
+					zap.Error(nakErr))
+			}
 		}
 
-		// Note: Messages are already acknowledged by PullMessages upon successful deserialization.
-		// NATS will handle redelivery based on consumer configuration for unprocessed messages.
 		return
 	}
 
@@ -253,12 +252,13 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		zap.Int("workerID", workerID),
 		zap.String("workflowID", workflowID),
 		zap.String("runID", runID),
-		zap.Duration("processingTime", processingTime))
+		zap.Duration("processingTime", processingTime),
+		zap.Any("resultMessage", resultMessage)) // Log the result message
 
 	// Report success if we have workflow information
 	if workflowID != "" && runID != "" {
 		reportCtx, reportCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if reportErr := r.client.Messages.ReportSuccess(reportCtx, workflowID, runID, "Message processed successfully"); reportErr != nil {
+		if reportErr := r.client.Messages.ReportSuccess(reportCtx, resultMessage, msg.GetNATSMsg()); reportErr != nil {
 			r.logger.Error("Error reporting success",
 				zap.Int("workerID", workerID),
 				zap.String("workflowID", workflowID),
@@ -266,9 +266,13 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 				zap.Error(reportErr))
 		}
 		reportCancel()
+	} else {
+		// If we don't have workflow info, still ack the message since processing succeeded
+		if ackErr := msg.Ack(); ackErr != nil {
+			r.logger.Error("Error acking message after successful processing",
+				zap.Int("workerID", workerID),
+				zap.Error(ackErr))
+		}
 	}
 
-	// Note: Messages are automatically acknowledged by the PullMessages method
-	// after successful deserialization. This means once we receive a message here,
-	// it's already been acknowledged to NATS regardless of processing outcome.
 }

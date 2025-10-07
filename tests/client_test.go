@@ -11,7 +11,7 @@ func TestClientCreation(t *testing.T) {
 	url := "nats://localhost:4222"
 	c := client.NewClient(url)
 	if c == nil {
-		t.Error("Expected client to be created")
+		t.Fatal("Expected client to be created")
 	}
 
 	// Test creating client with config
@@ -31,6 +31,7 @@ func TestClientCreation(t *testing.T) {
 	}
 
 	// Test that client starts with nil connection
+	// At this point c is guaranteed to be non-nil due to the Fatal check above
 	if c.Connection() != nil {
 		t.Error("Expected initial connection to be nil")
 	}

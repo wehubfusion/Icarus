@@ -27,9 +27,9 @@ type SimpleProcessor struct {
 
 // Process implements the Processor interface
 // This is where your business logic would go
-func (p *SimpleProcessor) Process(ctx context.Context, msg *message.Message) error {
-	// Simulate some processing time
-	processingTime := time.Duration(rand.Intn(2000)+500) * time.Millisecond
+func (p *SimpleProcessor) Process(ctx context.Context, msg *message.Message) (message.Message, error) {
+	// Simulate some processing time (1-5 seconds instead of 50+ seconds)
+	processingTime := time.Duration(rand.Intn(4000)+1000) * time.Millisecond
 
 	// Log the message we received
 	log.Printf("Processor '%s' received message:", p.name)
@@ -50,10 +50,20 @@ func (p *SimpleProcessor) Process(ctx context.Context, msg *message.Message) err
 	case <-time.After(processingTime):
 		// Processing completed successfully
 		log.Printf("Processor '%s' completed processing", p.name)
-		return nil
+
+		// Create a result message with the processing results
+		resultMessage := message.NewMessage().
+			WithPayload("processor-result", fmt.Sprintf("Processed by %s in %v", p.name, processingTime), "processing-result")
+
+		// Copy workflow information if it exists
+		if msg.Workflow != nil {
+			resultMessage.Workflow = msg.Workflow
+		}
+
+		return *resultMessage, nil
 	case <-ctx.Done():
 		// Processing was cancelled
-		return ctx.Err()
+		return message.Message{}, ctx.Err()
 	}
 }
 
@@ -106,6 +116,7 @@ func main() {
 	// - Pull from the "TASKS" stream using "task-processor" consumer
 	// - Process 5 messages at a time (batch size)
 	// - Use 3 worker goroutines for concurrent processing
+	// - Set 5 minute timeout for message processing
 	taskRunner, err := runner.NewRunner(
 		c,                // client
 		processor,        // processor implementation
@@ -113,6 +124,7 @@ func main() {
 		"task-processor", // consumer name
 		5,                // batch size
 		5,                // number of workers
+		5*time.Minute,    // process timeout (5 minutes)
 		logger,           // zap logger
 	)
 	if err != nil {
@@ -189,9 +201,9 @@ func setupStreams(js nats.JetStreamContext) error {
 		Durable:       "task-processor",
 		Description:   "Consumer for processing task messages",
 		AckPolicy:     nats.AckExplicitPolicy,
-		MaxDeliver:    3,                // Retry failed messages up to 3 times
-		AckWait:       30 * time.Second, // Wait 30 seconds for acknowledgment
-		MaxAckPending: 100,              // Allow up to 100 unacknowledged messages
+		MaxDeliver:    3,               // Retry failed messages up to 3 times
+		AckWait:       5 * time.Minute, // Wait 5 minutes for acknowledgment (increased from 30s)
+		MaxAckPending: 100,             // Allow up to 100 unacknowledged messages
 	})
 	if err != nil {
 		log.Printf("Warning: Could not create task processor consumer (might already exist): %v", err)
@@ -214,11 +226,107 @@ func publishTestMessages(c *client.Client, ctx context.Context) error {
 		runID   string
 	}{
 		{"tasks.process.string", "Hello, World!", uuid.New().String()},
-		{"tasks.process.string", "Process this text", uuid.New().String()},
-		{"tasks.process.string", "Another message to process", uuid.New().String()},
-		{"tasks.process.data", "Some data processing task", uuid.New().String()},
-		{"tasks.process.data", "More data to handle", uuid.New().String()},
-		{"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
+		// {"tasks.process.string", "Hello, World!", uuid.New().String()},
+		// {"tasks.process.string", "Process this text", uuid.New().String()},
+		// {"tasks.process.string", "Another message to process", uuid.New().String()},
+		// {"tasks.process.data", "Some data processing task", uuid.New().String()},
+		// {"tasks.process.data", "More data to handle", uuid.New().String()},
+		// {"tasks.process.string", "Final test message", uuid.New().String()},
 	}
 
 	for i, msgData := range messages {

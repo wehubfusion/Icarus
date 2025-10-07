@@ -21,12 +21,12 @@ func createTestLogger() *zap.Logger {
 
 // mockProcessor implements the Processor interface for testing
 type mockProcessor struct {
-	processFunc func(ctx context.Context, msg *message.Message) error
+	processFunc func(ctx context.Context, msg *message.Message) (message.Message, error)
 	callCount   int
 	mu          sync.Mutex
 }
 
-func (m *mockProcessor) Process(ctx context.Context, msg *message.Message) error {
+func (m *mockProcessor) Process(ctx context.Context, msg *message.Message) (message.Message, error) {
 	m.mu.Lock()
 	m.callCount++
 	m.mu.Unlock()
@@ -34,7 +34,16 @@ func (m *mockProcessor) Process(ctx context.Context, msg *message.Message) error
 	if m.processFunc != nil {
 		return m.processFunc(ctx, msg)
 	}
-	return nil
+	// Return a default result message
+	resultMessage := message.NewMessage().
+		WithPayload("test-processor", "processed successfully", "test-result")
+
+	// Copy workflow information if it exists
+	if msg.Workflow != nil {
+		resultMessage.Workflow = msg.Workflow
+	}
+
+	return *resultMessage, nil
 }
 
 func (m *mockProcessor) getCallCount() int {
@@ -172,7 +181,7 @@ func TestNewRunner(t *testing.T) {
 	batchSize := 5
 	numWorkers := 3
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, stream, consumer, batchSize, numWorkers, createTestLogger())
+	r, err := runner.NewRunner(mockClient.Client, mockProc, stream, consumer, batchSize, numWorkers, 30*time.Second, createTestLogger())
 	if err != nil {
 		t.Fatalf("NewRunner returned error: %v", err)
 	}
@@ -190,43 +199,43 @@ func TestNewRunnerValidation(t *testing.T) {
 	mockProc := &mockProcessor{}
 
 	// Test nil client
-	_, err := runner.NewRunner(nil, mockProc, "stream", "consumer", 1, 1, createTestLogger())
+	_, err := runner.NewRunner(nil, mockProc, "stream", "consumer", 1, 1, 30*time.Second, createTestLogger())
 	if err == nil {
 		t.Error("Expected error for nil client")
 	}
 
 	// Test nil processor
-	_, err = runner.NewRunner(mockClient.Client, nil, "stream", "consumer", 1, 1, createTestLogger())
+	_, err = runner.NewRunner(mockClient.Client, nil, "stream", "consumer", 1, 1, 30*time.Second, createTestLogger())
 	if err == nil {
 		t.Error("Expected error for nil processor")
 	}
 
 	// Test empty stream
-	_, err = runner.NewRunner(mockClient.Client, mockProc, "", "consumer", 1, 1, createTestLogger())
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "", "consumer", 1, 1, 30*time.Second, createTestLogger())
 	if err == nil {
 		t.Error("Expected error for empty stream")
 	}
 
 	// Test empty consumer
-	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "", 1, 1, createTestLogger())
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "", 1, 1, 30*time.Second, createTestLogger())
 	if err == nil {
 		t.Error("Expected error for empty consumer")
 	}
 
 	// Test invalid batch size
-	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 0, 1, createTestLogger())
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 0, 1, 30*time.Second, createTestLogger())
 	if err == nil {
 		t.Error("Expected error for zero batch size")
 	}
 
 	// Test invalid worker count
-	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 1, 0, createTestLogger())
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 1, 0, 30*time.Second, createTestLogger())
 	if err == nil {
 		t.Error("Expected error for zero workers")
 	}
 
 	// Test nil logger
-	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 1, 1, nil)
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 1, 1, 30*time.Second, nil)
 	if err == nil {
 		t.Error("Expected error for nil logger")
 	}
@@ -241,13 +250,17 @@ func TestRunnerRunWithSuccessfulProcessor(t *testing.T) {
 	mockClient.addMessage(testMsg)
 
 	mockProc := &mockProcessor{
-		processFunc: func(ctx context.Context, msg *message.Message) error {
+		processFunc: func(ctx context.Context, msg *message.Message) (message.Message, error) {
 			// Simulate successful processing
-			return nil
+			resultMessage := message.NewMessage().WithPayload("test", "success", "test-result")
+			if msg.Workflow != nil {
+				resultMessage.Workflow = msg.Workflow
+			}
+			return *resultMessage, nil
 		},
 	}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, createTestLogger())
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger())
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}
@@ -281,13 +294,13 @@ func TestRunnerRunWithFailingProcessor(t *testing.T) {
 	mockClient.addMessage(testMsg)
 
 	mockProc := &mockProcessor{
-		processFunc: func(ctx context.Context, msg *message.Message) error {
+		processFunc: func(ctx context.Context, msg *message.Message) (message.Message, error) {
 			// Simulate processing failure
-			return errors.New("processing failed")
+			return message.Message{}, errors.New("processing failed")
 		},
 	}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, createTestLogger())
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger())
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}
@@ -323,14 +336,18 @@ func TestRunnerRunWithMultipleMessages(t *testing.T) {
 	}
 
 	mockProc := &mockProcessor{
-		processFunc: func(ctx context.Context, msg *message.Message) error {
+		processFunc: func(ctx context.Context, msg *message.Message) (message.Message, error) {
 			// Simulate successful processing with small delay
 			time.Sleep(10 * time.Millisecond)
-			return nil
+			resultMessage := message.NewMessage().WithPayload("test", "success", "test-result")
+			if msg.Workflow != nil {
+				resultMessage.Workflow = msg.Workflow
+			}
+			return *resultMessage, nil
 		},
 	}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 2, 2, createTestLogger())
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 2, 2, 30*time.Second, createTestLogger())
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}
@@ -363,7 +380,7 @@ func TestRunnerRunWithPullError(t *testing.T) {
 
 	mockProc := &mockProcessor{}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, createTestLogger())
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger())
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}
@@ -394,13 +411,13 @@ func TestRunnerRunWithReportError(t *testing.T) {
 	mockClient.setReportError(errors.New("report failed"))
 
 	mockProc := &mockProcessor{
-		processFunc: func(ctx context.Context, msg *message.Message) error {
+		processFunc: func(ctx context.Context, msg *message.Message) (message.Message, error) {
 			// Simulate processing failure to trigger error reporting
-			return errors.New("processing failed")
+			return message.Message{}, errors.New("processing failed")
 		},
 	}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, createTestLogger())
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger())
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}
@@ -438,14 +455,18 @@ func TestRunnerRunContextCancellation(t *testing.T) {
 	}
 
 	mockProc := &mockProcessor{
-		processFunc: func(ctx context.Context, msg *message.Message) error {
+		processFunc: func(ctx context.Context, msg *message.Message) (message.Message, error) {
 			// Simulate slow processing
 			time.Sleep(50 * time.Millisecond)
-			return nil
+			resultMessage := message.NewMessage().WithPayload("test", "success", "test-result")
+			if msg.Workflow != nil {
+				resultMessage.Workflow = msg.Workflow
+			}
+			return *resultMessage, nil
 		},
 	}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, createTestLogger())
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger())
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}
@@ -478,7 +499,7 @@ func TestRunnerRunEmptyMessages(t *testing.T) {
 
 	mockProc := &mockProcessor{}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, createTestLogger())
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger())
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}
