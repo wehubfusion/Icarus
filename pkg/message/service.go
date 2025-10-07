@@ -108,16 +108,16 @@ func (s *MessageService) WithMiddleware(middleware Middleware) *MessageService {
 // Returns an error if the publish fails.
 func (s *MessageService) Publish(ctx context.Context, subject string, msg *Message) error {
 	if subject == "" {
-		return sdkerrors.ErrInvalidSubject
+		return sdkerrors.NewValidationError("subject cannot be empty", "INVALID_SUBJECT", nil)
 	}
 
 	if msg == nil {
-		return sdkerrors.ErrInvalidMessage
+		return sdkerrors.NewValidationError("message cannot be nil", "INVALID_MESSAGE", nil)
 	}
 
 	data, err := msg.ToBytes()
 	if err != nil {
-		return sdkerrors.NewError("MARSHAL_FAILED", "failed to marshal message", err)
+		return sdkerrors.NewInternalError("", "failed to marshal message", "MARSHAL_FAILED", err)
 	}
 
 	// Create a channel to handle publish result
@@ -133,7 +133,7 @@ func (s *MessageService) Publish(ctx context.Context, subject string, msg *Messa
 		return fmt.Errorf("publish cancelled: %w", ctx.Err())
 	case err := <-resultCh:
 		if err != nil {
-			return sdkerrors.NewError("PUBLISH_FAILED", "failed to publish message to JetStream", err)
+			return sdkerrors.NewInternalError("", "failed to publish message to JetStream", "PUBLISH_FAILED", err)
 		}
 		return nil
 	}
@@ -147,11 +147,11 @@ func (s *MessageService) Publish(ctx context.Context, subject string, msg *Messa
 // Returns a Subscription that can be used to unsubscribe.
 func (s *MessageService) Subscribe(ctx context.Context, subject string, handler Handler) (*Subscription, error) {
 	if subject == "" {
-		return nil, sdkerrors.ErrInvalidSubject
+		return nil, sdkerrors.NewValidationError("subject cannot be empty", "INVALID_SUBJECT", nil)
 	}
 
 	if handler == nil {
-		return nil, sdkerrors.ErrInvalidHandler
+		return nil, sdkerrors.NewValidationError("handler cannot be nil", "INVALID_HANDLER", nil)
 	}
 
 	// Apply middleware if set
@@ -186,7 +186,7 @@ func (s *MessageService) Subscribe(ctx context.Context, subject string, handler 
 	// Create push-based JetStream subscription
 	sub, err := s.js.Subscribe(subject, natsHandler, nats.ManualAck())
 	if err != nil {
-		return nil, sdkerrors.NewError("SUBSCRIBE_FAILED", "failed to create JetStream subscription", err)
+		return nil, sdkerrors.NewInternalError("", "failed to create JetStream subscription", "SUBSCRIBE_FAILED", err)
 	}
 
 	return &Subscription{
@@ -205,15 +205,15 @@ func (s *MessageService) Subscribe(ctx context.Context, subject string, handler 
 // Returns a Subscription that can be used to unsubscribe.
 func (s *MessageService) QueueSubscribe(ctx context.Context, subject, queue string, handler Handler) (*Subscription, error) {
 	if subject == "" {
-		return nil, sdkerrors.ErrInvalidSubject
+		return nil, sdkerrors.NewValidationError("subject cannot be empty", "INVALID_SUBJECT", nil)
 	}
 
 	if queue == "" {
-		return nil, fmt.Errorf("queue name cannot be empty")
+		return nil, sdkerrors.NewValidationError("queue name cannot be empty", "INVALID_QUEUE", nil)
 	}
 
 	if handler == nil {
-		return nil, sdkerrors.ErrInvalidHandler
+		return nil, sdkerrors.NewValidationError("handler cannot be nil", "INVALID_HANDLER", nil)
 	}
 
 	// Apply middleware if set
@@ -248,7 +248,7 @@ func (s *MessageService) QueueSubscribe(ctx context.Context, subject, queue stri
 	// Create queue-based JetStream subscription
 	sub, err := s.js.QueueSubscribe(subject, queue, natsHandler, nats.ManualAck())
 	if err != nil {
-		return nil, sdkerrors.NewError("SUBSCRIBE_FAILED", "failed to create JetStream queue subscription", err)
+		return nil, sdkerrors.NewInternalError("", "failed to create JetStream queue subscription", "SUBSCRIBE_FAILED", err)
 	}
 
 	return &Subscription{
@@ -323,7 +323,7 @@ func (s *MessageService) PullMessages(ctx context.Context, stream, consumer stri
 		return nil, fmt.Errorf("pull cancelled: %w", ctx.Err())
 	case res := <-resultCh:
 		if res.err != nil {
-			return nil, sdkerrors.NewError("PULL_FAILED", "failed to pull messages from JetStream", res.err)
+			return nil, sdkerrors.NewInternalError("", "failed to pull messages from JetStream", "PULL_FAILED", res.err)
 		}
 		return res.msgs, nil
 	}
@@ -351,7 +351,7 @@ func (s *MessageService) PullMessagesWithHandler(ctx context.Context, stream, co
 	}
 
 	if handler == nil {
-		return 0, sdkerrors.ErrInvalidHandler
+		return 0, sdkerrors.NewValidationError("handler cannot be nil", "INVALID_HANDLER", nil)
 	}
 
 	// Apply middleware if set
@@ -417,7 +417,7 @@ func (s *MessageService) PullMessagesWithHandler(ctx context.Context, stream, co
 		return 0, fmt.Errorf("pull cancelled: %w", ctx.Err())
 	case res := <-resultCh:
 		if res.err != nil {
-			return 0, sdkerrors.NewError("PULL_FAILED", "failed to pull messages from JetStream", res.err)
+			return 0, sdkerrors.NewInternalError("", "failed to pull messages from JetStream", "PULL_FAILED", res.err)
 		}
 		return res.count, nil
 	}

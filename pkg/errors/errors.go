@@ -1,80 +1,127 @@
 package errors
 
 import (
-	"errors"
 	"fmt"
+
+	"github.com/getsentry/sentry-go"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
-var (
-	// ErrNotConnected indicates that the client is not connected to NATS
-	ErrNotConnected = errors.New("not connected to NATS")
+// ErrorType represents different types of errors
+type ErrorType int
 
-	// ErrInvalidSubject indicates that the provided subject is invalid
-	ErrInvalidSubject = errors.New("invalid subject")
-
-	// ErrInvalidMessage indicates that the message is invalid
-	ErrInvalidMessage = errors.New("invalid message")
-
-	// ErrTimeout indicates that an operation timed out
-	ErrTimeout = errors.New("operation timed out")
-
-	// ErrNoResponse indicates that no response was received for a request
-	ErrNoResponse = errors.New("no response received")
-
-	// ErrSubscriptionFailed indicates that a subscription could not be created
-	ErrSubscriptionFailed = errors.New("subscription failed")
-
-	// ErrPublishFailed indicates that a message could not be published
-	ErrPublishFailed = errors.New("publish failed")
-
-	// ErrInvalidHandler indicates that a handler is invalid
-	ErrInvalidHandler = errors.New("invalid handler")
-
-	// ErrConsumerNotFound indicates that a consumer was not found
-	ErrConsumerNotFound = errors.New("consumer not found")
+const (
+	Internal ErrorType = iota
+	NotFound
+	BadRequest
+	Unauthorized
+	Conflict
+	ValidationFailed
 )
 
-// Error represents a structured SDK error
-type Error struct {
-	// Code is a machine-readable error code
-	Code string
-
-	// Message is a human-readable error message
-	Message string
-
-	// Err is the underlying error, if any
-	Err error
+// AppError represents a custom application error
+type AppError struct {
+	Type    ErrorType `json:"type"`
+	Message string    `json:"message"`
+	Code    string    `json:"code,omitempty"`
+	Err     error     `json:"-"` // underlying error for debugging
 }
 
 // Error implements the error interface
-func (e *Error) Error() string {
+func (e *AppError) Error() string {
 	if e.Err != nil {
-		return fmt.Sprintf("[%s] %s: %v", e.Code, e.Message, e.Err)
+		return fmt.Sprintf("%s: %v", e.Message, e.Err)
 	}
-	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
+	return e.Message
 }
 
 // Unwrap returns the underlying error
-func (e *Error) Unwrap() error {
+func (e *AppError) Unwrap() error {
 	return e.Err
 }
 
-// NewError creates a new SDK error
-func NewError(code, message string, err error) *Error {
-	return &Error{
-		Code:    code,
+func NewNotFoundError(message string, code string, cause error) *AppError {
+	return &AppError{
+		Type:    NotFound,
 		Message: message,
-		Err:     err,
+		Code:    code,
+		Err:     cause,
 	}
 }
 
-// IsTimeout checks if an error is a timeout error
-func IsTimeout(err error) bool {
-	return errors.Is(err, ErrTimeout)
+func NewBadRequestError(message string, code string, cause error) *AppError {
+	return &AppError{
+		Type:    BadRequest,
+		Message: message,
+		Code:    code,
+		Err:     cause,
+	}
 }
 
-// IsNotConnected checks if an error is a not connected error
-func IsNotConnected(err error) bool {
-	return errors.Is(err, ErrNotConnected)
+func NewValidationError(message string, code string, cause error) *AppError {
+	return &AppError{
+		Type:    ValidationFailed,
+		Message: message,
+		Code:    code,
+		Err:     cause,
+	}
 }
 
+func NewConflictError(message string, code string, cause error) *AppError {
+	return &AppError{
+		Type:    Conflict,
+		Message: message,
+		Code:    code,
+		Err:     cause,
+	}
+}
+
+func NewUnauthorizedError(message string, code string, cause error) *AppError {
+	return &AppError{
+		Type:    Unauthorized,
+		Message: message,
+		Code:    code,
+		Err:     cause,
+	}
+}
+
+// NewAppErrorWithCause creates an AppError with an underlying cause
+func NewInternalError(metaData string, message string, code string, cause error) *AppError {
+	var errorMessage string
+	if metaData != "" {
+		errorMessage = fmt.Sprintf("MetaData: %s\nMessage: %s\nCode: %s\nError: %v", metaData, message, code, cause)
+	} else {
+		errorMessage = fmt.Sprintf("Message: %s\nCode: %s\nError: %v", message, code, cause)
+	}
+	sentry.CaptureMessage(errorMessage)
+	return &AppError{
+		Type:    Internal,
+		Message: message,
+		Code:    code,
+		Err:     cause,
+	}
+}
+
+// ToGRPCError converts an AppError to a gRPC error
+func (e *AppError) ToGRPCError() error {
+	var grpcCode codes.Code
+	switch e.Type {
+	case NotFound:
+		grpcCode = codes.NotFound
+	case BadRequest:
+		grpcCode = codes.InvalidArgument
+	case Unauthorized:
+		grpcCode = codes.Unauthenticated
+	case Conflict:
+		grpcCode = codes.AlreadyExists
+	case ValidationFailed:
+		grpcCode = codes.InvalidArgument
+	case Internal:
+		fallthrough
+	default:
+		grpcCode = codes.Internal
+	}
+
+	return status.Error(grpcCode, e.Message)
+}

@@ -14,43 +14,44 @@ import (
 )
 
 func TestErrorTypes(t *testing.T) {
-	// Test predefined error types
-	if sdkerrors.ErrNotConnected == nil {
-		t.Error("ErrNotConnected should not be nil")
+	// Test error type constants
+	if sdkerrors.Internal != 0 {
+		t.Error("Internal should be 0")
 	}
 
-	if sdkerrors.ErrInvalidSubject == nil {
-		t.Error("ErrInvalidSubject should not be nil")
+	if sdkerrors.NotFound != 1 {
+		t.Error("NotFound should be 1")
 	}
 
-	if sdkerrors.ErrInvalidMessage == nil {
-		t.Error("ErrInvalidMessage should not be nil")
+	if sdkerrors.BadRequest != 2 {
+		t.Error("BadRequest should be 2")
 	}
 
-	if sdkerrors.ErrTimeout == nil {
-		t.Error("ErrTimeout should not be nil")
+	if sdkerrors.Unauthorized != 3 {
+		t.Error("Unauthorized should be 3")
 	}
 
-	if sdkerrors.ErrNoResponse == nil {
-		t.Error("ErrNoResponse should not be nil")
+	if sdkerrors.Conflict != 4 {
+		t.Error("Conflict should be 4")
 	}
 
-	if sdkerrors.ErrInvalidHandler == nil {
-		t.Error("ErrInvalidHandler should not be nil")
-	}
-
-	if sdkerrors.ErrConsumerNotFound == nil {
-		t.Error("ErrConsumerNotFound should not be nil")
+	if sdkerrors.ValidationFailed != 5 {
+		t.Error("ValidationFailed should be 5")
 	}
 }
 
-func TestErrorWrapping(t *testing.T) {
+func TestAppErrorWrapping(t *testing.T) {
 	originalErr := errors.New("original error")
-	wrappedErr := sdkerrors.NewError("TEST_CODE", "test message", originalErr)
+	wrappedErr := sdkerrors.NewInternalError("", "test message", "TEST_CODE", originalErr)
 
 	// Test error message
 	if wrappedErr.Error() == "" {
 		t.Error("Wrapped error should have a message")
+	}
+
+	// Test error type
+	if wrappedErr.Type != sdkerrors.Internal {
+		t.Errorf("Expected type Internal, got %v", wrappedErr.Type)
 	}
 
 	// Test error code
@@ -75,36 +76,31 @@ func TestErrorWrapping(t *testing.T) {
 	}
 }
 
-func TestErrorCheckingFunctions(t *testing.T) {
-	// Test IsTimeout
-	timeoutErr := sdkerrors.ErrTimeout
-	if !sdkerrors.IsTimeout(timeoutErr) {
-		t.Error("IsTimeout should return true for ErrTimeout")
+func TestAppErrorConstructors(t *testing.T) {
+	// Test different error constructors
+	notFoundErr := sdkerrors.NewNotFoundError("resource not found", "NOT_FOUND", nil)
+	if notFoundErr.Type != sdkerrors.NotFound {
+		t.Errorf("Expected NotFound type, got %v", notFoundErr.Type)
 	}
 
-	wrappedTimeout := sdkerrors.NewError("TIMEOUT", "timeout occurred", timeoutErr)
-	if !sdkerrors.IsTimeout(wrappedTimeout) {
-		t.Error("IsTimeout should return true for wrapped timeout errors")
+	badRequestErr := sdkerrors.NewBadRequestError("bad request", "BAD_REQUEST", nil)
+	if badRequestErr.Type != sdkerrors.BadRequest {
+		t.Errorf("Expected BadRequest type, got %v", badRequestErr.Type)
 	}
 
-	// Test IsNotConnected
-	notConnectedErr := sdkerrors.ErrNotConnected
-	if !sdkerrors.IsNotConnected(notConnectedErr) {
-		t.Error("IsNotConnected should return true for ErrNotConnected")
+	validationErr := sdkerrors.NewValidationError("validation failed", "VALIDATION_FAILED", nil)
+	if validationErr.Type != sdkerrors.ValidationFailed {
+		t.Errorf("Expected ValidationFailed type, got %v", validationErr.Type)
 	}
 
-	wrappedNotConnected := sdkerrors.NewError("CONNECTION", "not connected", notConnectedErr)
-	if !sdkerrors.IsNotConnected(wrappedNotConnected) {
-		t.Error("IsNotConnected should return true for wrapped connection errors")
+	conflictErr := sdkerrors.NewConflictError("conflict occurred", "CONFLICT", nil)
+	if conflictErr.Type != sdkerrors.Conflict {
+		t.Errorf("Expected Conflict type, got %v", conflictErr.Type)
 	}
 
-	// Test with non-matching errors
-	if sdkerrors.IsTimeout(sdkerrors.ErrNotConnected) {
-		t.Error("IsTimeout should return false for non-timeout errors")
-	}
-
-	if sdkerrors.IsNotConnected(sdkerrors.ErrTimeout) {
-		t.Error("IsNotConnected should return false for non-connection errors")
+	unauthorizedErr := sdkerrors.NewUnauthorizedError("unauthorized", "UNAUTHORIZED", nil)
+	if unauthorizedErr.Type != sdkerrors.Unauthorized {
+		t.Errorf("Expected Unauthorized type, got %v", unauthorizedErr.Type)
 	}
 }
 
@@ -119,8 +115,9 @@ func TestPublishErrors(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for empty subject")
 	}
-	if !errors.Is(err, sdkerrors.ErrInvalidSubject) {
-		t.Errorf("Expected ErrInvalidSubject, got: %v", err)
+	var appErr *sdkerrors.AppError
+	if !errors.As(err, &appErr) || appErr.Type != sdkerrors.ValidationFailed || appErr.Code != "INVALID_SUBJECT" {
+		t.Errorf("Expected ValidationFailed error with code INVALID_SUBJECT, got: %v", err)
 	}
 
 	// Test publishing with nil message
@@ -128,8 +125,8 @@ func TestPublishErrors(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for nil message")
 	}
-	if !errors.Is(err, sdkerrors.ErrInvalidMessage) {
-		t.Errorf("Expected ErrInvalidMessage, got: %v", err)
+	if !errors.As(err, &appErr) || appErr.Type != sdkerrors.ValidationFailed || appErr.Code != "INVALID_MESSAGE" {
+		t.Errorf("Expected ValidationFailed error with code INVALID_MESSAGE, got: %v", err)
 	}
 
 	// In the mock, there is no stream enforcement; publish should succeed
@@ -152,8 +149,9 @@ func TestSubscribeErrors(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for empty subject")
 	}
-	if !errors.Is(err, sdkerrors.ErrInvalidSubject) {
-		t.Errorf("Expected ErrInvalidSubject, got: %v", err)
+	var appErr *sdkerrors.AppError
+	if !errors.As(err, &appErr) || appErr.Type != sdkerrors.ValidationFailed || appErr.Code != "INVALID_SUBJECT" {
+		t.Errorf("Expected ValidationFailed error with code INVALID_SUBJECT, got: %v", err)
 	}
 
 	// Test subscribing with nil handler
@@ -161,8 +159,8 @@ func TestSubscribeErrors(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for nil handler")
 	}
-	if !errors.Is(err, sdkerrors.ErrInvalidHandler) {
-		t.Errorf("Expected ErrInvalidHandler, got: %v", err)
+	if !errors.As(err, &appErr) || appErr.Type != sdkerrors.ValidationFailed || appErr.Code != "INVALID_HANDLER" {
+		t.Errorf("Expected ValidationFailed error with code INVALID_HANDLER, got: %v", err)
 	}
 }
 
@@ -179,8 +177,9 @@ func TestQueueSubscribeErrors(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for empty subject")
 	}
-	if !errors.Is(err, sdkerrors.ErrInvalidSubject) {
-		t.Errorf("Expected ErrInvalidSubject, got: %v", err)
+	var appErr *sdkerrors.AppError
+	if !errors.As(err, &appErr) || appErr.Type != sdkerrors.ValidationFailed || appErr.Code != "INVALID_SUBJECT" {
+		t.Errorf("Expected ValidationFailed error with code INVALID_SUBJECT, got: %v", err)
 	}
 
 	// Test queue subscribe with empty queue name
@@ -188,16 +187,17 @@ func TestQueueSubscribeErrors(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for empty queue name")
 	}
-	// This returns a generic error, not a predefined SDK error
-	t.Logf("Error for empty queue: %v", err)
+	if !errors.As(err, &appErr) || appErr.Type != sdkerrors.ValidationFailed || appErr.Code != "INVALID_QUEUE" {
+		t.Errorf("Expected ValidationFailed error with code INVALID_QUEUE, got: %v", err)
+	}
 
 	// Test queue subscribe with nil handler
 	_, err = c.Messages.QueueSubscribe(ctx, "test.subject", "test-queue", nil)
 	if err == nil {
 		t.Error("Expected error for nil handler")
 	}
-	if !errors.Is(err, sdkerrors.ErrInvalidHandler) {
-		t.Errorf("Expected ErrInvalidHandler, got: %v", err)
+	if !errors.As(err, &appErr) || appErr.Type != sdkerrors.ValidationFailed || appErr.Code != "INVALID_HANDLER" {
+		t.Errorf("Expected ValidationFailed error with code INVALID_HANDLER, got: %v", err)
 	}
 }
 
@@ -233,7 +233,7 @@ func TestJetStreamNotEnabledError(t *testing.T) {
 	// We use a mock scenario since we can't easily disable JetStream in the test server
 
 	// Create a custom error to simulate JetStream not enabled
-	jsError := sdkerrors.NewError("JETSTREAM_NOT_ENABLED", "JetStream is not enabled on the NATS server", nil)
+	jsError := sdkerrors.NewInternalError("", "JetStream is not enabled on the NATS server", "JETSTREAM_NOT_ENABLED", nil)
 
 	// Test that our error checking works
 	if jsError.Code != "JETSTREAM_NOT_ENABLED" {

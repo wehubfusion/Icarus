@@ -101,7 +101,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	// Establish NATS connection
 	conn, err := nats.Connect(ctx, c.config)
 	if err != nil {
-		return sdkerrors.NewError("CONNECTION_FAILED", "failed to connect to NATS", err)
+		return sdkerrors.NewInternalError("", "failed to connect to NATS", "CONNECTION_FAILED", err)
 	}
 
 	c.conn = conn
@@ -111,7 +111,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	if err != nil {
 		_ = nats.Close(c.conn)
 		c.conn = nil
-		return sdkerrors.NewError("JETSTREAM_NOT_ENABLED", "JetStream is not enabled on the NATS server", err)
+		return sdkerrors.NewInternalError("", "JetStream is not enabled on the NATS server", "JETSTREAM_NOT_ENABLED", err)
 	}
 	c.js = js
 
@@ -122,7 +122,7 @@ func (c *Client) Connect(ctx context.Context) error {
 		_ = nats.Close(c.conn)
 		c.conn = nil
 		c.js = nil
-		return sdkerrors.NewError("SERVICE_INIT_FAILED", "failed to initialize message service", err)
+		return sdkerrors.NewInternalError("", "failed to initialize message service", "SERVICE_INIT_FAILED", err)
 	}
 	c.Messages = msgService
 
@@ -155,7 +155,7 @@ func (c *Client) Close() error {
 	}
 
 	if err := nats.Close(c.conn); err != nil {
-		return sdkerrors.NewError("CLOSE_FAILED", "failed to close connection", err)
+		return sdkerrors.NewInternalError("", "failed to close connection", "CLOSE_FAILED", err)
 	}
 
 	// Clean up resources
@@ -240,7 +240,7 @@ type ConnectionStats struct {
 // ensureConnected checks if the client is connected and returns an error if not.
 func (c *Client) ensureConnected() error {
 	if !c.IsConnected() {
-		return sdkerrors.ErrNotConnected
+		return sdkerrors.NewInternalError("", "not connected to NATS", "NOT_CONNECTED", nil)
 	}
 	return nil
 }
@@ -275,7 +275,7 @@ func (c *Client) Ping(ctx context.Context) error {
 		return fmt.Errorf("ping cancelled: %w", ctx.Err())
 	case err := <-resultCh:
 		if err != nil {
-			return sdkerrors.NewError("PING_FAILED", "ping failed", err)
+			return sdkerrors.NewInternalError("", "ping failed", "PING_FAILED", err)
 		}
 		return nil
 	}

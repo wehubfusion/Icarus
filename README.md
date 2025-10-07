@@ -271,23 +271,32 @@ Icarus/
 
 ## Error Handling
 
-The SDK provides structured error handling:
+The SDK provides structured error handling with typed errors:
 
 ```go
-import sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
+import (
+    sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
+    "errors"
+)
 
 err := c.Messages.Publish(ctx, "test", msg)
 if err != nil {
-    // Check for specific error types
-    if sdkerrors.IsTimeout(err) {
-        fmt.Println("Operation timed out")
-    } else if sdkerrors.IsNotConnected(err) {
-        fmt.Println("Not connected to NATS")
+    // Check for specific error types using errors.As
+    var appErr *sdkerrors.AppError
+    if errors.As(err, &appErr) {
+        switch appErr.Type {
+        case sdkerrors.ValidationFailed:
+            fmt.Println("Validation error:", appErr.Message)
+        case sdkerrors.NotFound:
+            fmt.Println("Resource not found:", appErr.Message)
+        case sdkerrors.Internal:
+            fmt.Println("Internal error:", appErr.Message)
+        }
     }
 
-    // Or check with errors.Is
-    if errors.Is(err, sdkerrors.ErrTimeout) {
-        fmt.Println("Timeout error")
+    // Or check specific error codes
+    if errors.As(err, &appErr) && appErr.Code == "NOT_CONNECTED" {
+        fmt.Println("Not connected to NATS")
     }
 }
 ```
