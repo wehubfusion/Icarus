@@ -164,43 +164,6 @@ func TestSubscribeErrors(t *testing.T) {
 	}
 }
 
-func TestQueueSubscribeErrors(t *testing.T) {
-	c := client.NewClientWithJSContext(NewMockJS())
-	ctx := context.Background()
-
-	handler := func(ctx context.Context, msg *message.NATSMsg) error {
-		return nil
-	}
-
-	// Test queue subscribe with empty subject
-	_, err := c.Messages.QueueSubscribe(ctx, "", "test-queue", handler)
-	if err == nil {
-		t.Error("Expected error for empty subject")
-	}
-	var appErr *sdkerrors.AppError
-	if !errors.As(err, &appErr) || appErr.Type != sdkerrors.ValidationFailed || appErr.Code != "INVALID_SUBJECT" {
-		t.Errorf("Expected ValidationFailed error with code INVALID_SUBJECT, got: %v", err)
-	}
-
-	// Test queue subscribe with empty queue name
-	_, err = c.Messages.QueueSubscribe(ctx, "test.subject", "", handler)
-	if err == nil {
-		t.Error("Expected error for empty queue name")
-	}
-	if !errors.As(err, &appErr) || appErr.Type != sdkerrors.ValidationFailed || appErr.Code != "INVALID_QUEUE" {
-		t.Errorf("Expected ValidationFailed error with code INVALID_QUEUE, got: %v", err)
-	}
-
-	// Test queue subscribe with nil handler
-	_, err = c.Messages.QueueSubscribe(ctx, "test.subject", "test-queue", nil)
-	if err == nil {
-		t.Error("Expected error for nil handler")
-	}
-	if !errors.As(err, &appErr) || appErr.Type != sdkerrors.ValidationFailed || appErr.Code != "INVALID_HANDLER" {
-		t.Errorf("Expected ValidationFailed error with code INVALID_HANDLER, got: %v", err)
-	}
-}
-
 func TestPullMessagesErrors(t *testing.T) {
 	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()

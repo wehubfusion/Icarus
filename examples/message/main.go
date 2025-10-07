@@ -166,9 +166,8 @@ func queueSubscription() {
 	}
 	defer c.Close()
 
-	// Create multiple queue subscribers (simulating multiple workers)
+	// Create multiple subscribers (simulating multiple workers)
 	subject := "tasks.process"
-	queueName := "workers"
 
 	handler := func(workerID int) message.Handler {
 		return func(ctx context.Context, msg *message.NATSMsg) error {
@@ -183,11 +182,11 @@ func queueSubscription() {
 		}
 	}
 
-	// Create 3 workers in the same queue group using JetStream
+	// Create 3 subscribers using JetStream (each will receive all messages)
 	for i := 1; i <= 3; i++ {
-		sub, err := c.Messages.QueueSubscribe(ctx, subject, queueName, handler(i))
+		sub, err := c.Messages.Subscribe(ctx, subject, handler(i))
 		if err != nil {
-			log.Fatalf("Failed to create queue subscriber: %v", err)
+			log.Fatalf("Failed to create subscriber: %v", err)
 		}
 		defer sub.Unsubscribe()
 	}
@@ -195,7 +194,7 @@ func queueSubscription() {
 	// Give subscriptions time to be ready
 	time.Sleep(100 * time.Millisecond)
 
-	// Publish multiple messages - they will be distributed among workers
+	// Publish multiple messages - each subscriber will receive all messages
 	for i := 1; i <= 6; i++ {
 		msg := message.NewWorkflowMessage("task-queue", uuid.New().String()).
 			WithPayload("task-service", fmt.Sprintf("Task %d", i), fmt.Sprintf("task-%d", i))

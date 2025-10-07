@@ -14,7 +14,6 @@ import (
 type JSContext interface {
 	Publish(subj string, data []byte, opts ...nats.PubOpt) (*nats.PubAck, error)
 	Subscribe(subj string, cb nats.MsgHandler, opts ...nats.SubOpt) (JSSubscription, error)
-	QueueSubscribe(subj, queue string, cb nats.MsgHandler, opts ...nats.SubOpt) (JSSubscription, error)
 	PullSubscribe(subj, durable string, opts ...nats.SubOpt) (JSSubscription, error)
 }
 
@@ -49,14 +48,6 @@ func (a *natsJSAdapter) Subscribe(subj string, cb nats.MsgHandler, opts ...nats.
 	return &natsSubAdapter{sub: sub}, nil
 }
 
-func (a *natsJSAdapter) QueueSubscribe(subj, queue string, cb nats.MsgHandler, opts ...nats.SubOpt) (JSSubscription, error) {
-	sub, err := a.js.QueueSubscribe(subj, queue, cb, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return &natsSubAdapter{sub: sub}, nil
-}
-
 func (a *natsJSAdapter) PullSubscribe(subj, durable string, opts ...nats.SubOpt) (JSSubscription, error) {
 	sub, err := a.js.PullSubscribe(subj, durable, opts...)
 	if err != nil {
@@ -82,6 +73,62 @@ func (s *natsSubAdapter) Fetch(batch int, opts ...nats.PullOpt) ([]*nats.Msg, er
 type MessageService struct {
 	js         JSContext
 	middleware Middleware
+}
+
+// validateMessage performs strict validation on the message for callback operations
+func (s *MessageService) validateMessage(msg *Message) error {
+	if msg == nil {
+		return fmt.Errorf("message cannot be nil")
+	}
+
+	if msg.CreatedAt == "" {
+		return fmt.Errorf("message CreatedAt is required")
+	}
+
+	if msg.UpdatedAt == "" {
+		return fmt.Errorf("message UpdatedAt is required")
+	}
+
+	if msg.Workflow == nil {
+		return fmt.Errorf("message Workflow is required")
+	}
+
+	// Node is optional when Workflow is present (for workflow-level callbacks)
+	// But if Node is present, Workflow must also be present
+	if msg.Node != nil && msg.Workflow == nil {
+		return fmt.Errorf("message Workflow is required when Node is present")
+	}
+
+	if msg.Payload == nil {
+		return fmt.Errorf("message Payload is required")
+	}
+
+	return nil
+}
+
+// publishWithRetry attempts to publish a message with retry logic
+func (s *MessageService) publishWithRetry(ctx context.Context, subject string, msg *Message, maxRetries int, retryDelay time.Duration) error {
+	var lastErr error
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("publish cancelled during retry: %w", ctx.Err())
+			case <-time.After(retryDelay):
+				// Continue with retry
+			}
+		}
+
+		err := s.Publish(ctx, subject, msg)
+		if err == nil {
+			return nil // Success
+		}
+
+		lastErr = err
+	}
+
+	return fmt.Errorf("publish failed after %d attempts: %w", maxRetries+1, lastErr)
 }
 
 // NewMessageService creates a new message service with the given JetStream context.
@@ -195,69 +242,6 @@ func (s *MessageService) Subscribe(ctx context.Context, subject string, handler 
 	}, nil
 }
 
-// QueueSubscribe creates a queue-based JetStream subscription to the specified subject.
-// Messages will be distributed among all queue subscribers with the same queue name.
-// This provides load balancing across multiple consumers.
-//
-// The handler must acknowledge messages using msg.Ack() or msg.Nak().
-//
-// Note: This requires a stream to be configured for the subject.
-// Returns a Subscription that can be used to unsubscribe.
-func (s *MessageService) QueueSubscribe(ctx context.Context, subject, queue string, handler Handler) (*Subscription, error) {
-	if subject == "" {
-		return nil, sdkerrors.NewValidationError("subject cannot be empty", "INVALID_SUBJECT", nil)
-	}
-
-	if queue == "" {
-		return nil, sdkerrors.NewValidationError("queue name cannot be empty", "INVALID_QUEUE", nil)
-	}
-
-	if handler == nil {
-		return nil, sdkerrors.NewValidationError("handler cannot be nil", "INVALID_HANDLER", nil)
-	}
-
-	// Apply middleware if set
-	if s.middleware != nil {
-		handler = s.middleware(handler)
-	}
-
-	// Create JetStream message handler wrapper
-	natsHandler := func(natsMsg *nats.Msg) {
-		msg, err := FromNATSMsg(natsMsg)
-		if err != nil {
-			fmt.Printf("Failed to deserialize message: %v\n", err)
-			// Negatively acknowledge malformed messages
-			_ = natsMsg.Nak()
-			return
-		}
-
-		wrappedMsg := &NATSMsg{
-			Message: msg,
-			Subject: natsMsg.Subject,
-			Reply:   natsMsg.Reply,
-			natsMsg: natsMsg,
-		}
-
-		if err := handler(ctx, wrappedMsg); err != nil {
-			fmt.Printf("Handler error: %v\n", err)
-			// Handler is responsible for Ack/Nak, but if they forgot, we Nak
-			_ = natsMsg.Nak()
-		}
-	}
-
-	// Create queue-based JetStream subscription
-	sub, err := s.js.QueueSubscribe(subject, queue, natsHandler, nats.ManualAck())
-	if err != nil {
-		return nil, sdkerrors.NewInternalError("", "failed to create JetStream queue subscription", "SUBSCRIBE_FAILED", err)
-	}
-
-	return &Subscription{
-		sub:     sub,
-		subject: subject,
-		queue:   queue,
-	}, nil
-}
-
 // PullMessages pulls messages from a JetStream pull-based consumer.
 // This method fetches messages in batches on demand, providing explicit flow control.
 //
@@ -329,100 +313,6 @@ func (s *MessageService) PullMessages(ctx context.Context, stream, consumer stri
 	}
 }
 
-// PullMessagesWithHandler pulls messages and processes them with the provided handler.
-// This is a convenience method that combines pulling and processing in one call.
-// Messages are automatically acknowledged if the handler returns nil, or negatively
-// acknowledged if the handler returns an error.
-//
-// Parameters:
-//   - stream: The name of the JetStream stream
-//   - consumer: The name of the durable consumer
-//   - batchSize: The maximum number of messages to fetch
-//   - handler: The function to process each message
-//
-// Returns the number of successfully processed messages or an error.
-func (s *MessageService) PullMessagesWithHandler(ctx context.Context, stream, consumer string, batchSize int, handler Handler) (int, error) {
-	if stream == "" || consumer == "" {
-		return 0, fmt.Errorf("stream and consumer names are required")
-	}
-
-	if batchSize <= 0 {
-		batchSize = 10
-	}
-
-	if handler == nil {
-		return 0, sdkerrors.NewValidationError("handler cannot be nil", "INVALID_HANDLER", nil)
-	}
-
-	// Apply middleware if set
-	if s.middleware != nil {
-		handler = s.middleware(handler)
-	}
-
-	// Create a channel to handle pull result
-	type result struct {
-		count int
-		err   error
-	}
-	resultCh := make(chan result, 1)
-
-	go func() {
-		// Bind to existing consumer
-		sub, err := s.js.PullSubscribe("", consumer, nats.Bind(stream, consumer))
-		if err != nil {
-			resultCh <- result{err: err}
-			return
-		}
-		defer sub.Unsubscribe()
-
-		// Fetch messages with timeout
-		natsMessages, err := sub.Fetch(batchSize, nats.MaxWait(5*time.Second))
-		if err != nil {
-			resultCh <- result{err: err}
-			return
-		}
-
-		successCount := 0
-		for _, natsMsg := range natsMessages {
-			msg, err := FromNATSMsg(natsMsg)
-			if err != nil {
-				// Nak malformed messages
-				_ = natsMsg.Nak()
-				continue
-			}
-
-			wrappedMsg := &NATSMsg{
-				Message: msg,
-				Subject: natsMsg.Subject,
-				Reply:   natsMsg.Reply,
-				natsMsg: natsMsg,
-			}
-
-			// Process message
-			if err := handler(ctx, wrappedMsg); err != nil {
-				// Nak on handler error if not already acked/naked
-				_ = natsMsg.Nak()
-			} else {
-				// Ack on success if not already acked
-				_ = natsMsg.Ack()
-				successCount++
-			}
-		}
-
-		resultCh <- result{count: successCount}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return 0, fmt.Errorf("pull cancelled: %w", ctx.Err())
-	case res := <-resultCh:
-		if res.err != nil {
-			return 0, sdkerrors.NewInternalError("", "failed to pull messages from JetStream", "PULL_FAILED", res.err)
-		}
-		return res.count, nil
-	}
-}
-
 // Subscription represents an active JetStream subscription.
 type Subscription struct {
 	sub     JSSubscription
@@ -468,4 +358,64 @@ func (s *Subscription) PendingMessages() (int, error) {
 	}
 	msgs, _, err := s.sub.Pending()
 	return msgs, err
+}
+
+// ResultType represents different types of results that can be published
+type ResultType string
+
+const (
+	ResultTypeSuccess ResultType = "success"
+	ResultTypeError   ResultType = "error"
+	ResultTypeWarning ResultType = "warning"
+	ResultTypeInfo    ResultType = "info"
+)
+
+// ReportSuccess publishes a success callback message for a workflow execution.
+// The message contains the provided data and is published to the "result" subject
+// with metadata indicating it represents a successful result.
+//
+// Parameters:
+//   - workflowID: The unique identifier of the workflow that completed successfully
+//   - runID: The unique identifier of this specific workflow execution run
+//   - data: The success data or result payload to include in the message
+//
+// Returns an error if the message cannot be published.
+func (s *MessageService) ReportSuccess(ctx context.Context, workflowID, runID string, data string) error {
+	msg := NewWorkflowMessage(workflowID, runID).
+		WithPayload("callback-service", data, fmt.Sprintf("success-%s-%s", workflowID, runID)).
+		WithMetadata("result_type", string(ResultTypeSuccess)).
+		WithMetadata("correlation_id", fmt.Sprintf("%s-%s", workflowID, runID))
+
+	// Validate message
+	if err := s.validateMessage(msg); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	// Attempt to publish with retries (using default retry settings)
+	return s.publishWithRetry(ctx, "result", msg, 3, time.Second)
+}
+
+// ReportError publishes an error callback message for a failed workflow execution.
+// The message contains the provided error details and is published to the "result" subject
+// with metadata indicating it represents a failed result.
+//
+// Parameters:
+//   - workflowID: The unique identifier of the workflow that failed
+//   - runID: The unique identifier of this specific workflow execution run
+//   - errorMsg: The error message or details describing what went wrong
+//
+// Returns an error if the message cannot be published.
+func (s *MessageService) ReportError(ctx context.Context, workflowID, runID string, errorMsg string) error {
+	msg := NewWorkflowMessage(workflowID, runID).
+		WithPayload("callback-service", errorMsg, fmt.Sprintf("error-%s-%s", workflowID, runID)).
+		WithMetadata("result_type", string(ResultTypeError)).
+		WithMetadata("correlation_id", fmt.Sprintf("%s-%s", workflowID, runID))
+
+	// Validate message
+	if err := s.validateMessage(msg); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	// Attempt to publish with retries (using default retry settings)
+	return s.publishWithRetry(ctx, "result", msg, 3, time.Second)
 }

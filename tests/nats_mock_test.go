@@ -83,14 +83,6 @@ func (m *MockJS) Subscribe(subj string, cb nats.MsgHandler, opts ...nats.SubOpt)
 	return &mockSubscription{owner: m, subscriber: sub}, nil
 }
 
-func (m *MockJS) QueueSubscribe(subj, queue string, cb nats.MsgHandler, opts ...nats.SubOpt) (message.JSSubscription, error) {
-	m.mu.Lock()
-	sub := &mockSubscriber{subject: subj, queue: queue, cb: cb, active: true}
-	m.queueSubs[subj] = append(m.queueSubs[subj], sub)
-	m.mu.Unlock()
-	return &mockSubscription{owner: m, subscriber: sub}, nil
-}
-
 func (m *MockJS) PullSubscribe(subj, durable string, opts ...nats.SubOpt) (message.JSSubscription, error) {
 	// For simplicity, return a subscription that fetches from the shared buffer
 	return &mockPullSubscription{owner: m, durable: durable}, nil
