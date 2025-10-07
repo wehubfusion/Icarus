@@ -33,12 +33,12 @@ type Runner struct {
 }
 
 // NewRunner creates a new Runner instance with the specified processor and worker count.
-// If numOfWorkers is 0, messages are processed sequentially.
-// If numOfWorkers > 0, messages are processed concurrently using a worker pool.
+// If numOfWorkers <= 1, messages are processed sequentially.
+// If numOfWorkers > 1, messages are processed concurrently using a worker pool.
 //
 // Parameters:
 //   - processor: The message processor implementation
-//   - numOfWorkers: Number of concurrent workers (0 for sequential processing)
+//   - numOfWorkers: Number of concurrent workers (<= 1 for sequential processing)
 //
 // Returns:
 //   - A new Runner instance ready for use
@@ -61,13 +61,13 @@ func NewRunner(processor Processor, numOfWorkers int) *Runner {
 //   - error: Any error encountered during processing (nil if successful)
 //
 // Behavior:
-//   - If numOfWorkers == 0: Processes messages sequentially
-//   - If numOfWorkers > 0: Processes messages concurrently using a worker pool
+//   - If numOfWorkers <= 1: Processes messages sequentially
+//   - If numOfWorkers > 1: Processes messages concurrently using a worker pool
 //   - Logs errors but continues processing other messages
 //   - Waits for all workers to complete before returning
 //   - Returns immediately if context is cancelled
 func (r *Runner) Run(ctx context.Context, msgs <-chan message.Message) error {
-	if r.numOfWorkers == 0 {
+	if r.numOfWorkers <= 1 {
 		return r.runSequential(ctx, msgs)
 	}
 	return r.runConcurrent(ctx, msgs)
