@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/wehubfusion/Icarus/pkg/client"
@@ -136,34 +135,6 @@ func TestPublishErrors(t *testing.T) {
 	}
 }
 
-func TestSubscribeErrors(t *testing.T) {
-	c := client.NewClientWithJSContext(NewMockJS())
-	ctx := context.Background()
-
-	// Test subscribing with invalid subject
-	handler := func(ctx context.Context, msg *message.NATSMsg) error {
-		return nil
-	}
-
-	_, err := c.Messages.Subscribe(ctx, "", handler) // Empty subject
-	if err == nil {
-		t.Error("Expected error for empty subject")
-	}
-	var appErr *sdkerrors.AppError
-	if !errors.As(err, &appErr) || appErr.Type != sdkerrors.ValidationFailed || appErr.Code != "INVALID_SUBJECT" {
-		t.Errorf("Expected ValidationFailed error with code INVALID_SUBJECT, got: %v", err)
-	}
-
-	// Test subscribing with nil handler
-	_, err = c.Messages.Subscribe(ctx, "test.subject", nil)
-	if err == nil {
-		t.Error("Expected error for nil handler")
-	}
-	if !errors.As(err, &appErr) || appErr.Type != sdkerrors.ValidationFailed || appErr.Code != "INVALID_HANDLER" {
-		t.Errorf("Expected ValidationFailed error with code INVALID_HANDLER, got: %v", err)
-	}
-}
-
 func TestPullMessagesErrors(t *testing.T) {
 	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
@@ -240,39 +211,4 @@ func TestMessageSerializationErrors(t *testing.T) {
 	if deserialized.Workflow.RunID != msg.Workflow.RunID {
 		t.Errorf("Round-trip RunID mismatch: expected %s, got %s", msg.Workflow.RunID, deserialized.Workflow.RunID)
 	}
-}
-
-func TestHandlerErrors(t *testing.T) {
-	c := client.NewClientWithJSContext(NewMockJS())
-	ctx := context.Background()
-
-	var handlerCalled bool
-	handler := func(ctx context.Context, msg *message.NATSMsg) error {
-		handlerCalled = true
-		// Simulate handler error
-		return errors.New("handler processing failed")
-	}
-
-	sub, err := c.Messages.Subscribe(ctx, "test.events.user.created", handler)
-	if err != nil {
-		t.Fatalf("Failed to subscribe: %v", err)
-	}
-	defer sub.Unsubscribe()
-
-	// Give subscription time to be ready
-	// With mock, errors are surfaced but no redelivery is simulated
-
-	msg := message.NewWorkflowMessage("workflow-error", uuid.New().String()).
-		WithPayload("error-test", "error test", "ref-error")
-	err = c.Messages.Publish(ctx, "test.events.user.created", msg)
-	if err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
-
-	// Give time for processing
-	time.Sleep(20 * time.Millisecond)
-
-	// The handler should have been called despite the error
-	// (JetStream will handle redelivery based on consumer configuration)
-	t.Logf("Handler called: %v", handlerCalled)
 }

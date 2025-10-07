@@ -5,7 +5,6 @@ package runner
 
 import (
 	"context"
-	"fmt"
 	"log"
 
 	"github.com/wehubfusion/Icarus/pkg/client"
@@ -32,11 +31,13 @@ type Runner struct {
 
 // NewRunner creates a new Runner instance with a connected client and stream/consumer configuration.
 // The client must already be connected before creating the runner.
+// The processor must implement the Processor interface for message handling.
 // batchSize specifies how many messages to pull at once from the stream.
 // numWorkers specifies the number of worker goroutines for processing messages.
-func NewRunner(client *client.Client, stream, consumer string, batchSize int, numWorkers int) *Runner {
+func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, numWorkers int) *Runner {
 	return &Runner{
 		client:     client,
+		processor:  processor,
 		stream:     stream,
 		consumer:   consumer,
 		batchSize:  batchSize,
@@ -44,20 +45,10 @@ func NewRunner(client *client.Client, stream, consumer string, batchSize int, nu
 	}
 }
 
-// RegisterProcessor sets the custom Processor implementation for handling messages.
-// The processor must be registered before calling Run().
-func (r *Runner) RegisterProcessor(p Processor) {
-	r.processor = p
-}
-
 // Run starts the message processing pipeline.
 // It spawns worker goroutines and begins pulling messages from the configured stream.
 // The method blocks until the context is cancelled or an error occurs.
-// Returns an error if no processor is registered.
 func (r *Runner) Run(ctx context.Context) error {
-	if r.processor == nil {
-		return fmt.Errorf("no processor registered")
-	}
 
 	// Create message channel with buffer size equal to batch size
 	messageChan := make(chan *message.Message, r.batchSize)

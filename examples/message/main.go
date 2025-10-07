@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/wehubfusion/Icarus/pkg/client"
-	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
 func main() {
@@ -29,189 +28,49 @@ func main() {
 		log.Fatal("JetStream not available")
 	}
 
-	// Create EVENTS stream for publish/subscribe examples
-	fmt.Println("Creating EVENTS stream...")
+	// Create RESULTS stream for callback reporting examples
+	fmt.Println("Creating RESULTS stream...")
 	_, err := js.AddStream(&nats.StreamConfig{
-		Name:        "EVENTS",
-		Description: "Events stream for user actions",
-		Subjects:    []string{"events.>"},
+		Name:        "RESULTS",
+		Description: "Results stream for success/error callback reporting",
+		Subjects:    []string{"result"},
 		Storage:     nats.FileStorage,
 		Replicas:    1,
 	})
 	if err != nil {
-		log.Printf("Warning: Could not create EVENTS stream (might already exist): %v", err)
+		log.Printf("Warning: Could not create RESULTS stream (might already exist): %v", err)
 	} else {
-		fmt.Println("✓ Created EVENTS stream")
+		fmt.Println("✓ Created RESULTS stream")
 	}
 
-	// Create WORKERS stream for queue subscription examples
-	fmt.Println("Creating WORKERS stream...")
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:        "WORKERS",
-		Description: "Tasks stream for worker load balancing",
-		Subjects:    []string{"tasks.>"},
-		Storage:     nats.FileStorage,
-		Replicas:    1,
-	})
-	if err != nil {
-		log.Printf("Warning: Could not create WORKERS stream (might already exist): %v", err)
-	} else {
-		fmt.Println("✓ Created WORKERS stream")
-	}
-
-	// Create a pull consumer for the pull-based consumer example
-	fmt.Println("Creating pull consumer...")
-	_, err = js.AddConsumer("EVENTS", &nats.ConsumerConfig{
-		Durable:       "pull-consumer",
-		Description:   "Pull consumer for batch message processing",
+	// Create a consumer for the results stream to demonstrate callback reporting
+	fmt.Println("Creating results consumer...")
+	_, err = js.AddConsumer("RESULTS", &nats.ConsumerConfig{
+		Durable:       "results-consumer",
+		Description:   "Consumer for callback result messages",
 		AckPolicy:     nats.AckExplicitPolicy,
 		DeliverPolicy: nats.DeliverAllPolicy,
 	})
 	if err != nil {
-		log.Printf("Warning: Could not create pull consumer (might already exist): %v", err)
+		log.Printf("Warning: Could not create results consumer (might already exist): %v", err)
 	} else {
-		fmt.Println("✓ Created pull consumer")
+		fmt.Println("✓ Created results consumer")
 	}
 
 	fmt.Println("\nJetStream setup complete!")
 	fmt.Println("Running message examples...")
 
-	// Example 1: Basic publish and subscribe (JetStream)
-	basicPubSub()
-
-	// Example 2: Queue subscriptions for load balancing (JetStream)
-	queueSubscription()
-
-	// Example 3: Pull-based consumers (JetStream)
+	// Example 1: Pull-based consumers with publish-then-pull workflow (JetStream)
 	pullBasedConsumer()
-}
 
-// basicPubSub demonstrates basic JetStream publish and subscribe operations
-func basicPubSub() {
-	fmt.Println("=== Example 1: JetStream Publish/Subscribe ===")
-
-	// Create and connect to NATS with JetStream
-	c := client.NewClient("nats://localhost:4222")
-	ctx := context.Background()
-	if err := c.Connect(ctx); err != nil {
-		log.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	// Apply middleware to the Messages service
-	c.Messages = c.Messages.WithMiddleware(
-		message.Chain(
-			message.RecoveryMiddleware(),
-			message.LoggingMiddleware(),
-			message.ValidationMiddleware(),
-		),
-	)
-
-	// Subscribe to a subject using JetStream push-based subscription
-	subject := "events.user.created"
-	handler := func(ctx context.Context, msg *message.NATSMsg) error {
-		// Create a message identifier from workflow or node information
-		var msgID string
-		if msg.Workflow != nil {
-			msgID = fmt.Sprintf("workflow:%s/run:%s", msg.Workflow.WorkflowID, msg.Workflow.RunID)
-		} else if msg.Node != nil {
-			msgID = fmt.Sprintf("node:%s", msg.Node.NodeID)
-		} else {
-			msgID = "unknown"
-		}
-		var content string
-		if msg.Payload != nil {
-			content = msg.Payload.Data
-		}
-		fmt.Printf("Received message: ID=%s, Content=%s, Metadata=%v\n",
-			msgID, content, msg.Metadata)
-		// Acknowledge the message
-		msg.Ack()
-		return nil
-	}
-
-	subscription, err := c.Messages.Subscribe(ctx, subject, handler)
-	if err != nil {
-		log.Fatalf("Failed to subscribe: %v", err)
-	}
-	defer subscription.Unsubscribe()
-
-	// Give subscription time to be ready
-	time.Sleep(100 * time.Millisecond)
-
-	// Publish a message using JetStream
-	msg := message.NewWorkflowMessage("user-events", uuid.New().String()).
-		WithPayload("user-service", "User john@example.com created", "user-12345").
-		WithMetadata("user_id", "12345").
-		WithMetadata("email", "john@example.com")
-
-	if err := c.Messages.Publish(ctx, subject, msg); err != nil {
-		log.Fatalf("Failed to publish: %v", err)
-	}
-
-	// Wait for message processing
-	time.Sleep(500 * time.Millisecond)
-	fmt.Println()
-}
-
-// queueSubscription demonstrates JetStream queue subscriptions for load balancing
-func queueSubscription() {
-	fmt.Println("=== Example 2: JetStream Queue Subscriptions ===")
-
-	// Create and connect to NATS with JetStream
-	c := client.NewClient("nats://localhost:4222")
-	ctx := context.Background()
-	if err := c.Connect(ctx); err != nil {
-		log.Fatalf("Failed to connect: %v", err)
-	}
-	defer c.Close()
-
-	// Create multiple subscribers (simulating multiple workers)
-	subject := "tasks.process"
-
-	handler := func(workerID int) message.Handler {
-		return func(ctx context.Context, msg *message.NATSMsg) error {
-			var content string
-			if msg.Payload != nil {
-				content = msg.Payload.Data
-			}
-			fmt.Printf("Worker %d processing message: %s\n", workerID, content)
-			// Acknowledge the message
-			msg.Ack()
-			return nil
-		}
-	}
-
-	// Create 3 subscribers using JetStream (each will receive all messages)
-	for i := 1; i <= 3; i++ {
-		sub, err := c.Messages.Subscribe(ctx, subject, handler(i))
-		if err != nil {
-			log.Fatalf("Failed to create subscriber: %v", err)
-		}
-		defer sub.Unsubscribe()
-	}
-
-	// Give subscriptions time to be ready
-	time.Sleep(100 * time.Millisecond)
-
-	// Publish multiple messages - each subscriber will receive all messages
-	for i := 1; i <= 6; i++ {
-		msg := message.NewWorkflowMessage("task-queue", uuid.New().String()).
-			WithPayload("task-service", fmt.Sprintf("Task %d", i), fmt.Sprintf("task-%d", i))
-		if err := c.Messages.Publish(ctx, subject, msg); err != nil {
-			log.Fatalf("Failed to publish: %v", err)
-		}
-	}
-
-	// Wait for message processing
-	time.Sleep(500 * time.Millisecond)
-	fmt.Println()
+	// Example 2: Callback reporting for success/error handling
+	callbackReporting()
 }
 
 // pullBasedConsumer demonstrates pull-based message consumption using JetStream
-// Note: This requires JetStream streams and consumers to be set up (done automatically in main)
+// This example first publishes messages, then pulls them back
 func pullBasedConsumer() {
-	fmt.Println("=== Example 3: JetStream Pull-Based Consumer ===")
+	fmt.Println("=== Example 1: JetStream Pull-Based Consumer ===")
 
 	// Create and connect to NATS with JetStream
 	c := client.NewClient("nats://localhost:4222")
@@ -221,26 +80,46 @@ func pullBasedConsumer() {
 	}
 	defer c.Close()
 
-	// Pull messages from JetStream stream
-	streamName := "EVENTS"
-	consumerName := "pull-consumer"
+	// First, publish some messages to demonstrate the publish-then-pull workflow
+	fmt.Println("Publishing messages to demonstrate publish-then-pull...")
+
+	workflowID := "pull-demo"
+	runID1 := uuid.New().String()
+	runID2 := uuid.New().String()
+
+	// Report success for first workflow run
+	fmt.Printf("Reporting success for workflow %s run %s...\n", workflowID, runID1)
+	if err := c.Messages.ReportSuccess(ctx, workflowID, runID1, "Task completed successfully"); err != nil {
+		log.Printf("Failed to report success: %v", err)
+	} else {
+		fmt.Println("✓ Published success message")
+	}
+
+	// Report error for second workflow run
+	fmt.Printf("Reporting error for workflow %s run %s...\n", workflowID, runID2)
+	if err := c.Messages.ReportError(ctx, workflowID, runID2, "Task failed with validation error"); err != nil {
+		log.Printf("Failed to report error: %v", err)
+	} else {
+		fmt.Println("✓ Published error message")
+	}
+
+	// Wait for messages to be published
+	time.Sleep(200 * time.Millisecond)
+
+	// Now pull the messages we just published
+	streamName := "RESULTS"
+	consumerName := "results-consumer"
 	batchSize := 10
 
-	fmt.Println("Pulling messages from JetStream...")
+	fmt.Println("\nPulling messages from JetStream...")
 	messages, err := c.Messages.PullMessages(ctx, streamName, consumerName, batchSize)
 	if err != nil {
 		log.Printf("Failed to pull messages: %v", err)
-		fmt.Println("\nTo set up JetStream for this example:")
-		fmt.Println("  1. Start NATS with JetStream: nats-server -js")
-		fmt.Println("  2. Create a stream: nats stream add EVENTS --subjects 'events.>'")
-		fmt.Println("  3. Create a consumer: nats consumer add EVENTS pull-consumer --pull")
-		fmt.Println("  4. Publish some messages: nats pub events.test 'test message'")
 		return
 	}
 
 	if len(messages) == 0 {
 		fmt.Println("No messages available in the stream.")
-		fmt.Println("Publish some messages using: nats pub events.test 'your message'")
 	} else {
 		fmt.Printf("Successfully pulled %d messages:\n", len(messages))
 		for i, msg := range messages {
@@ -257,10 +136,64 @@ func pullBasedConsumer() {
 			if msg.Payload != nil {
 				content = msg.Payload.Data
 			}
-			fmt.Printf("  [%d] ID=%s, Content=%s, Metadata=%v\n",
-				i+1, msgID, content, msg.Metadata)
+			var resultType string
+			if msg.Metadata != nil {
+				resultType = msg.Metadata["result_type"]
+			}
+			fmt.Printf("  [%d] ID=%s, Type=%s, Content=%s\n",
+				i+1, msgID, resultType, content)
 		}
 	}
+
+	fmt.Println()
+}
+
+// callbackReporting demonstrates the callback reporting functionality for success and error handling
+func callbackReporting() {
+	fmt.Println("=== Example 2: Callback Reporting ===")
+
+	// Create and connect to NATS with JetStream
+	c := client.NewClient("nats://localhost:4222")
+	ctx := context.Background()
+	if err := c.Connect(ctx); err != nil {
+		log.Fatalf("Failed to connect: %v", err)
+	}
+	defer c.Close()
+
+	// Create workflow messages for processing
+	workflowID := "callback-demo"
+	runID1 := uuid.New().String()
+	runID2 := uuid.New().String()
+	runID3 := uuid.New().String()
+
+	fmt.Printf("Processing workflow %s with multiple runs...\n", workflowID)
+
+	// Simulate successful processing - report success
+	fmt.Printf("Reporting success for run %s...\n", runID1)
+	if err := c.Messages.ReportSuccess(ctx, workflowID, runID1, "Workflow completed successfully with result data"); err != nil {
+		log.Printf("Failed to report success: %v", err)
+	} else {
+		fmt.Println("✓ Successfully reported success callback")
+	}
+
+	// Simulate another successful processing
+	fmt.Printf("Reporting success for run %s...\n", runID2)
+	if err := c.Messages.ReportSuccess(ctx, workflowID, runID2, "Another task completed successfully"); err != nil {
+		log.Printf("Failed to report success: %v", err)
+	} else {
+		fmt.Println("✓ Successfully reported success callback")
+	}
+
+	// Simulate failed processing - report error
+	fmt.Printf("Reporting error for run %s...\n", runID3)
+	if err := c.Messages.ReportError(ctx, workflowID, runID3, "Workflow failed due to validation error: invalid input data"); err != nil {
+		log.Printf("Failed to report error: %v", err)
+	} else {
+		fmt.Println("✓ Successfully reported error callback")
+	}
+
+	fmt.Println("Callback messages have been published to the RESULTS stream.")
+	fmt.Println("Use pull-based consumers (like in Example 1) to retrieve these messages.")
 
 	fmt.Println()
 }

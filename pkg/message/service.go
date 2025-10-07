@@ -13,7 +13,6 @@ import (
 // This allows tests to provide a mock without requiring a running NATS server.
 type JSContext interface {
 	Publish(subj string, data []byte, opts ...nats.PubOpt) (*nats.PubAck, error)
-	Subscribe(subj string, cb nats.MsgHandler, opts ...nats.SubOpt) (JSSubscription, error)
 	PullSubscribe(subj, durable string, opts ...nats.SubOpt) (JSSubscription, error)
 }
 
@@ -40,14 +39,6 @@ func (a *natsJSAdapter) Publish(subj string, data []byte, opts ...nats.PubOpt) (
 	return a.js.Publish(subj, data, opts...)
 }
 
-func (a *natsJSAdapter) Subscribe(subj string, cb nats.MsgHandler, opts ...nats.SubOpt) (JSSubscription, error) {
-	sub, err := a.js.Subscribe(subj, cb, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return &natsSubAdapter{sub: sub}, nil
-}
-
 func (a *natsJSAdapter) PullSubscribe(subj, durable string, opts ...nats.SubOpt) (JSSubscription, error) {
 	sub, err := a.js.PullSubscribe(subj, durable, opts...)
 	if err != nil {
@@ -68,11 +59,10 @@ func (s *natsSubAdapter) Fetch(batch int, opts ...nats.PullOpt) ([]*nats.Msg, er
 	return s.sub.Fetch(batch, opts...)
 }
 
-// MessageService provides methods for publishing, subscribing, and managing messages over JetStream.
+// MessageService provides methods for publishing and managing messages over JetStream.
 // All operations use JetStream exclusively with proper acknowledgment handling.
 type MessageService struct {
-	js         JSContext
-	middleware Middleware
+	js JSContext
 }
 
 // validateMessage performs strict validation on the message for callback operations
@@ -143,13 +133,6 @@ func NewMessageService(js JSContext) (*MessageService, error) {
 	}, nil
 }
 
-// WithMiddleware adds middleware to the message service.
-// Middleware will be applied to all subscription handlers.
-func (s *MessageService) WithMiddleware(middleware Middleware) *MessageService {
-	s.middleware = middleware
-	return s
-}
-
 // Publish publishes a message to the specified subject using JetStream.
 // The message is persisted according to the stream's configuration.
 // Returns an error if the publish fails.
@@ -184,62 +167,6 @@ func (s *MessageService) Publish(ctx context.Context, subject string, msg *Messa
 		}
 		return nil
 	}
-}
-
-// Subscribe creates a push-based JetStream subscription to the specified subject.
-// Messages are automatically pushed to the handler as they arrive.
-// The handler must acknowledge messages using msg.Ack() or msg.Nak().
-//
-// Note: This requires a stream to be configured for the subject.
-// Returns a Subscription that can be used to unsubscribe.
-func (s *MessageService) Subscribe(ctx context.Context, subject string, handler Handler) (*Subscription, error) {
-	if subject == "" {
-		return nil, sdkerrors.NewValidationError("subject cannot be empty", "INVALID_SUBJECT", nil)
-	}
-
-	if handler == nil {
-		return nil, sdkerrors.NewValidationError("handler cannot be nil", "INVALID_HANDLER", nil)
-	}
-
-	// Apply middleware if set
-	if s.middleware != nil {
-		handler = s.middleware(handler)
-	}
-
-	// Create JetStream message handler wrapper
-	natsHandler := func(natsMsg *nats.Msg) {
-		msg, err := FromNATSMsg(natsMsg)
-		if err != nil {
-			fmt.Printf("Failed to deserialize message: %v\n", err)
-			// Negatively acknowledge malformed messages
-			_ = natsMsg.Nak()
-			return
-		}
-
-		wrappedMsg := &NATSMsg{
-			Message: msg,
-			Subject: natsMsg.Subject,
-			Reply:   natsMsg.Reply,
-			natsMsg: natsMsg,
-		}
-
-		if err := handler(ctx, wrappedMsg); err != nil {
-			fmt.Printf("Handler error: %v\n", err)
-			// Handler is responsible for Ack/Nak, but if they forgot, we Nak
-			_ = natsMsg.Nak()
-		}
-	}
-
-	// Create push-based JetStream subscription
-	sub, err := s.js.Subscribe(subject, natsHandler, nats.ManualAck())
-	if err != nil {
-		return nil, sdkerrors.NewInternalError("", "failed to create JetStream subscription", "SUBSCRIBE_FAILED", err)
-	}
-
-	return &Subscription{
-		sub:     sub,
-		subject: subject,
-	}, nil
 }
 
 // PullMessages pulls messages from a JetStream pull-based consumer.
@@ -311,53 +238,6 @@ func (s *MessageService) PullMessages(ctx context.Context, stream, consumer stri
 		}
 		return res.msgs, nil
 	}
-}
-
-// Subscription represents an active JetStream subscription.
-type Subscription struct {
-	sub     JSSubscription
-	subject string
-	queue   string
-}
-
-// Unsubscribe cancels the subscription and stops receiving messages.
-func (s *Subscription) Unsubscribe() error {
-	if s.sub == nil {
-		return nil
-	}
-	return s.sub.Unsubscribe()
-}
-
-// Drain gracefully unsubscribes by processing any buffered messages first.
-func (s *Subscription) Drain() error {
-	if s.sub == nil {
-		return nil
-	}
-	return s.sub.Drain()
-}
-
-// IsValid returns true if the subscription is still active.
-func (s *Subscription) IsValid() bool {
-	return s.sub != nil && s.sub.IsValid()
-}
-
-// Subject returns the subject this subscription is listening on.
-func (s *Subscription) Subject() string {
-	return s.subject
-}
-
-// Queue returns the queue name for queue subscriptions (empty for regular subscriptions).
-func (s *Subscription) Queue() string {
-	return s.queue
-}
-
-// PendingMessages returns the number of pending messages for this subscription.
-func (s *Subscription) PendingMessages() (int, error) {
-	if s.sub == nil {
-		return 0, nil
-	}
-	msgs, _, err := s.sub.Pending()
-	return msgs, err
 }
 
 // ResultType represents different types of results that can be published

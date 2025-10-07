@@ -159,13 +159,14 @@ func (m *mockClientWrapper) setReportError(err error) {
 
 func TestNewRunner(t *testing.T) {
 	mockClient := newMockClient()
+	mockProc := &mockProcessor{}
 
 	stream := "test-stream"
 	consumer := "test-consumer"
 	batchSize := 5
 	numWorkers := 3
 
-	r := runner.NewRunner(mockClient.Client, stream, consumer, batchSize, numWorkers)
+	r := runner.NewRunner(mockClient.Client, mockProc, stream, consumer, batchSize, numWorkers)
 
 	if r == nil {
 		t.Fatal("NewRunner returned nil")
@@ -173,37 +174,6 @@ func TestNewRunner(t *testing.T) {
 
 	// We can't directly access private fields, but we can verify the runner works
 	// by testing RegisterProcessor and Run methods
-}
-
-func TestRunnerRegisterProcessor(t *testing.T) {
-	mockClient := newMockClient()
-	r := runner.NewRunner(mockClient.Client, "test-stream", "test-consumer", 1, 1)
-
-	mockProc := &mockProcessor{}
-
-	// Register the processor
-	r.RegisterProcessor(mockProc)
-
-	// We can't directly verify the processor was set due to private fields,
-	// but Run() should fail without a processor, so this tests the registration
-}
-
-func TestRunnerRunWithoutProcessor(t *testing.T) {
-	mockClient := newMockClient()
-	r := runner.NewRunner(mockClient.Client, "test-stream", "test-consumer", 1, 1)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	err := r.Run(ctx)
-	if err == nil {
-		t.Error("Expected error when running without processor")
-	}
-
-	expectedErr := "no processor registered"
-	if err.Error() != expectedErr {
-		t.Errorf("Expected error '%s', got '%s'", expectedErr, err.Error())
-	}
 }
 
 func TestRunnerRunWithSuccessfulProcessor(t *testing.T) {
@@ -214,8 +184,6 @@ func TestRunnerRunWithSuccessfulProcessor(t *testing.T) {
 		WithPayload("test", "test data", "ref-123")
 	mockClient.addMessage(testMsg)
 
-	r := runner.NewRunner(mockClient.Client, "test-stream", "test-consumer", 1, 1)
-
 	mockProc := &mockProcessor{
 		processFunc: func(ctx context.Context, msg *message.Message) error {
 			// Simulate successful processing
@@ -223,7 +191,7 @@ func TestRunnerRunWithSuccessfulProcessor(t *testing.T) {
 		},
 	}
 
-	r.RegisterProcessor(mockProc)
+	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -250,8 +218,6 @@ func TestRunnerRunWithFailingProcessor(t *testing.T) {
 		WithPayload("test", "test data", "ref-123")
 	mockClient.addMessage(testMsg)
 
-	r := runner.NewRunner(mockClient.Client, "test-stream", "test-consumer", 1, 1)
-
 	mockProc := &mockProcessor{
 		processFunc: func(ctx context.Context, msg *message.Message) error {
 			// Simulate processing failure
@@ -259,7 +225,7 @@ func TestRunnerRunWithFailingProcessor(t *testing.T) {
 		},
 	}
 
-	r.RegisterProcessor(mockProc)
+	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -288,8 +254,6 @@ func TestRunnerRunWithMultipleMessages(t *testing.T) {
 		mockClient.addMessage(testMsg)
 	}
 
-	r := runner.NewRunner(mockClient.Client, "test-stream", "test-consumer", 2, 2)
-
 	mockProc := &mockProcessor{
 		processFunc: func(ctx context.Context, msg *message.Message) error {
 			// Simulate successful processing with small delay
@@ -298,7 +262,7 @@ func TestRunnerRunWithMultipleMessages(t *testing.T) {
 		},
 	}
 
-	r.RegisterProcessor(mockProc)
+	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 2, 2)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -323,11 +287,9 @@ func TestRunnerRunWithPullError(t *testing.T) {
 	// Set up pull error
 	mockClient.setPullError(errors.New("pull failed"))
 
-	r := runner.NewRunner(mockClient.Client, "test-stream", "test-consumer", 1, 1)
-
 	mockProc := &mockProcessor{}
 
-	r.RegisterProcessor(mockProc)
+	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -351,8 +313,6 @@ func TestRunnerRunWithReportError(t *testing.T) {
 	// Set up report error
 	mockClient.setReportError(errors.New("report failed"))
 
-	r := runner.NewRunner(mockClient.Client, "test-stream", "test-consumer", 1, 1)
-
 	mockProc := &mockProcessor{
 		processFunc: func(ctx context.Context, msg *message.Message) error {
 			// Simulate processing failure to trigger error reporting
@@ -360,7 +320,7 @@ func TestRunnerRunWithReportError(t *testing.T) {
 		},
 	}
 
-	r.RegisterProcessor(mockProc)
+	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -391,8 +351,6 @@ func TestRunnerRunContextCancellation(t *testing.T) {
 		mockClient.addMessage(testMsg)
 	}
 
-	r := runner.NewRunner(mockClient.Client, "test-stream", "test-consumer", 1, 1)
-
 	mockProc := &mockProcessor{
 		processFunc: func(ctx context.Context, msg *message.Message) error {
 			// Simulate slow processing
@@ -401,7 +359,7 @@ func TestRunnerRunContextCancellation(t *testing.T) {
 		},
 	}
 
-	r.RegisterProcessor(mockProc)
+	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -426,11 +384,9 @@ func TestRunnerRunEmptyMessages(t *testing.T) {
 
 	// No messages added, so PullMessages returns empty slice
 
-	r := runner.NewRunner(mockClient.Client, "test-stream", "test-consumer", 1, 1)
-
 	mockProc := &mockProcessor{}
 
-	r.RegisterProcessor(mockProc)
+	r := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

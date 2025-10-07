@@ -13,173 +13,147 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/runner"
 )
 
-// StringProcessor implements the runner.Processor interface
-type StringProcessor struct{}
+// SimpleProcessor implements the Processor interface for basic message handling
+type SimpleProcessor struct {
+	name string
+}
 
-func (p *StringProcessor) Process(ctx context.Context, msg *message.Message) error {
-	// Extract payload data
-	if msg.Payload == nil {
-		return fmt.Errorf("message has no payload")
+func (p *SimpleProcessor) Process(ctx context.Context, msg *message.Message) error {
+	// Extract message info
+	workflowID := "unknown"
+	runID := "unknown"
+	data := "no data"
+
+	if msg.Workflow != nil {
+		workflowID = msg.Workflow.WorkflowID
+		runID = msg.Workflow.RunID
+	}
+	if msg.Payload != nil {
+		data = msg.Payload.Data
 	}
 
-	data := msg.Payload.Data
-	fmt.Printf("Processing message: %s\n", data)
+	fmt.Printf("[%s] Processing: workflow=%s run=%s data=%s\n",
+		p.name, workflowID, runID, data)
 
-	// Simulate some processing that might fail
+	// Simulate some processing time
+	time.Sleep(2000 * time.Millisecond)
+
+	// Simple success/failure logic based on message content
 	if data == "fail" {
-		return fmt.Errorf("simulated processing failure")
+		return fmt.Errorf("simulated failure for message: %s", data)
 	}
 
-	// Simulate processing time
-	time.Sleep(100 * time.Millisecond)
+	fmt.Printf("[%s] ✓ Successfully processed message\n", p.name)
 	return nil
 }
 
 func main() {
-	fmt.Println("Setting up JetStream streams and consumers for runner example...")
+	fmt.Println("=== Simple Icarus Runner Example ===")
 
-	// Create and connect to NATS with JetStream
+	// Connect to NATS
 	c := client.NewClient("nats://localhost:4222")
 	ctx := context.Background()
+
 	if err := c.Connect(ctx); err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
 	defer c.Close()
 
-	// Get JetStream context
-	js := c.JetStream()
-	if js == nil {
-		log.Fatal("JetStream not available")
-	}
+	// Setup streams
+	setupStreams(c.JetStream())
 
-	// Create WORKERS stream for runner tasks
-	streamName := "WORKERS"
-	consumerName := "task-consumer"
-	fmt.Printf("Creating %s stream...\n", streamName)
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:        streamName,
-		Description: "Tasks stream for runner processing",
-		Subjects:    []string{"tasks.>"},
-		Storage:     nats.FileStorage,
-		Replicas:    1,
-	})
-	if err != nil {
-		log.Printf("Warning: Could not create %s stream (might already exist): %v", streamName, err)
-	} else {
-		fmt.Printf("✓ Created %s stream\n", streamName)
-	}
+	// Create processor and runner
+	processor := &SimpleProcessor{name: "Worker-1"}
+	r := runner.NewRunner(c, processor, "WORKFLOW", "workflow-consumer", 5, 2)
 
-	// Create RESULTS stream for success/error reporting
-	resultsStream := "RESULTS"
-	fmt.Printf("Creating %s stream...\n", resultsStream)
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:        resultsStream,
-		Description: "Results stream for success/error reporting",
-		Subjects:    []string{"results.>"},
-		Storage:     nats.FileStorage,
-		Replicas:    1,
-	})
-	if err != nil {
-		log.Printf("Warning: Could not create %s stream (might already exist): %v", resultsStream, err)
-	} else {
-		fmt.Printf("✓ Created %s stream\n", resultsStream)
-	}
+	// Publish test messages
+	publishTestMessages(ctx, c)
 
-	// Create a pull consumer for the runner
-	fmt.Println("Creating pull consumer...")
-	_, err = js.AddConsumer(streamName, &nats.ConsumerConfig{
-		Durable:       consumerName,
-		Description:   "Pull consumer for runner processing",
-		AckPolicy:     nats.AckExplicitPolicy,
-		DeliverPolicy: nats.DeliverAllPolicy,
-	})
-	if err != nil {
-		log.Printf("Warning: Could not create pull consumer (might already exist): %v", err)
-	} else {
-		fmt.Println("✓ Created pull consumer")
-	}
-
-	fmt.Println("\nJetStream setup complete!")
-	fmt.Println("Starting runner example...")
-
-	// Create the runner
-	r := runner.NewRunner(c, streamName, consumerName, 10, 3)
-
-	// Register the processor
-	r.RegisterProcessor(&StringProcessor{})
-
-	// Start the runner in a goroutine
-	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Run the runner for 10 seconds
+	fmt.Println("Starting runner for 10 seconds...")
+	runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	go func() {
-		if err := r.Run(runCtx); err != nil {
-			log.Printf("Runner error: %v", err)
-		}
-	}()
+	if err := r.Run(runCtx); err != nil {
+		log.Printf("Runner error: %v", err)
+	}
 
-	// Give the runner time to start
-	time.Sleep(500 * time.Millisecond)
+	// Check results
+	checkResults(ctx, c)
+	fmt.Println("✓ Runner example completed!")
+}
 
-	// Publish some test messages
+func setupStreams(js nats.JetStreamContext) {
+	// Create WORKFLOW stream
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "WORKFLOW",
+		Subjects: []string{"workflow.>"},
+		Storage:  nats.MemoryStorage,
+	})
+	if err != nil {
+		log.Printf("Warning: Could not create WORKFLOW stream: %v", err)
+	}
+
+	// Create RESULTS stream
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "RESULTS",
+		Subjects: []string{"result"},
+		Storage:  nats.MemoryStorage,
+	})
+	if err != nil {
+		log.Printf("Warning: Could not create RESULTS stream: %v", err)
+	}
+
+	// Create consumer
+	_, err = js.AddConsumer("WORKFLOW", &nats.ConsumerConfig{
+		Durable:   "workflow-consumer",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	if err != nil {
+		log.Printf("Warning: Could not create consumer: %v", err)
+	}
+}
+
+func publishTestMessages(ctx context.Context, c *client.Client) {
 	fmt.Println("Publishing test messages...")
 
-	// Success message
-	successMsg := message.NewWorkflowMessage("test-workflow", uuid.New().String()).
-		WithPayload("test-service", "hello world", "task-1").
-		WithMetadata("type", "success")
+	workflowID := "test-workflow"
+	runID := uuid.New().String()
 
-	if err := c.Messages.Publish(ctx, "tasks.process", successMsg); err != nil {
-		log.Printf("Failed to publish success message: %v", err)
-	} else {
-		fmt.Println("✓ Published success message")
-	}
+	messages := []string{"task-1", "task-2", "fail", "task-3"}
 
-	// Failure message
-	failureMsg := message.NewWorkflowMessage("test-workflow", uuid.New().String()).
-		WithPayload("test-service", "fail", "task-2").
-		WithMetadata("type", "failure")
+	for _, data := range messages {
+		msg := message.NewWorkflowMessage(workflowID, runID).
+			WithPayload("test", data, fmt.Sprintf("ref-%s", data))
 
-	if err := c.Messages.Publish(ctx, "tasks.process", failureMsg); err != nil {
-		log.Printf("Failed to publish failure message: %v", err)
-	} else {
-		fmt.Println("✓ Published failure message")
-	}
-
-	// Another success message
-	successMsg2 := message.NewWorkflowMessage("test-workflow", uuid.New().String()).
-		WithPayload("test-service", "goodbye world", "task-3").
-		WithMetadata("type", "success")
-
-	if err := c.Messages.Publish(ctx, "tasks.process", successMsg2); err != nil {
-		log.Printf("Failed to publish second success message: %v", err)
-	} else {
-		fmt.Println("✓ Published second success message")
-	}
-
-	// Wait for processing to complete
-	fmt.Println("Waiting for message processing...")
-	time.Sleep(5 * time.Second)
-
-	// Try to pull results to see success/error reports
-	fmt.Println("Checking for results...")
-	results, err := c.Messages.PullMessages(ctx, resultsStream, "results-consumer", 10)
-	if err != nil {
-		log.Printf("Failed to pull results: %v", err)
-	} else {
-		fmt.Printf("Found %d result messages:\n", len(results))
-		for i, result := range results {
-			var content string
-			if result.Payload != nil {
-				content = result.Payload.Data
-			}
-			var resultType string
-			if result.Metadata != nil {
-				resultType = result.Metadata["result_type"]
-			}
-			fmt.Printf("  [%d] Type: %s, Content: %s\n", i+1, resultType, content)
+		subject := fmt.Sprintf("workflow.%s", workflowID)
+		if err := c.Messages.Publish(ctx, subject, msg); err != nil {
+			log.Printf("Failed to publish: %v", err)
 		}
 	}
 
-	fmt.Println("Runner example complete!")
+	fmt.Printf("✓ Published %d messages\n", len(messages))
+}
+
+func checkResults(ctx context.Context, c *client.Client) {
+	fmt.Println("Checking results...")
+
+	results, err := c.Messages.PullMessages(ctx, "RESULTS", "results-consumer", 10)
+	if err != nil {
+		log.Printf("Failed to pull results: %v", err)
+		return
+	}
+
+	fmt.Printf("Found %d result messages:\n", len(results))
+	for i, result := range results {
+		resultType := "unknown"
+		if result.Metadata != nil {
+			resultType = result.Metadata["result_type"]
+		}
+		content := "no content"
+		if result.Payload != nil {
+			content = result.Payload.Data
+		}
+		fmt.Printf("  %d. [%s] %s\n", i+1, resultType, content)
+	}
 }
