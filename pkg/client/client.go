@@ -8,6 +8,7 @@ import (
 	"github.com/wehubfusion/Icarus/internal/nats"
 	sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
 	"github.com/wehubfusion/Icarus/pkg/message"
+	"go.uber.org/zap"
 )
 
 // Client is the central JetStream client that manages the connection and provides access to services.
@@ -21,7 +22,7 @@ import (
 //
 //	client := client.NewClient("nats://localhost:4222")
 //	if err := client.Connect(ctx); err != nil {
-//	    log.Fatal(err)
+//	    logger.Fatal("Failed to connect", zap.Error(err))
 //	}
 //	defer client.Close()
 //
@@ -32,6 +33,7 @@ type Client struct {
 	conn   *natsclient.Conn
 	js     natsclient.JetStreamContext
 	config *nats.ConnectionConfig
+	logger *zap.Logger
 
 	// Messages provides access to all JetStream messaging operations including
 	// publish, subscribe, request-reply, and pull-based consumers
@@ -51,8 +53,10 @@ type Client struct {
 //
 //	client := client.NewClient("nats://localhost:4222")
 func NewClient(url string) *Client {
+	logger, _ := zap.NewProduction()
 	return &Client{
 		config: nats.DefaultConnectionConfig(url),
+		logger: logger,
 	}
 }
 
@@ -72,8 +76,10 @@ func NewClient(url string) *Client {
 //	}
 //	client := client.NewClientWithConfig(config)
 func NewClientWithConfig(config *nats.ConnectionConfig) *Client {
+	logger, _ := zap.NewProduction()
 	return &Client{
 		config: config,
+		logger: logger,
 	}
 }
 
@@ -91,7 +97,7 @@ func NewClientWithConfig(config *nats.ConnectionConfig) *Client {
 //
 //	ctx := context.Background()
 //	if err := client.Connect(ctx); err != nil {
-//	    log.Fatalf("Failed to connect: %v", err)
+//	    client.logger.Fatal("Failed to connect", zap.Error(err))
 //	}
 func (c *Client) Connect(ctx context.Context) error {
 	if c.conn != nil && c.conn.IsConnected() {
@@ -132,8 +138,19 @@ func (c *Client) Connect(ctx context.Context) error {
 // NewClientWithJSContext creates a client wired to a provided JSContext implementation.
 // Useful for tests to avoid connecting to a real NATS server.
 func NewClientWithJSContext(js message.JSContext) *Client {
+	logger, _ := zap.NewProduction()
 	svc, _ := message.NewMessageService(js)
-	return &Client{Messages: svc}
+	return &Client{
+		Messages: svc,
+		logger:   logger,
+	}
+}
+
+// SetLogger sets a custom zap logger for the client
+func (c *Client) SetLogger(logger *zap.Logger) {
+	if logger != nil {
+		c.logger = logger
+	}
 }
 
 // Close gracefully closes the NATS connection and cleans up all resources.
@@ -146,7 +163,7 @@ func NewClientWithJSContext(js message.JSContext) *Client {
 //
 //	client := client.NewClient("nats://localhost:4222")
 //	if err := client.Connect(ctx); err != nil {
-//	    log.Fatal(err)
+//	    client.logger.Fatal("Failed to connect", zap.Error(err))
 //	}
 //	defer client.Close()
 func (c *Client) Close() error {
@@ -172,7 +189,7 @@ func (c *Client) Close() error {
 // Example:
 //
 //	if !client.IsConnected() {
-//	    log.Println("Not connected, attempting reconnection...")
+//	    client.logger.Info("Not connected, attempting reconnection...")
 //	    client.Connect(ctx)
 //	}
 func (c *Client) IsConnected() bool {
@@ -212,7 +229,9 @@ func (c *Client) JetStream() natsclient.JetStreamContext {
 // Example:
 //
 //	stats := client.Stats()
-//	fmt.Printf("Messages sent: %d, received: %d\n", stats.OutMsgs, stats.InMsgs)
+//	client.logger.Info("Connection stats",
+//		zap.Uint64("messages_sent", stats.OutMsgs),
+//		zap.Uint64("messages_received", stats.InMsgs))
 func (c *Client) Stats() ConnectionStats {
 	if c.conn == nil {
 		return ConnectionStats{}
@@ -255,7 +274,7 @@ func (c *Client) ensureConnected() error {
 //	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 //	defer cancel()
 //	if err := client.Ping(ctx); err != nil {
-//	    log.Printf("Connection unhealthy: %v", err)
+//	    client.logger.Error("Connection unhealthy", zap.Error(err))
 //	}
 func (c *Client) Ping(ctx context.Context) error {
 	if err := c.ensureConnected(); err != nil {

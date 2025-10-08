@@ -7,6 +7,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
+	"go.uber.org/zap"
 )
 
 // JSContext defines the minimal subset of JetStream operations the service depends on.
@@ -62,7 +63,8 @@ func (s *natsSubAdapter) Fetch(batch int, opts ...nats.PullOpt) ([]*nats.Msg, er
 // MessageService provides methods for publishing and managing messages over JetStream.
 // All operations use JetStream exclusively with proper acknowledgment handling.
 type MessageService struct {
-	js JSContext
+	js     JSContext
+	logger *zap.Logger
 }
 
 // validateMessage performs strict validation on the message for callback operations
@@ -128,9 +130,32 @@ func NewMessageService(js JSContext) (*MessageService, error) {
 		return nil, fmt.Errorf("JetStream context cannot be nil")
 	}
 
+	logger, _ := zap.NewProduction()
 	return &MessageService{
-		js: js,
+		js:     js,
+		logger: logger,
 	}, nil
+}
+
+// SetLogger sets a custom zap logger for the message service
+func (s *MessageService) SetLogger(logger *zap.Logger) {
+	if logger != nil {
+		s.logger = logger
+	}
+}
+
+// getMessageIdentifier creates a unique identifier for logging purposes
+func (s *MessageService) getMessageIdentifier(msg *Message) string {
+	if msg.Workflow != nil {
+		return fmt.Sprintf("workflow:%s/run:%s", msg.Workflow.WorkflowID, msg.Workflow.RunID)
+	}
+	if msg.Node != nil {
+		return fmt.Sprintf("node:%s", msg.Node.NodeID)
+	}
+	if msg.Payload != nil && msg.Payload.Reference != "" {
+		return fmt.Sprintf("payload:%s", msg.Payload.Reference)
+	}
+	return fmt.Sprintf("timestamp:%s", msg.CreatedAt)
 }
 
 // Publish publishes a message to the specified subject using JetStream.
@@ -138,15 +163,25 @@ func NewMessageService(js JSContext) (*MessageService, error) {
 // Returns an error if the publish fails.
 func (s *MessageService) Publish(ctx context.Context, subject string, msg *Message) error {
 	if subject == "" {
+		s.logger.Error("Publish failed: subject cannot be empty")
 		return sdkerrors.NewValidationError("subject cannot be empty", "INVALID_SUBJECT", nil)
 	}
 
 	if msg == nil {
+		s.logger.Error("Publish failed: message cannot be nil")
 		return sdkerrors.NewValidationError("message cannot be nil", "INVALID_MESSAGE", nil)
 	}
 
+	s.logger.Debug("Publishing message",
+		zap.String("subject", subject),
+		zap.String("message_identifier", s.getMessageIdentifier(msg)))
+
 	data, err := msg.ToBytes()
 	if err != nil {
+		s.logger.Error("Failed to marshal message",
+			zap.String("subject", subject),
+			zap.String("message_identifier", s.getMessageIdentifier(msg)),
+			zap.Error(err))
 		return sdkerrors.NewInternalError("", "failed to marshal message", "MARSHAL_FAILED", err)
 	}
 
@@ -160,11 +195,22 @@ func (s *MessageService) Publish(ctx context.Context, subject string, msg *Messa
 
 	select {
 	case <-ctx.Done():
+		s.logger.Warn("Publish cancelled",
+			zap.String("subject", subject),
+			zap.String("message_identifier", s.getMessageIdentifier(msg)),
+			zap.Error(ctx.Err()))
 		return fmt.Errorf("publish cancelled: %w", ctx.Err())
 	case err := <-resultCh:
 		if err != nil {
+			s.logger.Error("Failed to publish message to JetStream",
+				zap.String("subject", subject),
+				zap.String("message_identifier", s.getMessageIdentifier(msg)),
+				zap.Error(err))
 			return sdkerrors.NewInternalError("", "failed to publish message to JetStream", "PUBLISH_FAILED", err)
 		}
+		s.logger.Info("Message published successfully",
+			zap.String("subject", subject),
+			zap.String("message_identifier", s.getMessageIdentifier(msg)))
 		return nil
 	}
 }
@@ -185,12 +231,18 @@ func (s *MessageService) Publish(ctx context.Context, subject string, msg *Messa
 // Note: Returns empty slice (not error) when no messages are available within timeout.
 func (s *MessageService) PullMessages(ctx context.Context, stream, consumer string, batchSize int) ([]*Message, error) {
 	if stream == "" || consumer == "" {
+		s.logger.Error("PullMessages failed: stream and consumer names are required")
 		return nil, fmt.Errorf("stream and consumer names are required")
 	}
 
 	if batchSize <= 0 {
 		batchSize = 10
 	}
+
+	s.logger.Debug("Pulling messages",
+		zap.String("stream", stream),
+		zap.String("consumer", consumer),
+		zap.Int("batch_size", batchSize))
 
 	// Create a channel to handle pull result
 	type result struct {
@@ -247,9 +299,24 @@ func (s *MessageService) PullMessages(ctx context.Context, stream, consumer stri
 
 	select {
 	case <-ctx.Done():
+		// Use debug level for graceful shutdown, warn for unexpected cancellation
+		if ctx.Err() == context.Canceled {
+			s.logger.Debug("Pull messages cancelled during shutdown",
+				zap.String("stream", stream),
+				zap.String("consumer", consumer))
+		} else {
+			s.logger.Warn("Pull messages cancelled",
+				zap.String("stream", stream),
+				zap.String("consumer", consumer),
+				zap.Error(ctx.Err()))
+		}
 		return nil, fmt.Errorf("pull cancelled: %w", ctx.Err())
 	case res := <-resultCh:
 		if res.err != nil {
+			s.logger.Error("Failed to pull messages from JetStream",
+				zap.String("stream", stream),
+				zap.String("consumer", consumer),
+				zap.Error(res.err))
 			return nil, sdkerrors.NewInternalError("", "failed to pull messages from JetStream", "PULL_FAILED", res.err)
 		}
 		return res.msgs, nil
@@ -275,13 +342,28 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 	// Add result type metadata to the result message
 	resultMessage.WithMetadata("result_type", string(ResultTypeSuccess))
 
+	s.logger.Info("Reporting success",
+		zap.String("message_identifier", s.getMessageIdentifier(&resultMessage)),
+		zap.String("workflow_id", func() string {
+			if resultMessage.Workflow != nil {
+				return resultMessage.Workflow.WorkflowID
+			}
+			return ""
+		}()))
+
 	// Validate message
 	if err := s.validateMessage(&resultMessage); err != nil {
+		s.logger.Error("Success report validation failed",
+			zap.String("message_identifier", s.getMessageIdentifier(&resultMessage)),
+			zap.Error(err))
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
 	// Attempt to publish with retries (using default retry settings)
 	if err := s.publishWithRetry(ctx, "result", &resultMessage, 3, time.Second); err != nil {
+		s.logger.Error("Failed to publish success report",
+			zap.String("message_identifier", s.getMessageIdentifier(&resultMessage)),
+			zap.Error(err))
 		// If we have a source message and publishing failed, nak it
 		if msg != nil {
 			_ = msg.Nak()
@@ -292,11 +374,16 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 	// If we have a source message and publishing succeeded, ack it
 	if msg != nil {
 		if err := msg.Ack(); err != nil {
+			s.logger.Error("Failed to acknowledge source message after success report",
+				zap.String("message_identifier", s.getMessageIdentifier(&resultMessage)),
+				zap.Error(err))
 			// Log but don't fail - the callback was published successfully
 			return fmt.Errorf("failed to acknowledge source message: %w", err)
 		}
 	}
 
+	s.logger.Info("Success report published and acknowledged",
+		zap.String("message_identifier", s.getMessageIdentifier(&resultMessage)))
 	return nil
 }
 
@@ -317,13 +404,26 @@ func (s *MessageService) ReportError(ctx context.Context, workflowID, runID stri
 		WithMetadata("result_type", string(ResultTypeError)).
 		WithMetadata("correlation_id", fmt.Sprintf("%s-%s", workflowID, runID))
 
+	s.logger.Info("Reporting error",
+		zap.String("workflow_id", workflowID),
+		zap.String("run_id", runID),
+		zap.String("error_message", errorMsg))
+
 	// Validate message
 	if err := s.validateMessage(message); err != nil {
+		s.logger.Error("Error report validation failed",
+			zap.String("workflow_id", workflowID),
+			zap.String("run_id", runID),
+			zap.Error(err))
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
 	// Attempt to publish with retries (using default retry settings)
 	if err := s.publishWithRetry(ctx, "result", message, 3, time.Second); err != nil {
+		s.logger.Error("Failed to publish error report",
+			zap.String("workflow_id", workflowID),
+			zap.String("run_id", runID),
+			zap.Error(err))
 		// If we have a source message, nak it since both processing and reporting failed
 		if msg != nil {
 			_ = msg.Nak()
@@ -335,10 +435,17 @@ func (s *MessageService) ReportError(ctx context.Context, workflowID, runID stri
 	// because the original processing failed (that's why we're reporting an error)
 	if msg != nil {
 		if err := msg.Nak(); err != nil {
+			s.logger.Error("Failed to negatively acknowledge source message after error report",
+				zap.String("workflow_id", workflowID),
+				zap.String("run_id", runID),
+				zap.Error(err))
 			// Log but don't fail - the error callback was published successfully
 			return fmt.Errorf("failed to negatively acknowledge source message: %w", err)
 		}
 	}
 
+	s.logger.Info("Error report published and source message nak'd",
+		zap.String("workflow_id", workflowID),
+		zap.String("run_id", runID))
 	return nil
 }

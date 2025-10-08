@@ -11,6 +11,11 @@ import (
 
 	"github.com/wehubfusion/Icarus/pkg/client"
 	"github.com/wehubfusion/Icarus/pkg/message"
+	"github.com/wehubfusion/Icarus/pkg/tracing"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -24,14 +29,16 @@ type Processor interface {
 // It pulls messages in batches and distributes them to worker goroutines for processing,
 // with automatic success and error reporting to the "result" subject.
 type Runner struct {
-	client         *client.Client
-	processor      Processor
-	stream         string
-	consumer       string
-	batchSize      int
-	numWorkers     int
-	logger         *zap.Logger
-	processTimeout time.Duration
+	client          *client.Client
+	processor       Processor
+	stream          string
+	consumer        string
+	batchSize       int
+	numWorkers      int
+	logger          *zap.Logger
+	processTimeout  time.Duration
+	tracer          trace.Tracer
+	tracingShutdown func(context.Context) error
 }
 
 // NewRunner creates a new Runner instance with a connected client and stream/consumer configuration.
@@ -41,8 +48,9 @@ type Runner struct {
 // numWorkers specifies the number of worker goroutines for processing messages.
 // processTimeout specifies the maximum time allowed for processing a single message.
 // logger is the zap logger instance for structured logging.
+// tracingConfig is optional - if nil, no tracing will be set up. If provided, tracing will be automatically configured and cleaned up.
 // Returns an error if any of the parameters are invalid.
-func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, numWorkers int, processTimeout time.Duration, logger *zap.Logger) (*Runner, error) {
+func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, numWorkers int, processTimeout time.Duration, logger *zap.Logger, tracingConfig *tracing.TracingConfig) (*Runner, error) {
 	if client == nil {
 		return nil, errors.New("client cannot be nil")
 	}
@@ -68,7 +76,7 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 		return nil, errors.New("logger cannot be nil")
 	}
 
-	return &Runner{
+	runner := &Runner{
 		client:         client,
 		processor:      processor,
 		stream:         stream,
@@ -77,7 +85,39 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 		numWorkers:     numWorkers,
 		processTimeout: processTimeout,
 		logger:         logger,
-	}, nil
+		tracer:         otel.Tracer("icarus/runner"),
+	}
+
+	// Setup tracing if configuration is provided
+	if tracingConfig != nil {
+		ctx := context.Background()
+		shutdown, err := tracing.SetupTracing(ctx, *tracingConfig, logger)
+		if err != nil {
+			logger.Warn("Failed to setup tracing, continuing without tracing", zap.Error(err))
+		} else {
+			runner.tracingShutdown = shutdown
+			logger.Info("Tracing setup complete",
+				zap.String("service", tracingConfig.ServiceName),
+				zap.String("endpoint", tracingConfig.OTLPEndpoint))
+		}
+	}
+
+	return runner, nil
+}
+
+// Close gracefully shuts down the runner and cleans up resources including tracing.
+// This should be called when the runner is no longer needed.
+func (r *Runner) Close() error {
+	if r.tracingShutdown != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := r.tracingShutdown(ctx); err != nil {
+			r.logger.Error("Error shutting down tracing", zap.Error(err))
+			return err
+		}
+		r.logger.Info("Tracing shutdown complete")
+	}
+	return nil
 }
 
 // Run starts the message processing pipeline.
@@ -116,11 +156,13 @@ func (r *Runner) Run(ctx context.Context) error {
 				// Pull messages from the stream
 				messages, err := r.client.Messages.PullMessages(ctx, r.stream, r.consumer, r.batchSize)
 				if err != nil {
-					r.logger.Error("Error pulling messages", zap.Error(err))
-					// Check if this is a critical error
+					// Check if this is due to context cancellation (graceful shutdown)
 					if ctx.Err() != nil {
+						r.logger.Debug("Message pulling stopped due to context cancellation")
 						return // Context cancelled
 					}
+					// This is an actual error, not graceful shutdown
+					r.logger.Error("Error pulling messages", zap.Error(err))
 					// Exponential backoff for errors
 					time.Sleep(backoffDelay)
 					if backoffDelay < maxBackoff {
@@ -202,9 +244,33 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		runID = msg.Workflow.RunID
 	}
 
-	// Create a timeout context for message processing (configurable timeout)
+	// Start tracing span for message processing
+	ctx, span := r.tracer.Start(ctx, "runner.processMessage",
+		trace.WithAttributes(
+			attribute.Int("worker.id", workerID),
+			attribute.String("workflow.id", workflowID),
+			attribute.String("workflow.run_id", runID),
+			attribute.String("stream", r.stream),
+			attribute.String("consumer", r.consumer),
+		))
+	defer span.End()
+
+	// Create a timeout context for message processing that respects both the main context and timeout
 	processCtx, cancel := context.WithTimeout(ctx, r.processTimeout)
 	defer cancel()
+
+	// Check if the main context is already cancelled before starting processing
+	select {
+	case <-ctx.Done():
+		r.logger.Info("Skipping message processing due to context cancellation",
+			zap.Int("workerID", workerID),
+			zap.String("workflowID", workflowID),
+			zap.String("runID", runID))
+		span.SetStatus(codes.Error, "Context cancelled before processing")
+		return
+	default:
+		// Continue with processing
+	}
 
 	start := time.Now()
 	r.logger.Info("Worker processing message",
@@ -212,11 +278,36 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		zap.String("workflowID", workflowID),
 		zap.String("runID", runID))
 
+	// Start nested span for processor.Process call
+	processCtx, processSpan := r.tracer.Start(processCtx, "processor.Process")
+	// Add message attributes if available
+	if msg.Node != nil {
+		processSpan.SetAttributes(attribute.String("message.node.id", msg.Node.NodeID))
+	}
+	if msg.Payload != nil {
+		processSpan.SetAttributes(
+			attribute.String("message.payload.source", msg.Payload.Source),
+			attribute.String("message.payload.reference", msg.Payload.Reference),
+		)
+	}
+	processSpan.SetAttributes(attribute.String("message.created_at", msg.CreatedAt))
+	defer processSpan.End()
+
 	// Process the message
 	resultMessage, processErr := r.processor.Process(processCtx, msg)
 	processingTime := time.Since(start)
 
+	// Add processing time to spans
+	span.SetAttributes(attribute.Int64("processing.duration_ms", processingTime.Milliseconds()))
+	processSpan.SetAttributes(attribute.Int64("processing.duration_ms", processingTime.Milliseconds()))
+
 	if processErr != nil {
+		// Record error in spans
+		span.RecordError(processErr)
+		span.SetStatus(codes.Error, processErr.Error())
+		processSpan.RecordError(processErr)
+		processSpan.SetStatus(codes.Error, processErr.Error())
+
 		r.logger.Error("Error processing message",
 			zap.Int("workerID", workerID),
 			zap.Duration("processingTime", processingTime),
@@ -246,6 +337,17 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		}
 
 		return
+	}
+
+	// Mark spans as successful
+	span.SetStatus(codes.Ok, "Message processed successfully")
+	processSpan.SetStatus(codes.Ok, "Message processed successfully")
+	// Add result message attributes if available
+	if resultMessage.Node != nil {
+		span.SetAttributes(attribute.String("result.message.node.id", resultMessage.Node.NodeID))
+	}
+	if resultMessage.Output != nil {
+		span.SetAttributes(attribute.String("result.message.output.destination_type", resultMessage.Output.DestinationType))
 	}
 
 	r.logger.Info("Successfully processed message",

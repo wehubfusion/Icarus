@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/wehubfusion/Icarus/pkg/client"
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
@@ -158,3 +159,160 @@ func TestPullMessages(t *testing.T) {
 // Note: JetStream requirement testing is handled in client_test.go
 // The SDK requires JetStream to be enabled on the NATS server.
 // All tests in this file assume JetStream is available.
+
+func TestMessageUpdateTimestamp(t *testing.T) {
+	msg := message.NewMessage()
+	originalUpdatedAt := msg.UpdatedAt
+
+	// Wait to ensure timestamp changes (RFC3339 has second precision)
+	time.Sleep(1001 * time.Millisecond)
+
+	msg.UpdateTimestamp()
+	if msg.UpdatedAt == originalUpdatedAt {
+		t.Error("UpdateTimestamp should change the UpdatedAt field")
+	}
+}
+
+func TestMessageWithMetadata(t *testing.T) {
+	msg := message.NewMessage()
+
+	// Test adding metadata
+	msg.WithMetadata("key1", "value1")
+	if msg.Metadata["key1"] != "value1" {
+		t.Errorf("Expected metadata key1=value1, got %s", msg.Metadata["key1"])
+	}
+
+	// Test adding multiple metadata entries
+	msg.WithMetadata("key2", "value2")
+	if len(msg.Metadata) != 2 {
+		t.Errorf("Expected 2 metadata entries, got %d", len(msg.Metadata))
+	}
+
+	// Test metadata on message without existing metadata map
+	msg2 := &message.Message{}
+	msg2.WithMetadata("test", "value")
+	if msg2.Metadata == nil {
+		t.Error("WithMetadata should initialize metadata map")
+	}
+	if msg2.Metadata["test"] != "value" {
+		t.Error("WithMetadata should set the value correctly")
+	}
+}
+
+func TestMessageAckNakTerm(t *testing.T) {
+	msg := message.NewMessage()
+
+	// Test Ack/Nak/Term without NATS message (should not error)
+	err := msg.Ack()
+	if err != nil {
+		t.Errorf("Ack should not error without NATS message, got: %v", err)
+	}
+
+	err = msg.Nak()
+	if err != nil {
+		t.Errorf("Nak should not error without NATS message, got: %v", err)
+	}
+
+	err = msg.Term()
+	if err != nil {
+		t.Errorf("Term should not error without NATS message, got: %v", err)
+	}
+
+	// Test GetNATSMsg
+	natsMsg := msg.GetNATSMsg()
+	if natsMsg != nil {
+		t.Error("GetNATSMsg should return nil for message without NATS message")
+	}
+}
+
+func TestFromNATSMsg(t *testing.T) {
+	// Create a test message
+	originalMsg := message.NewWorkflowMessage("workflow-123", "run-456").
+		WithPayload("test", "test data", "ref-123")
+
+	data, err := originalMsg.ToBytes()
+	if err != nil {
+		t.Fatalf("Failed to serialize message: %v", err)
+	}
+
+	// Create NATS message
+	natsMsg := &nats.Msg{
+		Subject: "test.subject",
+		Data:    data,
+		Reply:   "test.reply",
+	}
+
+	// Test FromNATSMsg
+	convertedMsg, err := message.FromNATSMsg(natsMsg)
+	if err != nil {
+		t.Fatalf("FromNATSMsg failed: %v", err)
+	}
+
+	// Verify the converted message
+	if convertedMsg.Workflow.WorkflowID != originalMsg.Workflow.WorkflowID {
+		t.Errorf("WorkflowID mismatch: expected %s, got %s",
+			originalMsg.Workflow.WorkflowID, convertedMsg.Workflow.WorkflowID)
+	}
+
+	if convertedMsg.Payload.Data != originalMsg.Payload.Data {
+		t.Errorf("Payload data mismatch: expected %s, got %s",
+			originalMsg.Payload.Data, convertedMsg.Payload.Data)
+	}
+}
+
+func TestNATSMsgWrapper(t *testing.T) {
+	// Create a test message
+	msg := message.NewWorkflowMessage("workflow-123", "run-456").
+		WithPayload("test", "test data", "ref-123")
+
+	// Note: We don't need to create a real NATS message for this test
+	// The NATSMsg wrapper is what we're testing
+
+	// Create NATSMsg wrapper
+	wrappedMsg := &message.NATSMsg{
+		Message: msg,
+		Subject: "test.subject",
+		Reply:   "test.reply",
+	}
+
+	// Test that wrapper preserves message data
+	if wrappedMsg.Workflow.WorkflowID != msg.Workflow.WorkflowID {
+		t.Error("NATSMsg wrapper should preserve workflow ID")
+	}
+
+	if wrappedMsg.Subject != "test.subject" {
+		t.Error("NATSMsg wrapper should preserve subject")
+	}
+
+	if wrappedMsg.Reply != "test.reply" {
+		t.Error("NATSMsg wrapper should preserve reply")
+	}
+
+	// Test acknowledgment methods (should not error without real NATS message)
+	err := wrappedMsg.Ack()
+	if err != nil {
+		t.Errorf("Ack should not error without real NATS message, got: %v", err)
+	}
+
+	err = wrappedMsg.Nak()
+	if err != nil {
+		t.Errorf("Nak should not error without real NATS message, got: %v", err)
+	}
+
+	err = wrappedMsg.InProgress()
+	if err != nil {
+		t.Errorf("InProgress should not error without real NATS message, got: %v", err)
+	}
+
+	err = wrappedMsg.Term()
+	if err != nil {
+		t.Errorf("Term should not error without real NATS message, got: %v", err)
+	}
+
+	// Test Respond method
+	response := message.NewMessage().WithPayload("response", "test response", "response-ref")
+	err = wrappedMsg.Respond(response)
+	if err != nil {
+		t.Errorf("Respond should not error without real NATS message, got: %v", err)
+	}
+}

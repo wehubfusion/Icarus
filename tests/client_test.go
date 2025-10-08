@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/wehubfusion/Icarus/pkg/client"
+	"go.uber.org/zap"
 )
 
 func TestClientCreation(t *testing.T) {
@@ -81,4 +82,55 @@ func TestClientMultipleConnections(t *testing.T) {
 
 func TestClientServiceInitialization(t *testing.T) {
 	t.Skip("Service init tested via message tests with mock")
+}
+
+func TestClientStats(t *testing.T) {
+	c := client.NewClient("nats://localhost:4222")
+
+	// Test stats with no connection
+	stats := c.Stats()
+	if stats.InMsgs != 0 || stats.OutMsgs != 0 || stats.InBytes != 0 || stats.OutBytes != 0 || stats.Reconnects != 0 {
+		t.Error("Expected zero stats for unconnected client")
+	}
+}
+
+func TestClientSetLogger(t *testing.T) {
+	c := client.NewClient("nats://localhost:4222")
+
+	// Test setting a custom logger
+	logger, _ := zap.NewProduction()
+	c.SetLogger(logger)
+
+	// Test setting nil logger (should not panic)
+	c.SetLogger(nil)
+}
+
+func TestClientClose(t *testing.T) {
+	c := client.NewClient("nats://localhost:4222")
+
+	// Test closing without connection
+	err := c.Close()
+	if err != nil {
+		t.Errorf("Close should not error on unconnected client, got: %v", err)
+	}
+}
+
+func TestClientJetStreamAccess(t *testing.T) {
+	c := client.NewClient("nats://localhost:4222")
+
+	// Test JetStream access without connection
+	js := c.JetStream()
+	if js != nil {
+		t.Error("Expected nil JetStream for unconnected client")
+	}
+}
+
+func TestClientConnectionAccess(t *testing.T) {
+	c := client.NewClient("nats://localhost:4222")
+
+	// Test Connection access without connection
+	conn := c.Connection()
+	if conn != nil {
+		t.Error("Expected nil Connection for unconnected client")
+	}
 }

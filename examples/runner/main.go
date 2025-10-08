@@ -22,7 +22,19 @@ import (
 // SimpleProcessor implements the runner.Processor interface
 // This is a simple processor that simulates processing work
 type SimpleProcessor struct {
-	name string
+	name   string
+	logger *zap.Logger
+}
+
+// NewSimpleProcessor creates a new processor
+func NewSimpleProcessor(name string, logger *zap.Logger) *SimpleProcessor {
+	if logger == nil {
+		logger, _ = zap.NewDevelopment()
+	}
+	return &SimpleProcessor{
+		name:   name,
+		logger: logger,
+	}
 }
 
 // Process implements the Processor interface
@@ -31,25 +43,31 @@ func (p *SimpleProcessor) Process(ctx context.Context, msg *message.Message) (me
 	// Simulate some processing time (1-5 seconds instead of 50+ seconds)
 	processingTime := time.Duration(rand.Intn(4000)+1000) * time.Millisecond
 
-	// Log the message we received
-	log.Printf("Processor '%s' received message:", p.name)
-	if msg.Workflow != nil {
-		log.Printf("  - Workflow ID: %s, Run ID: %s", msg.Workflow.WorkflowID, msg.Workflow.RunID)
-	}
-	if msg.Node != nil {
-		log.Printf("  - Node ID: %s", msg.Node.NodeID)
-	}
-	if msg.Payload != nil {
-		log.Printf("  - Payload Data: %s", msg.Payload.Data)
+	// Log the message we received using structured logging
+	fields := []zap.Field{
+		zap.String("processor", p.name),
+		zap.Duration("processing_time", processingTime),
 	}
 
-	// Simulate processing work
-	log.Printf("Processor '%s' working for %v...", p.name, processingTime)
+	if msg.Workflow != nil {
+		fields = append(fields,
+			zap.String("workflow_id", msg.Workflow.WorkflowID),
+			zap.String("run_id", msg.Workflow.RunID))
+	}
+	if msg.Node != nil {
+		fields = append(fields, zap.String("node_id", msg.Node.NodeID))
+	}
+	if msg.Payload != nil {
+		fields = append(fields, zap.String("payload_data", msg.Payload.Data))
+	}
+
+	p.logger.Info("Processor received message", fields...)
+	p.logger.Info("Processor starting work", zap.String("processor", p.name), zap.Duration("processing_time", processingTime))
 
 	select {
 	case <-time.After(processingTime):
 		// Processing completed successfully
-		log.Printf("Processor '%s' completed processing", p.name)
+		p.logger.Info("Processor completed processing", zap.String("processor", p.name))
 
 		// Create a result message with the processing results
 		resultMessage := message.NewMessage().
@@ -63,6 +81,7 @@ func (p *SimpleProcessor) Process(ctx context.Context, msg *message.Message) (me
 		return *resultMessage, nil
 	case <-ctx.Done():
 		// Processing was cancelled
+		p.logger.Warn("Processor cancelled", zap.String("processor", p.name), zap.Error(ctx.Err()))
 		return message.Message{}, ctx.Err()
 	}
 }
@@ -80,37 +99,41 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := c.Connect(ctx); err != nil {
-		log.Fatalf("Failed to connect to NATS: %v", err)
-	}
-	defer c.Close()
-
-	// Get JetStream context for stream/consumer setup
-	js := c.JetStream()
-	if js == nil {
-		log.Fatal("JetStream not available")
-	}
-
-	// Setup streams and consumers
-	if err := setupStreams(js); err != nil {
-		log.Fatalf("Failed to setup streams: %v", err)
-	}
-
-	// Publish some test messages
-	fmt.Println("Publishing test messages...")
-	if err := publishTestMessages(c, ctx); err != nil {
-		log.Fatalf("Failed to publish test messages: %v", err)
-	}
-
-	// Create a simple processor
-	processor := &SimpleProcessor{name: "StringProcessor"}
-
 	// Create a logger for the runner
 	logger, err := zap.NewProduction()
 	if err != nil {
 		log.Fatalf("Failed to create logger: %v", err)
 	}
 	defer logger.Sync()
+
+	if err := c.Connect(ctx); err != nil {
+		logger.Fatal("Failed to connect to NATS", zap.Error(err))
+	}
+	defer c.Close()
+
+	// Set the same logger for the client and message service
+	c.SetLogger(logger)
+	c.Messages.SetLogger(logger)
+
+	// Get JetStream context for stream/consumer setup
+	js := c.JetStream()
+	if js == nil {
+		logger.Fatal("JetStream not available")
+	}
+
+	// Setup streams and consumers
+	if err := setupStreams(js, logger); err != nil {
+		logger.Fatal("Failed to setup streams", zap.Error(err))
+	}
+
+	// Publish some test messages
+	logger.Info("Publishing test messages...")
+	if err := publishTestMessages(c, ctx); err != nil {
+		logger.Fatal("Failed to publish test messages", zap.Error(err))
+	}
+
+	// Create a simple processor
+	processor := NewSimpleProcessor("StringProcessor", logger)
 
 	// Create the runner
 	// - Pull from the "TASKS" stream using "task-processor" consumer
@@ -126,10 +149,12 @@ func main() {
 		5,                // number of workers
 		5*time.Minute,    // process timeout (5 minutes)
 		logger,           // zap logger
+		nil,              // no tracing configuration
 	)
 	if err != nil {
 		log.Fatalf("Failed to create runner: %v", err)
 	}
+	defer taskRunner.Close() // Clean up resources
 
 	// Setup graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -141,8 +166,12 @@ func main() {
 	go func() {
 		defer wg.Done()
 		fmt.Println("🚀 Starting message processor...")
-		if err := taskRunner.Run(ctx); err != nil && err != context.Canceled {
-			log.Printf("Runner error: %v", err)
+		if err := taskRunner.Run(ctx); err != nil {
+			if err == context.Canceled {
+				fmt.Println("📋 Message processor stopped due to shutdown signal")
+			} else {
+				log.Printf("Runner error: %v", err)
+			}
 		}
 	}()
 
@@ -160,11 +189,11 @@ func main() {
 }
 
 // setupStreams creates the necessary streams and consumers for the example
-func setupStreams(js nats.JetStreamContext) error {
-	fmt.Println("Setting up JetStream streams and consumers...")
+func setupStreams(js nats.JetStreamContext, logger *zap.Logger) error {
+	logger.Info("Setting up JetStream streams and consumers...")
 
 	// Create TASKS stream for incoming messages to process
-	fmt.Println("Creating TASKS stream...")
+	logger.Info("Creating TASKS stream...")
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:        "TASKS",
 		Description: "Stream for task messages to be processed",
@@ -174,13 +203,13 @@ func setupStreams(js nats.JetStreamContext) error {
 		MaxAge:      24 * time.Hour, // Keep messages for 24 hours
 	})
 	if err != nil {
-		log.Printf("Warning: Could not create TASKS stream (might already exist): %v", err)
+		logger.Warn("Could not create TASKS stream (might already exist)", zap.Error(err))
 	} else {
-		fmt.Println("✓ Created TASKS stream")
+		logger.Info("✓ Created TASKS stream")
 	}
 
 	// Create RESULTS stream for callback reporting
-	fmt.Println("Creating RESULTS stream...")
+	logger.Info("Creating RESULTS stream...")
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:        "RESULTS",
 		Description: "Results stream for success/error callback reporting",
@@ -190,13 +219,13 @@ func setupStreams(js nats.JetStreamContext) error {
 		MaxAge:      24 * time.Hour, // Keep results for 24 hours
 	})
 	if err != nil {
-		log.Printf("Warning: Could not create RESULTS stream (might already exist): %v", err)
+		logger.Warn("Could not create RESULTS stream (might already exist)", zap.Error(err))
 	} else {
-		fmt.Println("✓ Created RESULTS stream")
+		logger.Info("✓ Created RESULTS stream")
 	}
 
 	// Create consumer for the TASKS stream
-	fmt.Println("Creating task processor consumer...")
+	logger.Info("Creating task processor consumer...")
 	_, err = js.AddConsumer("TASKS", &nats.ConsumerConfig{
 		Durable:       "task-processor",
 		Description:   "Consumer for processing task messages",
@@ -206,12 +235,12 @@ func setupStreams(js nats.JetStreamContext) error {
 		MaxAckPending: 100,             // Allow up to 100 unacknowledged messages
 	})
 	if err != nil {
-		log.Printf("Warning: Could not create task processor consumer (might already exist): %v", err)
+		logger.Warn("Could not create task processor consumer (might already exist)", zap.Error(err))
 	} else {
-		fmt.Println("✓ Created task processor consumer")
+		logger.Info("✓ Created task processor consumer")
 	}
 
-	fmt.Println("✅ Stream and consumer setup complete")
+	logger.Info("✅ Stream and consumer setup complete")
 	return nil
 }
 
