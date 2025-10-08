@@ -3,6 +3,8 @@ package message
 import (
 	"context"
 	"fmt"
+
+	"go.uber.org/zap"
 )
 
 // Handler is a function that processes incoming JetStream messages.
@@ -62,26 +64,37 @@ func RecoveryMiddleware() Middleware {
 	}
 }
 
-// LoggingMiddleware logs message processing (placeholder for structured logging)
-func LoggingMiddleware() Middleware {
+// LoggingMiddleware logs message processing using structured logging
+func LoggingMiddleware(logger *zap.Logger) Middleware {
+	if logger == nil {
+		logger, _ = zap.NewProduction()
+	}
 	return func(next Handler) Handler {
 		return func(ctx context.Context, msg *NATSMsg) error {
 			// Create a message identifier from workflow or node information
 			var msgID string
+			fields := []zap.Field{zap.String("subject", msg.Subject)}
+
 			if msg.Workflow != nil {
 				msgID = fmt.Sprintf("workflow:%s/run:%s", msg.Workflow.WorkflowID, msg.Workflow.RunID)
+				fields = append(fields,
+					zap.String("workflow_id", msg.Workflow.WorkflowID),
+					zap.String("run_id", msg.Workflow.RunID))
 			} else if msg.Node != nil {
 				msgID = fmt.Sprintf("node:%s", msg.Node.NodeID)
+				fields = append(fields, zap.String("node_id", msg.Node.NodeID))
 			} else {
 				msgID = "unknown"
 			}
 
-			fmt.Printf("Processing message: ID=%s, Subject=%s\n", msgID, msg.Subject)
+			fields = append(fields, zap.String("message_id", msgID))
+
+			logger.Info("Processing message", fields...)
 			err := next(ctx, msg)
 			if err != nil {
-				fmt.Printf("Error processing message: ID=%s, Error=%v\n", msgID, err)
+				logger.Error("Error processing message", append(fields, zap.Error(err))...)
 			} else {
-				fmt.Printf("Successfully processed message: ID=%s\n", msgID)
+				logger.Info("Successfully processed message", fields...)
 			}
 			return err
 		}

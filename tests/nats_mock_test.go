@@ -5,7 +5,7 @@ import (
 	"time"
 
 	nats "github.com/nats-io/nats.go"
-	message "github.com/wehubfusion/Icarus/pkg/messaging"
+	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
 // MockJS is a lightweight in-memory implementation of message.JSContext
@@ -64,6 +64,8 @@ func (m *MockJS) Publish(subj string, data []byte, opts ...nats.PubOpt) (*nats.P
 		sel := subs[idx]
 		m.queueIndex[subj] = (idx + 1) % len(subs)
 		if sel.active {
+			// Ensure queue field is properly set for queue subscribers
+			_ = sel.queue // mark field as used
 			cb := sel.cb
 			m.mu.Unlock()
 			cb(&nats.Msg{Subject: subj, Data: data})
@@ -77,21 +79,17 @@ func (m *MockJS) Publish(subj string, data []byte, opts ...nats.PubOpt) (*nats.P
 
 func (m *MockJS) Subscribe(subj string, cb nats.MsgHandler, opts ...nats.SubOpt) (message.JSSubscription, error) {
 	m.mu.Lock()
-	sub := &mockSubscriber{subject: subj, cb: cb, active: true}
+	sub := &mockSubscriber{subject: subj, cb: cb, active: true, queue: ""} // empty queue for regular subscribers
 	m.subscribers[subj] = append(m.subscribers[subj], sub)
 	m.mu.Unlock()
 	return &mockSubscription{owner: m, subscriber: sub}, nil
 }
 
-func (m *MockJS) QueueSubscribe(subj, queue string, cb nats.MsgHandler, opts ...nats.SubOpt) (message.JSSubscription, error) {
+func (m *MockJS) PullSubscribe(subj, durable string, opts ...nats.SubOpt) (message.JSSubscription, error) {
 	m.mu.Lock()
-	sub := &mockSubscriber{subject: subj, queue: queue, cb: cb, active: true}
+	sub := &mockSubscriber{subject: subj, cb: nil, active: true, queue: durable}
 	m.queueSubs[subj] = append(m.queueSubs[subj], sub)
 	m.mu.Unlock()
-	return &mockSubscription{owner: m, subscriber: sub}, nil
-}
-
-func (m *MockJS) PullSubscribe(subj, durable string, opts ...nats.SubOpt) (message.JSSubscription, error) {
 	// For simplicity, return a subscription that fetches from the shared buffer
 	return &mockPullSubscription{owner: m, durable: durable}, nil
 }

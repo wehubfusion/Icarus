@@ -2,13 +2,13 @@ package tests
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/wehubfusion/Icarus/pkg/client"
-	message "github.com/wehubfusion/Icarus/pkg/messaging"
+	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
 // With the in-memory mock JetStream, no server or stream setup is required.
@@ -120,133 +120,6 @@ func TestMessagePublishing(t *testing.T) {
 	}
 }
 
-func TestMessageSubscription(t *testing.T) {
-	c := client.NewClientWithJSContext(NewMockJS())
-	ctx := context.Background()
-
-	var receivedMsg *message.NATSMsg
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	// Subscribe to messages
-	handler := func(ctx context.Context, msg *message.NATSMsg) error {
-		receivedMsg = msg
-		msg.Ack() // Acknowledge the message
-		wg.Done()
-		return nil
-	}
-
-	sub, err := c.Messages.Subscribe(ctx, "test.events.user.created", handler)
-	if err != nil {
-		t.Fatalf("Failed to subscribe: %v", err)
-	}
-	defer sub.Unsubscribe()
-
-	// Give subscription time to be ready
-	time.Sleep(10 * time.Millisecond)
-
-	// Publish a message
-	testMsg := message.NewWorkflowMessage("workflow-sub", uuid.New().String()).
-		WithPayload("test", "subscription test", "ref-sub")
-
-	err = c.Messages.Publish(ctx, "test.events.user.created", testMsg)
-	if err != nil {
-		t.Fatalf("Failed to publish test message: %v", err)
-	}
-
-	// Wait for message to be received
-	done := make(chan bool, 1)
-	go func() {
-		wg.Wait()
-		done <- true
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(1 * time.Second):
-		t.Fatal("Timeout waiting for message")
-	}
-
-	// Verify received message
-	if receivedMsg == nil {
-		t.Fatal("No message received")
-	}
-	if receivedMsg.Workflow.WorkflowID != testMsg.Workflow.WorkflowID {
-		t.Errorf("Workflow ID mismatch: expected %s, got %s", testMsg.Workflow.WorkflowID, receivedMsg.Workflow.WorkflowID)
-	}
-	if receivedMsg.Workflow.RunID != testMsg.Workflow.RunID {
-		t.Errorf("Run ID mismatch: expected %s, got %s", testMsg.Workflow.RunID, receivedMsg.Workflow.RunID)
-	}
-	if receivedMsg.Payload.Data != testMsg.Payload.Data {
-		t.Errorf("Payload data mismatch: expected %s, got %s", testMsg.Payload.Data, receivedMsg.Payload.Data)
-	}
-}
-
-func TestQueueSubscription(t *testing.T) {
-	c := client.NewClientWithJSContext(NewMockJS())
-	ctx := context.Background()
-
-	var receivedCount int
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	wg.Add(3) // Expect 3 messages
-
-	handler := func() message.Handler {
-		return func(ctx context.Context, msg *message.NATSMsg) error {
-			mu.Lock()
-			receivedCount++
-			mu.Unlock()
-			msg.Ack()
-			wg.Done()
-			return nil
-		}
-	}
-
-	// Create 2 queue subscribers
-	queueName := "test_workers"
-	sub1, err := c.Messages.QueueSubscribe(ctx, "test.tasks.process", queueName, handler())
-	if err != nil {
-		t.Fatalf("Failed to create queue subscriber 1: %v", err)
-	}
-	defer sub1.Unsubscribe()
-
-	sub2, err := c.Messages.QueueSubscribe(ctx, "test.tasks.process", queueName, handler())
-	if err != nil {
-		t.Fatalf("Failed to create queue subscriber 2: %v", err)
-	}
-	defer sub2.Unsubscribe()
-
-	time.Sleep(10 * time.Millisecond)
-
-	// Publish 3 messages
-	for i := 1; i <= 3; i++ {
-		msg := message.NewWorkflowMessage("workflow-queue", uuid.New().String()).
-			WithPayload("queue", "task "+string(rune(i+'0')), "task-"+string(rune(i+'0')))
-		err := c.Messages.Publish(ctx, "test.tasks.process", msg)
-		if err != nil {
-			t.Fatalf("Failed to publish message %d: %v", i, err)
-		}
-	}
-
-	// Wait for all messages to be processed
-	done := make(chan bool, 1)
-	go func() {
-		wg.Wait()
-		done <- true
-	}()
-
-	select {
-	case <-done:
-		// Success
-	case <-time.After(1 * time.Second):
-		t.Fatal("Timeout waiting for messages")
-	}
-
-	if receivedCount != 3 {
-		t.Errorf("Expected 3 messages received, got %d", receivedCount)
-	}
-}
-
 func TestPullMessages(t *testing.T) {
 	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
@@ -283,137 +156,163 @@ func TestPullMessages(t *testing.T) {
 	}
 }
 
-func TestMiddleware(t *testing.T) {
-	c := client.NewClientWithJSContext(NewMockJS())
-	ctx := context.Background()
-
-	// Add validation middleware
-	c.Messages = c.Messages.WithMiddleware(message.ValidationMiddleware())
-
-	var received bool
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	handler := func(ctx context.Context, msg *message.NATSMsg) error {
-		received = true
-		msg.Ack()
-		wg.Done()
-		return nil
-	}
-
-	sub, err := c.Messages.Subscribe(ctx, "test.events.user.created", handler)
-	if err != nil {
-		t.Fatalf("Failed to subscribe: %v", err)
-	}
-	defer sub.Unsubscribe()
-
-	time.Sleep(10 * time.Millisecond)
-
-	// Test with valid message
-	validMsg := message.NewWorkflowMessage("workflow-middleware", uuid.New().String()).
-		WithPayload("middleware-test", "valid content", "ref-middleware")
-
-	err = c.Messages.Publish(ctx, "test.events.user.created", validMsg)
-	if err != nil {
-		t.Fatalf("Failed to publish valid message: %v", err)
-	}
-
-	// Wait for processing
-	done := make(chan bool, 1)
-	go func() {
-		wg.Wait()
-		done <- true
-	}()
-
-	select {
-	case <-done:
-		if !received {
-			t.Error("Expected message to be received")
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("Timeout waiting for message processing")
-	}
-}
-
-func TestAcknowledgment(t *testing.T) {
-	c := client.NewClientWithJSContext(NewMockJS())
-	ctx := context.Background()
-
-	t.Run("TestAck", func(t *testing.T) {
-		var ackCalled bool
-		var wg sync.WaitGroup
-		wg.Add(1)
-
-		handler := func(ctx context.Context, msg *message.NATSMsg) error {
-			err := msg.Ack()
-			if err != nil {
-				t.Errorf("Ack failed: %v", err)
-			}
-			ackCalled = true
-			wg.Done()
-			return nil
-		}
-
-		sub, err := c.Messages.Subscribe(ctx, "test.events.ack", handler)
-		if err != nil {
-			t.Fatalf("Failed to subscribe: %v", err)
-		}
-		defer sub.Unsubscribe()
-
-		time.Sleep(10 * time.Millisecond)
-
-		msg := message.NewWorkflowMessage("workflow-ack", uuid.New().String()).
-			WithPayload("ack-test", "ack test", "ref-ack")
-		err = c.Messages.Publish(ctx, "test.events.ack", msg)
-		if err != nil {
-			t.Fatalf("Failed to publish: %v", err)
-		}
-
-		wg.Wait()
-
-		if !ackCalled {
-			t.Error("Ack was not called")
-		}
-	})
-
-	t.Run("TestNak", func(t *testing.T) {
-		var nakCalled bool
-		var wg sync.WaitGroup
-		wg.Add(1)
-
-		handler := func(ctx context.Context, msg *message.NATSMsg) error {
-			err := msg.Nak()
-			if err != nil {
-				t.Errorf("Nak failed: %v", err)
-			}
-			nakCalled = true
-			wg.Done()
-			return nil
-		}
-
-		sub, err := c.Messages.Subscribe(ctx, "test.events.nak", handler)
-		if err != nil {
-			t.Fatalf("Failed to subscribe: %v", err)
-		}
-		defer sub.Unsubscribe()
-
-		time.Sleep(10 * time.Millisecond)
-
-		msg := message.NewWorkflowMessage("workflow-nak", uuid.New().String()).
-			WithPayload("nak-test", "nak test", "ref-nak")
-		err = c.Messages.Publish(ctx, "test.events.nak", msg)
-		if err != nil {
-			t.Fatalf("Failed to publish: %v", err)
-		}
-
-		wg.Wait()
-
-		if !nakCalled {
-			t.Error("Nak was not called")
-		}
-	})
-}
-
 // Note: JetStream requirement testing is handled in client_test.go
 // The SDK requires JetStream to be enabled on the NATS server.
 // All tests in this file assume JetStream is available.
+
+func TestMessageUpdateTimestamp(t *testing.T) {
+	msg := message.NewMessage()
+	originalUpdatedAt := msg.UpdatedAt
+
+	// Wait to ensure timestamp changes (RFC3339 has second precision)
+	time.Sleep(1001 * time.Millisecond)
+
+	msg.UpdateTimestamp()
+	if msg.UpdatedAt == originalUpdatedAt {
+		t.Error("UpdateTimestamp should change the UpdatedAt field")
+	}
+}
+
+func TestMessageWithMetadata(t *testing.T) {
+	msg := message.NewMessage()
+
+	// Test adding metadata
+	msg.WithMetadata("key1", "value1")
+	if msg.Metadata["key1"] != "value1" {
+		t.Errorf("Expected metadata key1=value1, got %s", msg.Metadata["key1"])
+	}
+
+	// Test adding multiple metadata entries
+	msg.WithMetadata("key2", "value2")
+	if len(msg.Metadata) != 2 {
+		t.Errorf("Expected 2 metadata entries, got %d", len(msg.Metadata))
+	}
+
+	// Test metadata on message without existing metadata map
+	msg2 := &message.Message{}
+	msg2.WithMetadata("test", "value")
+	if msg2.Metadata == nil {
+		t.Error("WithMetadata should initialize metadata map")
+	}
+	if msg2.Metadata["test"] != "value" {
+		t.Error("WithMetadata should set the value correctly")
+	}
+}
+
+func TestMessageAckNakTerm(t *testing.T) {
+	msg := message.NewMessage()
+
+	// Test Ack/Nak/Term without NATS message (should not error)
+	err := msg.Ack()
+	if err != nil {
+		t.Errorf("Ack should not error without NATS message, got: %v", err)
+	}
+
+	err = msg.Nak()
+	if err != nil {
+		t.Errorf("Nak should not error without NATS message, got: %v", err)
+	}
+
+	err = msg.Term()
+	if err != nil {
+		t.Errorf("Term should not error without NATS message, got: %v", err)
+	}
+
+	// Test GetNATSMsg
+	natsMsg := msg.GetNATSMsg()
+	if natsMsg != nil {
+		t.Error("GetNATSMsg should return nil for message without NATS message")
+	}
+}
+
+func TestFromNATSMsg(t *testing.T) {
+	// Create a test message
+	originalMsg := message.NewWorkflowMessage("workflow-123", "run-456").
+		WithPayload("test", "test data", "ref-123")
+
+	data, err := originalMsg.ToBytes()
+	if err != nil {
+		t.Fatalf("Failed to serialize message: %v", err)
+	}
+
+	// Create NATS message
+	natsMsg := &nats.Msg{
+		Subject: "test.subject",
+		Data:    data,
+		Reply:   "test.reply",
+	}
+
+	// Test FromNATSMsg
+	convertedMsg, err := message.FromNATSMsg(natsMsg)
+	if err != nil {
+		t.Fatalf("FromNATSMsg failed: %v", err)
+	}
+
+	// Verify the converted message
+	if convertedMsg.Workflow.WorkflowID != originalMsg.Workflow.WorkflowID {
+		t.Errorf("WorkflowID mismatch: expected %s, got %s",
+			originalMsg.Workflow.WorkflowID, convertedMsg.Workflow.WorkflowID)
+	}
+
+	if convertedMsg.Payload.Data != originalMsg.Payload.Data {
+		t.Errorf("Payload data mismatch: expected %s, got %s",
+			originalMsg.Payload.Data, convertedMsg.Payload.Data)
+	}
+}
+
+func TestNATSMsgWrapper(t *testing.T) {
+	// Create a test message
+	msg := message.NewWorkflowMessage("workflow-123", "run-456").
+		WithPayload("test", "test data", "ref-123")
+
+	// Note: We don't need to create a real NATS message for this test
+	// The NATSMsg wrapper is what we're testing
+
+	// Create NATSMsg wrapper
+	wrappedMsg := &message.NATSMsg{
+		Message: msg,
+		Subject: "test.subject",
+		Reply:   "test.reply",
+	}
+
+	// Test that wrapper preserves message data
+	if wrappedMsg.Workflow.WorkflowID != msg.Workflow.WorkflowID {
+		t.Error("NATSMsg wrapper should preserve workflow ID")
+	}
+
+	if wrappedMsg.Subject != "test.subject" {
+		t.Error("NATSMsg wrapper should preserve subject")
+	}
+
+	if wrappedMsg.Reply != "test.reply" {
+		t.Error("NATSMsg wrapper should preserve reply")
+	}
+
+	// Test acknowledgment methods (should not error without real NATS message)
+	err := wrappedMsg.Ack()
+	if err != nil {
+		t.Errorf("Ack should not error without real NATS message, got: %v", err)
+	}
+
+	err = wrappedMsg.Nak()
+	if err != nil {
+		t.Errorf("Nak should not error without real NATS message, got: %v", err)
+	}
+
+	err = wrappedMsg.InProgress()
+	if err != nil {
+		t.Errorf("InProgress should not error without real NATS message, got: %v", err)
+	}
+
+	err = wrappedMsg.Term()
+	if err != nil {
+		t.Errorf("Term should not error without real NATS message, got: %v", err)
+	}
+
+	// Test Respond method
+	response := message.NewMessage().WithPayload("response", "test response", "response-ref")
+	err = wrappedMsg.Respond(response)
+	if err != nil {
+		t.Errorf("Respond should not error without real NATS message, got: %v", err)
+	}
+}

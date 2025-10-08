@@ -14,6 +14,7 @@ A clean, future-proof Go SDK for messaging over NATS JetStream with idiomatic pa
   - Publish/Subscribe (JetStream-backed)
   - Queue subscriptions (load balancing with JetStream consumers)
   - Pull-based consumers (batch message processing)
+  - Concurrent message processing with worker pools (Runner)
 - **Middleware Support**: Composable middleware for cross-cutting concerns
 - **Robust Error Handling**: SDK-specific errors with proper error wrapping
 - **Connection Management**: Automatic reconnection and connection health monitoring
@@ -34,7 +35,7 @@ go get github.com/wehubfusion/Icarus
 import (
     "context"
     "github.com/wehubfusion/Icarus/pkg/client"
-    "github.com/wehubfusion/Icarus/pkg/messaging"
+    "github.com/wehubfusion/Icarus/pkg/message"
 )
 
 // Create and connect client
@@ -98,15 +99,45 @@ handler := func(ctx context.Context, msg *message.NATSMsg) error {
 }
 
 // Worker 1
-sub1, _ := c.Messages.QueueSubscribe(ctx, "tasks.process", "workers", handler)
+sub1, _ := c.Messages.Subscribe(ctx, "tasks.process", handler)
 defer sub1.Unsubscribe()
 
 // Worker 2
-sub2, _ := c.Messages.QueueSubscribe(ctx, "tasks.process", "workers", handler)
+sub2, _ := c.Messages.Subscribe(ctx, "tasks.process", handler)
 defer sub2.Unsubscribe()
 
-// Messages published to "tasks.process" will be distributed between workers
+// Messages published to "tasks.process" will be received by both workers
 ```
+
+### 5. Concurrent Message Processing (Runner)
+
+```go
+// Define a message processor
+processor := func(ctx context.Context, msg *message.Message) error {
+    var content string
+    if msg.Payload != nil {
+        content = msg.Payload.Data
+    }
+    fmt.Printf("Processing: %s (Workflow: %s)\n", content, msg.Workflow.WorkflowID)
+    // Process message...
+    return nil
+}
+
+// Create and configure runner
+runner := client.NewRunner(c, "mystream", "myconsumer", 10, 3) // batchSize=10, numWorkers=3
+runner.RegisterProcessor(processor)
+
+// Start processing (blocks until context cancelled)
+if err := runner.Run(ctx); err != nil {
+    log.Printf("Runner error: %v", err)
+}
+```
+
+The Runner provides:
+- Concurrent message processing with configurable worker pools
+- Batch message pulling from JetStream consumers
+- Automatic success/error reporting to the "result" subject
+- Graceful shutdown on context cancellation
 
 ## Client Architecture
 
@@ -245,6 +276,7 @@ if err := c.Messages.Publish(ctx, "events.test", msg); err != nil {
 ```text
 Icarus/
 ├── go.mod
+├── go.sum
 ├── README.md
 ├── internal/                 # Private helpers
 │   └── nats/                 # NATS connection utilities
@@ -252,42 +284,61 @@ Icarus/
 ├── pkg/                      # Public API
 │   ├── client/               # Central NATS client
 │   │   └── client.go         # Client with connection management
-│   ├── messaging/            # Messaging functionality
+│   ├── message/              # Message handling and JetStream operations
 │   │   ├── message.go        # Message struct and serialization
 │   │   ├── handler.go        # Handler types and middleware
 │   │   └── service.go        # Message service with pub/sub operations
+│   ├── runner/               # Concurrent message processing
+│   │   └── runner.go         # Worker pool-based message processing
 │   ├── errors/               # SDK-specific errors
 │   │   └── errors.go         # Error types and utilities
 │   └── process/              # Process management utilities
 │       └── strings/          # String processing utilities
-└── examples/                 # Usage examples
-    ├── message/              # JetStream messaging patterns
-    │   └── main.go           # All messaging patterns with the client
-    └── process/              # Process management examples
-        ├── main.go           # Entry point and overview of process examples
-        └── strings/          # String processing utilities
-            └── main.go      # Comprehensive string processing demo
+│           └── strings.go    # String manipulation functions
+├── examples/                 # Usage examples
+│   ├── message/              # JetStream messaging patterns
+│   │   └── main.go           # All messaging patterns with the client
+│   ├── runner/               # Concurrent processing examples
+│   │   └── main.go           # Runner usage examples
+│   └── process/              # Process management examples
+│       └── strings/          # String processing utilities
+│           └── main.go       # String processing demo
+└── tests/                    # Test suite
+    ├── client_test.go        # Client functionality tests
+    ├── message_test.go       # Message and service tests
+    ├── runner_test.go        # Runner functionality tests
+    ├── nats_mock_test.go     # Mock implementations for testing
+    └── error_test.go         # Error handling tests
 ```
 
 ## Error Handling
 
-The SDK provides structured error handling:
+The SDK provides structured error handling with typed errors:
 
 ```go
-import sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
+import (
+    sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
+    "errors"
+)
 
 err := c.Messages.Publish(ctx, "test", msg)
 if err != nil {
-    // Check for specific error types
-    if sdkerrors.IsTimeout(err) {
-        fmt.Println("Operation timed out")
-    } else if sdkerrors.IsNotConnected(err) {
-        fmt.Println("Not connected to NATS")
+    // Check for specific error types using errors.As
+    var appErr *sdkerrors.AppError
+    if errors.As(err, &appErr) {
+        switch appErr.Type {
+        case sdkerrors.ValidationFailed:
+            fmt.Println("Validation error:", appErr.Message)
+        case sdkerrors.NotFound:
+            fmt.Println("Resource not found:", appErr.Message)
+        case sdkerrors.Internal:
+            fmt.Println("Internal error:", appErr.Message)
+        }
     }
 
-    // Or check with errors.Is
-    if errors.Is(err, sdkerrors.ErrTimeout) {
-        fmt.Println("Timeout error")
+    // Or check specific error codes
+    if errors.As(err, &appErr) && appErr.Code == "NOT_CONNECTED" {
+        fmt.Println("Not connected to NATS")
     }
 }
 ```
@@ -404,7 +455,7 @@ import (
     "time"
 
     "github.com/wehubfusion/Icarus/pkg/client"
-    "github.com/wehubfusion/Icarus/pkg/messaging"
+    "github.com/wehubfusion/Icarus/pkg/message"
     "github.com/google/uuid"
 )
 
@@ -418,13 +469,13 @@ func main() {
     }
     defer c.Close()
 
-// Apply middleware
-c.Messages = c.Messages.WithMiddleware(
-    message.Chain(
-        RecoveryMiddleware(),
-        LoggingMiddleware(),
-    ),
-)
+    // Apply middleware
+    c.Messages = c.Messages.WithMiddleware(
+        message.Chain(
+            RecoveryMiddleware(),
+            LoggingMiddleware(),
+        ),
+    )
 
     // Subscribe
     handler := func(ctx context.Context, msg *message.NATSMsg) error {
@@ -477,14 +528,51 @@ for _, msg := range messages {
 }
 ```
 
+### Runner Example
+
+```go
+// Define a message processor for concurrent processing
+processor := func(ctx context.Context, msg *message.Message) error {
+    var content string
+    if msg.Payload != nil {
+        content = msg.Payload.Data
+    }
+    fmt.Printf("Processing: %s (Workflow: %s)\n", content, msg.Workflow.WorkflowID)
+    // Simulate processing work
+    time.Sleep(100 * time.Millisecond)
+    return nil
+}
+
+// Create and configure runner for concurrent processing
+runner := client.NewRunner(c, "EVENTS", "worker-consumer", 5, 3) // batchSize=5, numWorkers=3
+runner.RegisterProcessor(processor)
+
+// Start processing in background (blocks until context cancelled)
+go func() {
+    if err := runner.Run(ctx); err != nil {
+        log.Printf("Runner error: %v", err)
+    }
+}()
+
+// Publish messages for processing
+for i := 0; i < 10; i++ {
+    msg := message.NewWorkflowMessage("batch-workflow", fmt.Sprintf("run-%d", i)).
+        WithPayload("batch-service", fmt.Sprintf("Message %d", i), fmt.Sprintf("msg-%d", i))
+    if err := c.Messages.Publish(ctx, "events.process", msg); err != nil {
+        log.Printf("Failed to publish: %v", err)
+    }
+}
+
+time.Sleep(2 * time.Second) // Wait for processing
+```
+
 ## Examples
 
 See the `examples/` directory for complete working examples:
 
 - **examples/message/main.go**: Demonstrates JetStream messaging patterns including publish/subscribe, queue subscriptions, and pull-based consumers
-- **examples/process/**: Process management examples organized by functionality
-  - **examples/process/main.go**: Entry point for process examples with overview
-  - **examples/process/strings/main.go**: Comprehensive string processing utilities demo
+- **examples/runner/main.go**: Shows concurrent message processing using the Runner with worker pools
+- **examples/process/strings/main.go**: Comprehensive string processing utilities demo
 
 To run examples:
 
@@ -495,10 +583,11 @@ docker run -p 4222:4222 nats:latest
 # Run message example
 go run examples/message/main.go
 
-# Run process examples
-go run examples/process/main.go                    # Show available examples
-go run examples/process/main.go strings           # Run string processing demo
-go run examples/process/strings/main.go           # Direct run of string demo
+# Run runner example
+go run examples/runner/main.go
+
+# Run string processing example
+go run examples/process/strings/main.go
 ```
 
 ## Migration Guide
