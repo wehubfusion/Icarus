@@ -15,10 +15,14 @@ A clean, future-proof Go SDK for messaging over NATS JetStream with idiomatic pa
   - Queue subscriptions (load balancing with JetStream consumers)
   - Pull-based consumers (batch message processing)
   - Concurrent message processing with worker pools (Runner)
+- **Runner Framework**: Built-in concurrent message processing with configurable worker pools, batch processing, and automatic success/error callback reporting
+- **Distributed Tracing**: Integrated OpenTelemetry tracing support with Jaeger and OTLP exporters for observability
+- **Callback Reporting**: Automatic success and error reporting to result streams with proper message acknowledgment
 - **Middleware Support**: Composable middleware for cross-cutting concerns
 - **Robust Error Handling**: SDK-specific errors with proper error wrapping
 - **Connection Management**: Automatic reconnection and connection health monitoring
 - **Full JetStream Integration**: Automatic JetStream context initialization and advanced operations
+- **Structured Logging**: Built-in zap logger integration with configurable log levels
 - **Future-Proof**: Designed for easy extension with growing process management capabilities
 
 ## Installation
@@ -34,13 +38,22 @@ go get github.com/wehubfusion/Icarus
 ```go
 import (
     "context"
+    "time"
+
     "github.com/wehubfusion/Icarus/pkg/client"
     "github.com/wehubfusion/Icarus/pkg/message"
+    "github.com/wehubfusion/Icarus/pkg/runner"
+    "github.com/wehubfusion/Icarus/pkg/tracing"
+    "go.uber.org/zap"
 )
 
 // Create and connect client
 c := client.NewClient("nats://localhost:4222")
 ctx := context.Background()
+
+// Create logger (optional, defaults will be used if not set)
+logger, _ := zap.NewProduction()
+c.SetLogger(logger)
 
 if err := c.Connect(ctx); err != nil {
     log.Fatalf("Failed to connect: %v", err)
@@ -112,20 +125,47 @@ defer sub2.Unsubscribe()
 ### 5. Concurrent Message Processing (Runner)
 
 ```go
-// Define a message processor
-processor := func(ctx context.Context, msg *message.Message) error {
+// Define a message processor that implements the Processor interface
+type MyProcessor struct{}
+
+func (p *MyProcessor) Process(ctx context.Context, msg *message.Message) (message.Message, error) {
     var content string
     if msg.Payload != nil {
         content = msg.Payload.Data
     }
     fmt.Printf("Processing: %s (Workflow: %s)\n", content, msg.Workflow.WorkflowID)
-    // Process message...
-    return nil
+
+    // Create result message with processing outcome
+    resultMessage := message.NewMessage().
+        WithPayload("processor", "Successfully processed", "result-ref")
+
+    // Copy workflow information for callback reporting
+    if msg.Workflow != nil {
+        resultMessage.Workflow = msg.Workflow
+    }
+
+    return *resultMessage, nil
 }
 
-// Create and configure runner
-runner := client.NewRunner(c, "mystream", "myconsumer", 10, 3) // batchSize=10, numWorkers=3
-runner.RegisterProcessor(processor)
+// Create and configure runner with tracing
+processor := &MyProcessor{}
+tracingConfig := tracing.JaegerConfig("my-service")
+
+runner, err := runner.NewRunner(
+    c,                // client
+    processor,        // processor implementation
+    "TASKS",          // stream name
+    "task-consumer",  // consumer name
+    10,               // batch size
+    3,                // number of workers
+    5*time.Minute,    // process timeout
+    logger,           // zap logger
+    &tracingConfig,   // tracing configuration (optional)
+)
+if err != nil {
+    log.Fatal(err)
+}
+defer runner.Close() // Clean up tracing resources
 
 // Start processing (blocks until context cancelled)
 if err := runner.Run(ctx); err != nil {
@@ -137,6 +177,7 @@ The Runner provides:
 - Concurrent message processing with configurable worker pools
 - Batch message pulling from JetStream consumers
 - Automatic success/error reporting to the "result" subject
+- Built-in OpenTelemetry tracing support
 - Graceful shutdown on context cancellation
 
 ## Client Architecture
@@ -148,8 +189,10 @@ type Client struct {
     conn   *natsclient.Conn
     js     natsclient.JetStreamContext
     config *nats.ConnectionConfig
+    logger *zap.Logger
 
-    // Public service interface
+    // Messages provides access to all JetStream messaging operations including
+    // publish, subscribe, request-reply, and pull-based consumers
     Messages *message.MessageService
 
     // Reserved for future expansion
@@ -169,6 +212,11 @@ Users can now access messaging operations directly through the client:
 
 ```go
 c := client.NewClient("nats://localhost:4222")
+
+// Configure logger (optional - defaults will be used if not set)
+logger, _ := zap.NewProduction()
+c.SetLogger(logger)
+
 c.Connect(ctx)
 // c.Messages is ready to use immediately
 c.Messages.Publish(ctx, "subject", msg)
@@ -188,6 +236,434 @@ if js != nil {
     })
 }
 ```
+
+## Runner Framework
+
+The Runner provides a powerful concurrent message processing framework that automatically handles batch processing, worker pools, success/error callbacks, and distributed tracing.
+
+### Runner Architecture
+
+The Runner consists of the following components:
+
+- **Processor Interface**: Defines how individual messages are processed
+- **Worker Pool**: Configurable number of goroutines for concurrent processing
+- **Batch Puller**: Pulls messages in configurable batches from JetStream consumers
+- **Callback Reporter**: Automatically reports success/error results to the "result" subject
+- **Tracing Integration**: Built-in OpenTelemetry tracing with span propagation
+- **Graceful Shutdown**: Handles context cancellation and proper cleanup
+
+### Processor Interface
+
+Implement the `Processor` interface to define your message processing logic:
+
+```go
+type Processor interface {
+    Process(ctx context.Context, msg *message.Message) (message.Message, error)
+}
+```
+
+The `Process` method should:
+- Return a result `Message` containing processing outcomes
+- Copy workflow information from input to result message for callback reporting
+- Handle errors appropriately (they'll be automatically reported)
+
+### Creating a Runner
+
+```go
+// Implement the Processor interface
+type MyProcessor struct{}
+
+func (p *MyProcessor) Process(ctx context.Context, msg *message.Message) (message.Message, error) {
+    // Your processing logic here
+
+    // Create result message
+    result := message.NewMessage().
+        WithPayload("processor", "Processing complete", "result-ref")
+
+    // Copy workflow info for callback reporting
+    if msg.Workflow != nil {
+        result.Workflow = msg.Workflow
+    }
+
+    return *result, nil
+}
+
+// Configure tracing (optional)
+tracingConfig := tracing.JaegerConfig("my-service")
+
+// Create runner
+runner, err := runner.NewRunner(
+    client,           // Connected Icarus client
+    &MyProcessor{},   // Processor implementation
+    "TASKS",          // Stream name
+    "task-consumer",  // Consumer name
+    10,               // Batch size (messages per pull)
+    5,                // Number of worker goroutines
+    5*time.Minute,    // Processing timeout per message
+    logger,           // Zap logger
+    &tracingConfig,   // Tracing configuration (nil to disable)
+)
+if err != nil {
+    log.Fatal(err)
+}
+defer runner.Close() // Cleanup tracing resources
+
+// Start processing (blocks until context cancelled)
+if err := runner.Run(ctx); err != nil {
+    log.Printf("Runner stopped: %v", err)
+}
+```
+
+### Runner Configuration Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `client` | `*client.Client` | Connected Icarus client |
+| `processor` | `Processor` | Message processing implementation |
+| `stream` | `string` | JetStream stream name to consume from |
+| `consumer` | `string` | Durable consumer name |
+| `batchSize` | `int` | Messages to pull per batch (1-1000) |
+| `numWorkers` | `int` | Concurrent worker goroutines (1-100) |
+| `processTimeout` | `time.Duration` | Max processing time per message |
+| `logger` | `*zap.Logger` | Structured logger (cannot be nil) |
+| `tracingConfig` | `*tracing.TracingConfig` | Tracing setup (nil disables tracing) |
+
+### Automatic Callback Reporting
+
+The Runner automatically reports processing results:
+
+**Success Callbacks**: Published to the "result" subject when processing succeeds
+**Error Callbacks**: Published to the "result" subject when processing fails
+**Message Acknowledgment**: Source messages are properly ack'd/nack'd based on processing outcome
+
+### Stream and Consumer Setup
+
+Ensure your streams and consumers are configured for the Runner:
+
+```go
+js := client.JetStream()
+
+// Create stream
+_, err := js.AddStream(&nats.StreamConfig{
+    Name:        "TASKS",
+    Description: "Task messages for processing",
+    Subjects:    []string{"tasks.>"},
+    Storage:     nats.FileStorage,
+    Replicas:    1,
+    MaxAge:      24 * time.Hour,
+})
+
+// Create consumer
+_, err = js.AddConsumer("TASKS", &nats.ConsumerConfig{
+    Durable:       "task-consumer",
+    Description:   "Consumer for task processing",
+    AckPolicy:     nats.AckExplicitPolicy,
+    MaxDeliver:    3,               // Retry failed messages
+    AckWait:       5 * time.Minute, // Wait for acknowledgment
+    MaxAckPending: 100,             // Allow pending messages
+})
+```
+
+### Tracing Integration
+
+The Runner includes comprehensive tracing:
+
+- **Automatic Span Creation**: Spans for message pulling, processing, and reporting
+- **Context Propagation**: Trace context flows through the entire processing pipeline
+- **Rich Attributes**: Workflow IDs, run IDs, worker information, timing data
+- **Error Recording**: Failed processing is recorded in spans
+- **Cleanup**: Proper shutdown of tracing resources
+
+## Distributed Tracing
+
+Icarus includes built-in OpenTelemetry tracing support for observability and debugging of message processing pipelines.
+
+### Tracing Setup
+
+Configure tracing when creating a Runner or set it up manually:
+
+```go
+// Option 1: Jaeger configuration (recommended for development)
+tracingConfig := tracing.JaegerConfig("my-service-name")
+tracingConfig.SampleRatio = 1.0 // Sample all traces in development
+
+// Option 2: Generic OTLP configuration
+tracingConfig := tracing.TracingConfig{
+    ServiceName:    "my-service",
+    ServiceVersion: "1.0.0",
+    Environment:    "production",
+    OTLPEndpoint:   "otel-collector.company.com:4318", // Host:port only
+    SampleRatio:    0.1, // Sample 10% of traces in production
+}
+
+// Option 3: Manual setup
+shutdown, err := tracing.SetupTracing(ctx, tracingConfig, logger)
+if err != nil {
+    logger.Error("Failed to setup tracing", zap.Error(err))
+}
+defer shutdown(ctx) // Cleanup when done
+```
+
+### Tracing with Runner
+
+The Runner automatically integrates tracing:
+
+```go
+runner, err := runner.NewRunner(
+    client,
+    processor,
+    "TASKS",
+    "task-consumer",
+    10,             // batch size
+    5,              // workers
+    5*time.Minute,  // timeout
+    logger,
+    &tracingConfig, // Enable tracing
+)
+if err != nil {
+    log.Fatal(err)
+}
+defer runner.Close() // Automatically shuts down tracing
+```
+
+### Tracing Configuration
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `ServiceName` | Service identifier for traces | Required |
+| `ServiceVersion` | Service version | "1.0.0" |
+| `Environment` | Deployment environment | "development" |
+| `OTLPEndpoint` | OTLP exporter endpoint (host:port) | "127.0.0.1:4318" |
+| `SampleRatio` | Trace sampling ratio (0.0-1.0) | 1.0 (development), 0.1 (production) |
+
+### What Gets Traced
+
+The Runner creates spans for:
+
+- **Message Pulling**: Batch message retrieval from JetStream
+- **Message Processing**: Individual message processing by workers
+- **Success Reporting**: Callback publication for successful processing
+- **Error Reporting**: Callback publication for failed processing
+
+### Span Attributes
+
+Traces include rich metadata:
+
+```go
+// Workflow information
+workflow.id = "workflow-123"
+workflow.run_id = "run-456"
+
+// Worker information
+worker.id = 2
+
+// Stream/consumer details
+stream = "TASKS"
+consumer = "task-consumer"
+
+// Timing information
+processing.duration_ms = 1500
+
+// Message details
+message.node.id = "process-payment"
+message.payload.source = "api-server"
+message.created_at = "2024-01-01T12:00:00Z"
+```
+
+### Jaeger Integration
+
+For local development with Jaeger:
+
+```bash
+# Start Jaeger
+docker run -d --name jaeger \
+  -p 16686:16686 \
+  -p 14268:14268 \
+  jaegertracing/all-in-one:latest
+
+# Configure Icarus to send traces to Jaeger
+tracingConfig := tracing.JaegerConfig("my-service")
+tracingConfig.OTLPEndpoint = "localhost:14268" // Jaeger OTLP endpoint
+```
+
+Then visit `http://localhost:16686` to view traces.
+
+### Production Setup
+
+For production environments:
+
+```go
+tracingConfig := tracing.TracingConfig{
+    ServiceName:    "order-processor",
+    ServiceVersion: "2.1.0",
+    Environment:    "production",
+    OTLPEndpoint:   "otel-collector.company.com:4318",
+    SampleRatio:    0.1, // Sample 10% of traces
+}
+```
+
+## Callback Reporting
+
+Icarus provides automatic callback reporting for workflow orchestration, allowing downstream systems to be notified of processing results.
+
+### Callback Architecture
+
+The callback system consists of:
+
+- **Result Stream**: A dedicated "result" subject for all callback messages
+- **Success Callbacks**: Published when message processing succeeds
+- **Error Callbacks**: Published when message processing fails
+- **Message Acknowledgment**: Proper ack/nak handling based on processing outcome
+
+### Automatic Callbacks with Runner
+
+The Runner automatically handles callback reporting:
+
+```go
+// When processing succeeds, a success callback is published to "result"
+func (p *MyProcessor) Process(ctx context.Context, msg *message.Message) (message.Message, error) {
+    // Processing logic...
+
+    result := message.NewMessage().
+        WithPayload("processor", "Success", "result-ref")
+
+    // Copy workflow info for callback correlation
+    if msg.Workflow != nil {
+        result.Workflow = msg.Workflow
+    }
+
+    return *result, nil // Triggers success callback
+}
+
+// When processing fails, an error callback is published to "result"
+func (p *MyProcessor) Process(ctx context.Context, msg *message.Message) (message.Message, error) {
+    // Processing logic...
+
+    if someErrorCondition {
+        return message.Message{}, fmt.Errorf("processing failed") // Triggers error callback
+    }
+
+    return *result, nil
+}
+```
+
+### Manual Callback Reporting
+
+You can also report callbacks manually using the MessageService:
+
+```go
+// Report success
+successResult := message.NewWorkflowMessage(workflowID, runID).
+    WithPayload("processor", "Task completed successfully", "success-ref")
+
+err := client.Messages.ReportSuccess(ctx, *successResult, originalNATSMsg)
+if err != nil {
+    logger.Error("Failed to report success", zap.Error(err))
+}
+
+// Report error
+err := client.Messages.ReportError(ctx, workflowID, runID, "Processing failed: timeout", originalNATSMsg)
+if err != nil {
+    logger.Error("Failed to report error", zap.Error(err))
+}
+```
+
+### Callback Message Format
+
+Success callbacks contain:
+
+```json
+{
+  "workflow": {
+    "workflowID": "workflow-123",
+    "runID": "run-456"
+  },
+  "payload": {
+    "source": "processor",
+    "data": "Processing completed successfully",
+    "reference": "result-ref"
+  },
+  "metadata": {
+    "result_type": "success"
+  },
+  "createdAt": "2024-01-01T12:00:00Z",
+  "updatedAt": "2024-01-01T12:00:00Z"
+}
+```
+
+Error callbacks contain:
+
+```json
+{
+  "workflow": {
+    "workflowID": "workflow-123",
+    "runID": "run-456"
+  },
+  "payload": {
+    "source": "callback-service",
+    "data": "Processing failed: connection timeout",
+    "reference": "error-workflow-123-run-456"
+  },
+  "metadata": {
+    "result_type": "error",
+    "correlation_id": "workflow-123-run-456"
+  },
+  "createdAt": "2024-01-01T12:00:00Z",
+  "updatedAt": "2024-01-01T12:00:00Z"
+}
+```
+
+### Setting Up Result Streams
+
+Create a stream to capture callback messages:
+
+```go
+js := client.JetStream()
+
+// Create RESULTS stream for callbacks
+_, err := js.AddStream(&nats.StreamConfig{
+    Name:        "RESULTS",
+    Description: "Stream for success/error callback reporting",
+    Subjects:    []string{"result"},
+    Storage:     nats.FileStorage,
+    Replicas:    1,
+    MaxAge:      7 * 24 * time.Hour, // Keep results for 7 days
+})
+```
+
+### Consuming Callbacks
+
+Subscribe to callbacks for monitoring or further processing:
+
+```go
+// Subscribe to all results
+sub, err := client.Messages.Subscribe(ctx, "result", func(ctx context.Context, msg *message.NATSMsg) error {
+    resultType := msg.Metadata["result_type"]
+
+    if resultType == "success" {
+        logger.Info("Processing succeeded",
+            zap.String("workflow_id", msg.Workflow.WorkflowID),
+            zap.String("run_id", msg.Workflow.RunID))
+    } else if resultType == "error" {
+        logger.Error("Processing failed",
+            zap.String("workflow_id", msg.Workflow.WorkflowID),
+            zap.String("run_id", msg.Workflow.RunID),
+            zap.String("error", msg.Payload.Data))
+    }
+
+    msg.Ack()
+    return nil
+})
+defer sub.Unsubscribe()
+```
+
+### Message Acknowledgment
+
+The callback system handles message acknowledgment automatically:
+
+- **Success Callbacks**: Original message is acknowledged after successful callback publication
+- **Error Callbacks**: Original message is negatively acknowledged after callback publication
+- **Retry Logic**: Callbacks are published with retry logic for reliability
 
 ## Advanced Usage
 
@@ -290,6 +766,8 @@ Icarus/
 │   │   └── service.go        # Message service with pub/sub operations
 │   ├── runner/               # Concurrent message processing
 │   │   └── runner.go         # Worker pool-based message processing
+│   ├── tracing/              # Distributed tracing utilities
+│   │   └── tracing.go        # OpenTelemetry tracing setup
 │   ├── errors/               # SDK-specific errors
 │   │   └── errors.go         # Error types and utilities
 │   └── process/              # Process management utilities
@@ -300,14 +778,19 @@ Icarus/
 │   │   └── main.go           # All messaging patterns with the client
 │   ├── runner/               # Concurrent processing examples
 │   │   └── main.go           # Runner usage examples
+│   ├── runner-with-tracing/  # Runner with tracing examples
+│   │   └── main.go           # Runner with OpenTelemetry tracing
 │   └── process/              # Process management examples
 │       └── strings/          # String processing utilities
 │           └── main.go       # String processing demo
 └── tests/                    # Test suite
     ├── client_test.go        # Client functionality tests
     ├── message_test.go       # Message and service tests
+    ├── message_service_test.go # Message service tests
     ├── runner_test.go        # Runner functionality tests
+    ├── tracing_test.go       # Tracing functionality tests
     ├── nats_mock_test.go     # Mock implementations for testing
+    ├── integration_test.go   # Integration tests
     └── error_test.go         # Error handling tests
 ```
 
@@ -571,7 +1054,8 @@ time.Sleep(2 * time.Second) // Wait for processing
 See the `examples/` directory for complete working examples:
 
 - **examples/message/main.go**: Demonstrates JetStream messaging patterns including publish/subscribe, queue subscriptions, and pull-based consumers
-- **examples/runner/main.go**: Shows concurrent message processing using the Runner with worker pools
+- **examples/runner/main.go**: Shows concurrent message processing using the Runner with worker pools and callback reporting
+- **examples/runner-with-tracing/main.go**: Demonstrates the Runner with OpenTelemetry tracing integration using Jaeger
 - **examples/process/strings/main.go**: Comprehensive string processing utilities demo
 
 To run examples:
@@ -580,11 +1064,20 @@ To run examples:
 # Start NATS server
 docker run -p 4222:4222 nats:latest
 
+# For tracing examples, also start Jaeger
+docker run -d --name jaeger \
+  -p 16686:16686 \
+  -p 14268:14268 \
+  jaegertracing/all-in-one:latest
+
 # Run message example
 go run examples/message/main.go
 
 # Run runner example
 go run examples/runner/main.go
+
+# Run runner with tracing example
+go run examples/runner-with-tracing/main.go
 
 # Run string processing example
 go run examples/process/strings/main.go
@@ -677,10 +1170,12 @@ c.Messages.Publish(ctx, "subject", msg)
 ## Future Roadmap
 
 - **Process Management**: Service registration, discovery, and health monitoring (string processing utilities implemented)
-- **Metrics and Tracing**: Built-in observability support
-- **Advanced JetStream Features**: Streams, consumers, and persistence
+- **Metrics**: Built-in metrics collection and export
+- **Advanced JetStream Features**: Enhanced streams, consumers, and persistence management
 - **Message Encryption**: End-to-end encryption support
-- **Schema Validation**: Message schema validation
+- **Schema Validation**: Message schema validation and validation middleware
+- **Advanced Routing**: Content-based routing and message transformation
+- **Health Monitoring**: Service health checks and automatic recovery
 
 ## Requirements
 
