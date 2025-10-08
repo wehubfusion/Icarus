@@ -11,14 +11,12 @@ A clean, future-proof Go SDK for messaging over NATS JetStream with idiomatic pa
 - **Structured Messages**: Rich message format with workflow, node, payload, and output information
 - **Central Client**: Single client provides access to all JetStream services with automatic initialization
 - **JetStream Messaging Patterns**:
-  - Publish/Subscribe (JetStream-backed)
-  - Queue subscriptions (load balancing with JetStream consumers)
+  - Message Publishing (JetStream-backed persistence)
   - Pull-based consumers (batch message processing)
   - Concurrent message processing with worker pools (Runner)
 - **Runner Framework**: Built-in concurrent message processing with configurable worker pools, batch processing, and automatic success/error callback reporting
 - **Distributed Tracing**: Integrated OpenTelemetry tracing support with Jaeger and OTLP exporters for observability
 - **Callback Reporting**: Automatic success and error reporting to result streams with proper message acknowledgment
-- **Middleware Support**: Composable middleware for cross-cutting concerns
 - **Robust Error Handling**: SDK-specific errors with proper error wrapping
 - **Connection Management**: Automatic reconnection and connection health monitoring
 - **Full JetStream Integration**: Automatic JetStream context initialization and advanced operations
@@ -75,54 +73,27 @@ if err := c.Messages.Publish(ctx, "events.user.created", msg); err != nil {
 }
 ```
 
-### 3. Subscribe to Messages
+### 3. Pull-Based Message Consumption
 
 ```go
-// Define a message handler
-handler := func(ctx context.Context, msg *message.NATSMsg) error {
-    var content string
-    if msg.Payload != nil {
-        content = msg.Payload.Data
-    }
-    fmt.Printf("Received: %s - %s\n", msg.Workflow.WorkflowID, content)
-    msg.Ack() // Acknowledge message
-    return nil
-}
-
-// Subscribe using the client's Messages service
-sub, err := c.Messages.Subscribe(ctx, "events.user.created", handler)
+// Pull messages from a JetStream consumer
+messages, err := c.Messages.PullMessages(ctx, "EVENTS", "my-consumer", 10)
 if err != nil {
-    log.Fatalf("Failed to subscribe: %v", err)
+    log.Printf("Failed to pull messages: %v", err)
+    return
 }
-defer sub.Unsubscribe()
-```
 
-### 4. Queue Subscriptions (Load Balancing)
-
-```go
-// Create multiple workers in the same queue group
-handler := func(ctx context.Context, msg *message.NATSMsg) error {
+for _, msg := range messages {
     var content string
     if msg.Payload != nil {
         content = msg.Payload.Data
     }
-    fmt.Printf("Processing: %s\n", content)
+    fmt.Printf("Processing: %s (Workflow: %s)\n", content, msg.Workflow.WorkflowID)
     msg.Ack() // Acknowledge message processing
-    return nil
 }
-
-// Worker 1
-sub1, _ := c.Messages.Subscribe(ctx, "tasks.process", handler)
-defer sub1.Unsubscribe()
-
-// Worker 2
-sub2, _ := c.Messages.Subscribe(ctx, "tasks.process", handler)
-defer sub2.Unsubscribe()
-
-// Messages published to "tasks.process" will be received by both workers
 ```
 
-### 5. Concurrent Message Processing (Runner)
+### 4. Concurrent Message Processing (Runner)
 
 ```go
 // Define a message processor that implements the Processor interface
@@ -192,7 +163,7 @@ type Client struct {
     logger *zap.Logger
 
     // Messages provides access to all JetStream messaging operations including
-    // publish, subscribe, request-reply, and pull-based consumers
+    // publish, pull-based consumers, and callback reporting
     Messages *message.MessageService
 
     // Reserved for future expansion
@@ -633,11 +604,17 @@ _, err := js.AddStream(&nats.StreamConfig{
 
 ### Consuming Callbacks
 
-Subscribe to callbacks for monitoring or further processing:
+Pull callbacks for monitoring or further processing:
 
 ```go
-// Subscribe to all results
-sub, err := client.Messages.Subscribe(ctx, "result", func(ctx context.Context, msg *message.NATSMsg) error {
+// Pull callback messages from the RESULTS stream
+messages, err := client.Messages.PullMessages(ctx, "RESULTS", "callback-consumer", 10)
+if err != nil {
+    logger.Error("Failed to pull callback messages", zap.Error(err))
+    return
+}
+
+for _, msg := range messages {
     resultType := msg.Metadata["result_type"]
 
     if resultType == "success" {
@@ -652,9 +629,7 @@ sub, err := client.Messages.Subscribe(ctx, "result", func(ctx context.Context, m
     }
 
     msg.Ack()
-    return nil
-})
-defer sub.Unsubscribe()
+}
 ```
 
 ### Message Acknowledgment
@@ -685,29 +660,6 @@ config := &nats.ConnectionConfig{
 c := client.NewClientWithConfig(config)
 ```
 
-### Custom Middleware
-
-```go
-// Create custom middleware
-customMiddleware := func(next message.Handler) message.Handler {
-    return func(ctx context.Context, msg *message.NATSMsg) error {
-        // Pre-processing
-        start := time.Now()
-
-        // Call next handler
-        err := next(ctx, msg)
-
-        // Post-processing
-        duration := time.Since(start)
-        fmt.Printf("Processed in %v\n", duration)
-
-        return err
-    }
-}
-
-// Apply middleware to the client's Messages service
-c.Messages = c.Messages.WithMiddleware(customMiddleware)
-```
 
 ### Pull-Based Consumers (JetStream)
 
@@ -762,7 +714,7 @@ Icarus/
 │   │   └── client.go         # Client with connection management
 │   ├── message/              # Message handling and JetStream operations
 │   │   ├── message.go        # Message struct and serialization
-│   │   ├── handler.go        # Handler types and middleware
+│   │   ├── handler.go        # Handler types and utilities
 │   │   └── service.go        # Message service with pub/sub operations
 │   ├── runner/               # Concurrent message processing
 │   │   └── runner.go         # Worker pool-based message processing
@@ -952,34 +904,7 @@ func main() {
     }
     defer c.Close()
 
-    // Apply middleware
-    c.Messages = c.Messages.WithMiddleware(
-        message.Chain(
-            RecoveryMiddleware(),
-            LoggingMiddleware(),
-        ),
-    )
-
-    // Subscribe
-    handler := func(ctx context.Context, msg *message.NATSMsg) error {
-        var content string
-        if msg.Payload != nil {
-            content = msg.Payload.Data
-        }
-        fmt.Printf("Received: %s (Workflow: %s)\n", content, msg.Workflow.WorkflowID)
-        msg.Ack() // Acknowledge message
-        return nil
-    }
-
-    sub, err := c.Messages.Subscribe(ctx, "events.test", handler)
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer sub.Unsubscribe()
-
-    time.Sleep(100 * time.Millisecond) // Wait for subscription
-
-    // Publish
+    // Publish a test message
     msg := message.NewWorkflowMessage("test-workflow", uuid.New().String()).
         WithPayload("example-service", "Hello, World!", "msg-123").
         WithMetadata("test", "true")
@@ -987,7 +912,21 @@ func main() {
         log.Printf("Failed to publish: %v", err)
     }
 
-    time.Sleep(500 * time.Millisecond) // Wait for processing
+    // Simulate consuming the message using pull-based approach
+    // In a real application, you would pull from a consumer
+    messages, err := c.Messages.PullMessages(ctx, "TEST_EVENTS", "test-consumer", 5)
+    if err != nil {
+        log.Printf("Failed to pull messages: %v", err)
+    } else {
+        for _, pulledMsg := range messages {
+            var content string
+            if pulledMsg.Payload != nil {
+                content = pulledMsg.Payload.Data
+            }
+            fmt.Printf("Pulled: %s (Workflow: %s)\n", content, pulledMsg.Workflow.WorkflowID)
+            pulledMsg.Ack() // Acknowledge message
+        }
+    }
 }
 ```
 
@@ -1053,7 +992,7 @@ time.Sleep(2 * time.Second) // Wait for processing
 
 See the `examples/` directory for complete working examples:
 
-- **examples/message/main.go**: Demonstrates JetStream messaging patterns including publish/subscribe, queue subscriptions, and pull-based consumers
+- **examples/message/main.go**: Demonstrates JetStream messaging patterns including message publishing, pull-based consumers, and callback reporting
 - **examples/runner/main.go**: Shows concurrent message processing using the Runner with worker pools and callback reporting
 - **examples/runner-with-tracing/main.go**: Demonstrates the Runner with OpenTelemetry tracing integration using Jaeger
 - **examples/process/strings/main.go**: Comprehensive string processing utilities demo
@@ -1111,8 +1050,8 @@ The old pattern still works but the new pattern is more concise.
 1. **Always use context**: Pass context to all operations for proper cancellation
 2. **JetStream is required**: This SDK requires JetStream to be enabled on the NATS server
 3. **Handle errors properly**: Check and handle all errors returned by SDK methods
-4. **Close resources**: Always defer `c.Close()` and `sub.Unsubscribe()`
-5. **Use middleware**: Leverage middleware for cross-cutting concerns like logging and validation
+4. **Close resources**: Always defer `c.Close()` after connecting
+5. **Use structured logging**: Configure logging for better observability and debugging
 6. **Set timeouts**: Use context timeouts for operations that shouldn't block indefinitely
 7. **Unique message IDs**: Generate unique IDs (e.g., using UUID) for message tracing
 8. **Service access**: Use `c.Messages` directly instead of creating MessageService manually
@@ -1173,7 +1112,7 @@ c.Messages.Publish(ctx, "subject", msg)
 - **Metrics**: Built-in metrics collection and export
 - **Advanced JetStream Features**: Enhanced streams, consumers, and persistence management
 - **Message Encryption**: End-to-end encryption support
-- **Schema Validation**: Message schema validation and validation middleware
+- **Schema Validation**: Message schema validation
 - **Advanced Routing**: Content-based routing and message transformation
 - **Health Monitoring**: Service health checks and automatic recovery
 
