@@ -6,9 +6,11 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/wehubfusion/Icarus/pkg/client"
 	"github.com/wehubfusion/Icarus/pkg/message"
 	"github.com/wehubfusion/Icarus/pkg/tracing"
@@ -76,6 +78,16 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 		return nil, errors.New("logger cannot be nil")
 	}
 
+	// Ensure the stream exists, create it if necessary
+	js := client.JetStream()
+	if js == nil {
+		return nil, errors.New("JetStream context is not available")
+	}
+
+	if err := ensureStream(js, stream, consumer, logger); err != nil {
+		return nil, fmt.Errorf("failed to ensure stream '%s' exists: %w", stream, err)
+	}
+
 	runner := &Runner{
 		client:         client,
 		processor:      processor,
@@ -103,6 +115,50 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 	}
 
 	return runner, nil
+}
+
+// ensureStream creates the JetStream stream if it doesn't exist, or validates it exists
+func ensureStream(js nats.JetStreamContext, streamName, consumerName string, logger *zap.Logger) error {
+	// Try to get stream info first
+	streamInfo, err := js.StreamInfo(streamName)
+	if err != nil {
+		// Stream doesn't exist, create it
+		if err == nats.ErrStreamNotFound {
+			logger.Info("Creating JetStream stream", zap.String("stream", streamName))
+
+			// Create stream configuration for HTTP requests
+			// Using subject pattern that matches the consumer
+			streamConfig := &nats.StreamConfig{
+				Name:     streamName,
+				Subjects: []string{fmt.Sprintf("%s.*", streamName)}, // Allow any subject under the stream name
+				Storage:  nats.FileStorage,
+				MaxAge:   24 * time.Hour, // Retain messages for 24 hours
+				MaxMsgs:  100000,         // Max 100k messages (higher than Hermes for HTTP requests)
+				Replicas: 1,
+			}
+
+			_, err = js.AddStream(streamConfig)
+			if err != nil {
+				return fmt.Errorf("failed to create stream '%s': %w", streamName, err)
+			}
+
+			logger.Info("Successfully created JetStream stream",
+				zap.String("stream", streamName),
+				zap.Strings("subjects", streamConfig.Subjects),
+				zap.Duration("max_age", streamConfig.MaxAge),
+				zap.Int64("max_msgs", streamConfig.MaxMsgs))
+		} else {
+			return fmt.Errorf("failed to get stream info for '%s': %w", streamName, err)
+		}
+	} else {
+		// Stream exists, log its status
+		logger.Info("JetStream stream already exists",
+			zap.String("stream", streamName),
+			zap.Uint64("messages", streamInfo.State.Msgs),
+			zap.Int("consumers", streamInfo.State.Consumers))
+	}
+
+	return nil
 }
 
 // Close gracefully shuts down the runner and cleans up resources including tracing.
