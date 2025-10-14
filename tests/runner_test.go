@@ -76,6 +76,40 @@ func (m *mockJSContext) PullSubscribe(subj, durable string, opts ...nats.SubOpt)
 	return &mockPullJSSubscription{owner: m, durable: durable}, nil
 }
 
+func (m *mockJSContext) StreamInfo(stream string) (*nats.StreamInfo, error) {
+	// Always return success for mock
+	return &nats.StreamInfo{
+		Config: nats.StreamConfig{Name: stream},
+		State:  nats.StreamState{},
+	}, nil
+}
+
+func (m *mockJSContext) AddStream(cfg *nats.StreamConfig) (*nats.StreamInfo, error) {
+	// Always return success for mock
+	return &nats.StreamInfo{
+		Config: *cfg,
+		State:  nats.StreamState{},
+	}, nil
+}
+
+func (m *mockJSContext) ConsumerInfo(stream, consumer string) (*nats.ConsumerInfo, error) {
+	// Always return success for mock
+	return &nats.ConsumerInfo{
+		Stream: stream,
+		Name:   consumer,
+		Config: nats.ConsumerConfig{Durable: consumer},
+	}, nil
+}
+
+func (m *mockJSContext) AddConsumer(stream string, cfg *nats.ConsumerConfig) (*nats.ConsumerInfo, error) {
+	// Always return success for mock
+	return &nats.ConsumerInfo{
+		Stream: stream,
+		Name:   cfg.Durable,
+		Config: *cfg,
+	}, nil
+}
+
 func (m *mockJSContext) addMessage(msg *message.Message) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

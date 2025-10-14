@@ -15,6 +15,10 @@ import (
 type JSContext interface {
 	Publish(subj string, data []byte, opts ...nats.PubOpt) (*nats.PubAck, error)
 	PullSubscribe(subj, durable string, opts ...nats.SubOpt) (JSSubscription, error)
+	StreamInfo(stream string) (*nats.StreamInfo, error)
+	AddStream(cfg *nats.StreamConfig) (*nats.StreamInfo, error)
+	ConsumerInfo(stream, consumer string) (*nats.ConsumerInfo, error)
+	AddConsumer(stream string, cfg *nats.ConsumerConfig) (*nats.ConsumerInfo, error)
 }
 
 // JSSubscription abstracts operations used by the SDK from a subscription.
@@ -46,6 +50,22 @@ func (a *natsJSAdapter) PullSubscribe(subj, durable string, opts ...nats.SubOpt)
 		return nil, err
 	}
 	return &natsSubAdapter{sub: sub}, nil
+}
+
+func (a *natsJSAdapter) StreamInfo(stream string) (*nats.StreamInfo, error) {
+	return a.js.StreamInfo(stream)
+}
+
+func (a *natsJSAdapter) AddStream(cfg *nats.StreamConfig) (*nats.StreamInfo, error) {
+	return a.js.AddStream(cfg)
+}
+
+func (a *natsJSAdapter) ConsumerInfo(stream, consumer string) (*nats.ConsumerInfo, error) {
+	return a.js.ConsumerInfo(stream, consumer)
+}
+
+func (a *natsJSAdapter) AddConsumer(stream string, cfg *nats.ConsumerConfig) (*nats.ConsumerInfo, error) {
+	return a.js.AddConsumer(stream, cfg)
 }
 
 type natsSubAdapter struct {
@@ -144,6 +164,140 @@ func (s *MessageService) SetLogger(logger *zap.Logger) {
 	}
 }
 
+// EnsureStream creates the JetStream stream if it doesn't exist, or validates it exists.
+// This is a public method that can be called by runners and other components.
+func (s *MessageService) EnsureStream(streamName string) error {
+	// Check if stream exists
+	streamInfo, err := s.js.StreamInfo(streamName)
+	if err != nil {
+		// Stream doesn't exist, create it
+		if err == nats.ErrStreamNotFound {
+			s.logger.Info("Creating JetStream stream",
+				zap.String("stream", streamName))
+
+			streamConfig := &nats.StreamConfig{
+				Name:     streamName,
+				Subjects: []string{fmt.Sprintf("%s.*", streamName)},
+				Storage:  nats.FileStorage,
+				MaxAge:   24 * time.Hour,
+				MaxMsgs:  100000,
+				Replicas: 1,
+			}
+
+			_, err = s.js.AddStream(streamConfig)
+			if err != nil {
+				return fmt.Errorf("failed to create stream '%s': %w", streamName, err)
+			}
+
+			s.logger.Info("Successfully created JetStream stream",
+				zap.String("stream", streamName),
+				zap.Strings("subjects", streamConfig.Subjects),
+				zap.Duration("max_age", streamConfig.MaxAge),
+				zap.Int64("max_msgs", streamConfig.MaxMsgs))
+		} else {
+			return fmt.Errorf("failed to get stream info for '%s': %w", streamName, err)
+		}
+	} else {
+		// Stream exists, log its status
+		s.logger.Info("JetStream stream already exists",
+			zap.String("stream", streamName),
+			zap.Uint64("messages", streamInfo.State.Msgs))
+	}
+
+	return nil
+}
+
+// EnsureConsumer creates the JetStream consumer if it doesn't exist, or validates it exists.
+// This is a public method that can be called by runners and other components.
+func (s *MessageService) EnsureConsumer(streamName, consumerName string) error {
+	// Try to get consumer info first
+	consumerInfo, err := s.js.ConsumerInfo(streamName, consumerName)
+	if err != nil {
+		// Consumer doesn't exist, create it
+		if err == nats.ErrConsumerNotFound {
+			s.logger.Info("Creating JetStream consumer",
+				zap.String("stream", streamName),
+				zap.String("consumer", consumerName))
+
+			consumerConfig := &nats.ConsumerConfig{
+				Durable:       consumerName,
+				AckPolicy:     nats.AckExplicitPolicy,
+				DeliverPolicy: nats.DeliverAllPolicy,
+				MaxAckPending: 1000,
+			}
+
+			_, err = s.js.AddConsumer(streamName, consumerConfig)
+			if err != nil {
+				return fmt.Errorf("failed to create consumer '%s' in stream '%s': %w", consumerName, streamName, err)
+			}
+
+			s.logger.Info("Successfully created JetStream consumer",
+				zap.String("stream", streamName),
+				zap.String("consumer", consumerName))
+		} else {
+			return fmt.Errorf("failed to get consumer info for '%s' in stream '%s': %w", consumerName, streamName, err)
+		}
+	} else {
+		// Consumer exists, log its status
+		s.logger.Info("JetStream consumer already exists",
+			zap.String("stream", streamName),
+			zap.String("consumer", consumerName),
+			zap.Uint64("pending", consumerInfo.NumPending))
+	}
+
+	return nil
+}
+
+// ensureStreamForSubject ensures a stream exists that can handle the given subject.
+// It extracts the stream name from the subject (first segment before dot) and creates
+// the stream if it doesn't exist.
+func (s *MessageService) ensureStreamForSubject(subject string) error {
+	// Extract stream name from subject (first part before dot)
+	streamName := subject
+	if idx := len(subject); idx > 0 {
+		// Find first dot to extract stream name
+		for i, c := range subject {
+			if c == '.' {
+				streamName = subject[:i]
+				break
+			}
+		}
+	}
+
+	// Check if stream exists
+	_, err := s.js.StreamInfo(streamName)
+	if err != nil {
+		// Stream doesn't exist, create it
+		if err == nats.ErrStreamNotFound {
+			s.logger.Info("Creating JetStream stream for subject",
+				zap.String("stream", streamName),
+				zap.String("subject", subject))
+
+			streamConfig := &nats.StreamConfig{
+				Name:     streamName,
+				Subjects: []string{fmt.Sprintf("%s.>", streamName)},
+				Storage:  nats.FileStorage,
+				MaxAge:   24 * time.Hour,
+				MaxMsgs:  100000,
+				Replicas: 1,
+			}
+
+			_, err = s.js.AddStream(streamConfig)
+			if err != nil {
+				return fmt.Errorf("failed to create stream '%s' for subject '%s': %w", streamName, subject, err)
+			}
+
+			s.logger.Info("Successfully created JetStream stream",
+				zap.String("stream", streamName),
+				zap.String("subject_pattern", fmt.Sprintf("%s.>", streamName)))
+		} else {
+			return fmt.Errorf("failed to get stream info for '%s': %w", streamName, err)
+		}
+	}
+
+	return nil
+}
+
 // getMessageIdentifier creates a unique identifier for logging purposes
 func (s *MessageService) getMessageIdentifier(msg *Message) string {
 	if msg.Workflow != nil {
@@ -160,6 +314,7 @@ func (s *MessageService) getMessageIdentifier(msg *Message) string {
 
 // Publish publishes a message to the specified subject using JetStream.
 // The message is persisted according to the stream's configuration.
+// If no stream exists for the subject, one will be created automatically.
 // Returns an error if the publish fails.
 func (s *MessageService) Publish(ctx context.Context, subject string, msg *Message) error {
 	if subject == "" {
@@ -170,6 +325,14 @@ func (s *MessageService) Publish(ctx context.Context, subject string, msg *Messa
 	if msg == nil {
 		s.logger.Error("Publish failed: message cannot be nil")
 		return sdkerrors.NewValidationError("message cannot be nil", "INVALID_MESSAGE", nil)
+	}
+
+	// Ensure a stream exists for this subject
+	if err := s.ensureStreamForSubject(subject); err != nil {
+		s.logger.Error("Failed to ensure stream exists",
+			zap.String("subject", subject),
+			zap.Error(err))
+		return sdkerrors.NewInternalError("", "failed to ensure stream exists", "STREAM_ENSURE_FAILED", err)
 	}
 
 	s.logger.Debug("Publishing message",
