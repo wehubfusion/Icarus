@@ -16,6 +16,8 @@ type MockJS struct {
 	queueSubs   map[string][]*mockSubscriber
 	queueIndex  map[string]int
 	allMessages []*nats.Msg
+	streams     map[string]*nats.StreamInfo
+	consumers   map[string]map[string]*nats.ConsumerInfo // stream -> consumer -> info
 }
 
 type mockSubscriber struct {
@@ -30,6 +32,8 @@ func NewMockJS() *MockJS {
 		subscribers: make(map[string][]*mockSubscriber),
 		queueSubs:   make(map[string][]*mockSubscriber),
 		queueIndex:  make(map[string]int),
+		streams:     make(map[string]*nats.StreamInfo),
+		consumers:   make(map[string]map[string]*nats.ConsumerInfo),
 	}
 }
 
@@ -92,6 +96,58 @@ func (m *MockJS) PullSubscribe(subj, durable string, opts ...nats.SubOpt) (messa
 	m.mu.Unlock()
 	// For simplicity, return a subscription that fetches from the shared buffer
 	return &mockPullSubscription{owner: m, durable: durable}, nil
+}
+
+func (m *MockJS) StreamInfo(stream string) (*nats.StreamInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if info, exists := m.streams[stream]; exists {
+		return info, nil
+	}
+	return nil, nats.ErrStreamNotFound
+}
+
+func (m *MockJS) AddStream(cfg *nats.StreamConfig) (*nats.StreamInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	info := &nats.StreamInfo{
+		Config: *cfg,
+		State: nats.StreamState{
+			Msgs:      0,
+			Bytes:     0,
+			FirstSeq:  1,
+			LastSeq:   0,
+			Consumers: 0,
+		},
+	}
+	m.streams[cfg.Name] = info
+	return info, nil
+}
+
+func (m *MockJS) ConsumerInfo(stream, consumer string) (*nats.ConsumerInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if streamConsumers, exists := m.consumers[stream]; exists {
+		if info, exists := streamConsumers[consumer]; exists {
+			return info, nil
+		}
+	}
+	return nil, nats.ErrConsumerNotFound
+}
+
+func (m *MockJS) AddConsumer(stream string, cfg *nats.ConsumerConfig) (*nats.ConsumerInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.consumers[stream] == nil {
+		m.consumers[stream] = make(map[string]*nats.ConsumerInfo)
+	}
+	info := &nats.ConsumerInfo{
+		Stream: stream,
+		Name:   cfg.Durable,
+		Config: *cfg,
+	}
+	m.consumers[stream][cfg.Durable] = info
+	return info, nil
 }
 
 type mockSubscription struct {
