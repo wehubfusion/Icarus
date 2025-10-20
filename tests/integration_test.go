@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -307,7 +308,7 @@ func TestErrorReportingWorkflow(t *testing.T) {
 	runID := "error-run-" + uuid.New().String()
 
 	// 1. Simulate a processing error
-	errorMessage := "simulated processing error"
+	errorMessage := fmt.Errorf("simulated processing error")
 
 	err := c.Messages.ReportError(ctx, workflowID, runID, errorMessage, nil)
 	if err != nil {

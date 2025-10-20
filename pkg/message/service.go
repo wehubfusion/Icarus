@@ -88,17 +88,19 @@ type MessageService struct {
 }
 
 // validateMessage performs strict validation on the message for callback operations
+// Auto-populates CreatedAt and UpdatedAt if they are empty
 func (s *MessageService) validateMessage(msg *Message) error {
 	if msg == nil {
 		return fmt.Errorf("message cannot be nil")
 	}
 
+	// Auto-populate timestamps if empty (framework responsibility, not service responsibility)
+	now := time.Now().Format(time.RFC3339)
 	if msg.CreatedAt == "" {
-		return fmt.Errorf("message CreatedAt is required")
+		msg.CreatedAt = now
 	}
-
 	if msg.UpdatedAt == "" {
-		return fmt.Errorf("message UpdatedAt is required")
+		msg.UpdatedAt = now
 	}
 
 	if msg.Workflow == nil {
@@ -224,6 +226,7 @@ func (s *MessageService) EnsureConsumer(streamName, consumerName string) error {
 				AckPolicy:     nats.AckExplicitPolicy,
 				DeliverPolicy: nats.DeliverAllPolicy,
 				MaxAckPending: 1000,
+				MaxDeliver:    100, // Retry up to 100 times before giving up
 			}
 
 			_, err = s.js.AddConsumer(streamName, consumerConfig)
@@ -554,23 +557,44 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 // The message contains the provided error details and is published to the "result" subject
 // with metadata indicating it represents a failed result.
 //
+// Error Classification:
+//   - Internal errors (transient failures): NAK the message for retry
+//   - Other errors (permanent failures like BadRequest, NotFound, etc.): ACK the message to prevent redelivery
+//
 // Parameters:
 //   - workflowID: The unique identifier of the workflow that failed
 //   - runID: The unique identifier of this specific workflow execution run
-//   - errorMsg: The error message or details describing what went wrong
-//   - msg: NATS message to negatively acknowledge after error reporting (can be nil)
+//   - err: The error that occurred (can be *AppError or regular error)
+//   - msg: NATS message to acknowledge/nak after error reporting (can be nil)
 //
 // Returns an error if the message cannot be published.
-func (s *MessageService) ReportError(ctx context.Context, workflowID, runID string, errorMsg string, msg *nats.Msg) error {
+func (s *MessageService) ReportError(ctx context.Context, workflowID, runID string, err error, msg *nats.Msg) error {
+	// Determine if this is a transient or permanent failure
+	isTransient := true // Default to transient (retry)
+	errorMsg := err.Error()
+
+	// Check if this is an AppError with a specific type
+	if appErr, ok := err.(*sdkerrors.AppError); ok {
+		// Only Internal errors are transient, all others are permanent
+		isTransient = (appErr.Type == sdkerrors.Internal)
+	}
+
 	message := NewWorkflowMessage(workflowID, runID).
 		WithPayload("callback-service", errorMsg, fmt.Sprintf("error-%s-%s", workflowID, runID)).
 		WithMetadata("result_type", string(ResultTypeError)).
-		WithMetadata("correlation_id", fmt.Sprintf("%s-%s", workflowID, runID))
+		WithMetadata("correlation_id", fmt.Sprintf("%s-%s", workflowID, runID)).
+		WithMetadata("error_classification", func() string {
+			if isTransient {
+				return "transient"
+			}
+			return "permanent"
+		}())
 
 	s.logger.Info("Reporting error",
 		zap.String("workflow_id", workflowID),
 		zap.String("run_id", runID),
-		zap.String("error_message", errorMsg))
+		zap.String("error_message", errorMsg),
+		zap.Bool("is_transient", isTransient))
 
 	// Validate message
 	if err := s.validateMessage(message); err != nil {
@@ -582,33 +606,46 @@ func (s *MessageService) ReportError(ctx context.Context, workflowID, runID stri
 	}
 
 	// Attempt to publish with retries (using default retry settings)
-	if err := s.publishWithRetry(ctx, "result", message, 3, time.Second); err != nil {
+	if publishErr := s.publishWithRetry(ctx, "result", message, 3, time.Second); publishErr != nil {
 		s.logger.Error("Failed to publish error report",
 			zap.String("workflow_id", workflowID),
 			zap.String("run_id", runID),
-			zap.Error(err))
+			zap.Error(publishErr))
 		// If we have a source message, nak it since both processing and reporting failed
 		if msg != nil {
 			_ = msg.Nak()
 		}
-		return err
+		return publishErr
 	}
 
-	// If we have a source message and error reporting succeeded, still nak it
-	// because the original processing failed (that's why we're reporting an error)
+	// Handle acknowledgment based on error type
 	if msg != nil {
-		if err := msg.Nak(); err != nil {
-			s.logger.Error("Failed to negatively acknowledge source message after error report",
+		if isTransient {
+			// Transient failure: NAK for retry
+			if nakErr := msg.Nak(); nakErr != nil {
+				s.logger.Error("Failed to negatively acknowledge source message after transient error report",
+					zap.String("workflow_id", workflowID),
+					zap.String("run_id", runID),
+					zap.Error(nakErr))
+				return fmt.Errorf("failed to negatively acknowledge source message: %w", nakErr)
+			}
+			s.logger.Info("Transient error report published and source message nak'd for retry",
 				zap.String("workflow_id", workflowID),
-				zap.String("run_id", runID),
-				zap.Error(err))
-			// Log but don't fail - the error callback was published successfully
-			return fmt.Errorf("failed to negatively acknowledge source message: %w", err)
+				zap.String("run_id", runID))
+		} else {
+			// Permanent failure: ACK to prevent redelivery
+			if ackErr := msg.Ack(); ackErr != nil {
+				s.logger.Error("Failed to acknowledge source message after permanent error report",
+					zap.String("workflow_id", workflowID),
+					zap.String("run_id", runID),
+					zap.Error(ackErr))
+				return fmt.Errorf("failed to acknowledge source message: %w", ackErr)
+			}
+			s.logger.Info("Permanent error report published and source message ack'd to prevent redelivery",
+				zap.String("workflow_id", workflowID),
+				zap.String("run_id", runID))
 		}
 	}
 
-	s.logger.Info("Error report published and source message nak'd",
-		zap.String("workflow_id", workflowID),
-		zap.String("run_id", runID))
 	return nil
 }
