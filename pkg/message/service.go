@@ -319,6 +319,10 @@ func (s *MessageService) ensureStreamForSubject(subject string) error {
 
 // getMessageIdentifier creates a unique identifier for logging purposes
 func (s *MessageService) getMessageIdentifier(msg *Message) string {
+	// Prefer correlation ID if available
+	if msg.CorrelationID != "" {
+		return fmt.Sprintf("correlation:%s", msg.CorrelationID)
+	}
 	if msg.Workflow != nil {
 		return fmt.Sprintf("workflow:%s/run:%s", msg.Workflow.WorkflowID, msg.Workflow.RunID)
 	}
@@ -524,8 +528,14 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 	// Add result type metadata to the result message
 	resultMessage.WithMetadata("result_type", string(ResultTypeSuccess))
 
+	// If correlation ID is not set but we have workflow info, generate one
+	if resultMessage.CorrelationID == "" && resultMessage.Workflow != nil {
+		resultMessage.CorrelationID = fmt.Sprintf("%s-%s", resultMessage.Workflow.WorkflowID, resultMessage.Workflow.RunID)
+	}
+
 	s.logger.Info("Reporting success",
 		zap.String("message_identifier", s.getMessageIdentifier(&resultMessage)),
+		zap.String("correlation_id", resultMessage.CorrelationID),
 		zap.String("workflow_id", func() string {
 			if resultMessage.Workflow != nil {
 				return resultMessage.Workflow.WorkflowID
@@ -597,6 +607,7 @@ func (s *MessageService) ReportError(ctx context.Context, workflowID, runID stri
 
 	message := NewWorkflowMessage(workflowID, runID).
 		WithPayload("callback-service", errorMsg, fmt.Sprintf("error-%s-%s", workflowID, runID)).
+		WithCorrelationID(fmt.Sprintf("%s-%s", workflowID, runID)).
 		WithMetadata("result_type", string(ResultTypeError)).
 		WithMetadata("correlation_id", fmt.Sprintf("%s-%s", workflowID, runID)).
 		WithMetadata("error_classification", func() string {
@@ -609,6 +620,7 @@ func (s *MessageService) ReportError(ctx context.Context, workflowID, runID stri
 	s.logger.Info("Reporting error",
 		zap.String("workflow_id", workflowID),
 		zap.String("run_id", runID),
+		zap.String("correlation_id", message.CorrelationID),
 		zap.String("error_message", errorMsg),
 		zap.Bool("is_transient", isTransient))
 

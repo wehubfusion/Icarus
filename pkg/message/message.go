@@ -35,6 +35,9 @@ type Output struct {
 // All messages are serialized to JSON for transmission and include timestamps.
 // Messages published to JetStream are persisted according to the stream's configuration.
 type Message struct {
+	// CorrelationID is a unique identifier for tracking related messages across the system
+	CorrelationID string `json:"correlationId,omitempty"`
+
 	// Workflow contains workflow execution information
 	Workflow *Workflow `json:"workflow,omitempty"`
 
@@ -82,6 +85,13 @@ func NewWorkflowMessage(workflowID, runID string) *Message {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+}
+
+// WithCorrelationID sets the correlation ID for the message
+func (m *Message) WithCorrelationID(correlationID string) *Message {
+	m.CorrelationID = correlationID
+	m.UpdatedAt = time.Now().Format(time.RFC3339)
+	return m
 }
 
 // WithMetadata adds metadata to the message

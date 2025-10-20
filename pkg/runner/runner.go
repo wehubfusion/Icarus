@@ -248,10 +248,17 @@ func (r *Runner) worker(ctx context.Context, workerID int, messageChan <-chan *m
 // processMessage handles the actual message processing logic
 func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.Message) {
 	// Extract workflow information for reporting
-	var workflowID, runID string
+	var workflowID, runID, correlationID string
 	if msg.Workflow != nil {
 		workflowID = msg.Workflow.WorkflowID
 		runID = msg.Workflow.RunID
+	}
+	correlationID = msg.CorrelationID
+
+	// Generate correlation ID if not present
+	if correlationID == "" && workflowID != "" && runID != "" {
+		correlationID = fmt.Sprintf("%s-%s", workflowID, runID)
+		msg.CorrelationID = correlationID
 	}
 
 	// Start tracing span for message processing
@@ -260,6 +267,7 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 			attribute.Int("worker.id", workerID),
 			attribute.String("workflow.id", workflowID),
 			attribute.String("workflow.run_id", runID),
+			attribute.String("correlation.id", correlationID),
 			attribute.String("stream", r.stream),
 			attribute.String("consumer", r.consumer),
 		))
@@ -275,7 +283,8 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		r.logger.Info("Skipping message processing due to context cancellation",
 			zap.Int("workerID", workerID),
 			zap.String("workflowID", workflowID),
-			zap.String("runID", runID))
+			zap.String("runID", runID),
+			zap.String("correlationID", correlationID))
 		span.SetStatus(codes.Error, "Context cancelled before processing")
 		return
 	default:
@@ -286,11 +295,15 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 	r.logger.Info("Worker processing message",
 		zap.Int("workerID", workerID),
 		zap.String("workflowID", workflowID),
-		zap.String("runID", runID))
+		zap.String("runID", runID),
+		zap.String("correlationID", correlationID))
 
 	// Start nested span for processor.Process call
 	processCtx, processSpan := r.tracer.Start(processCtx, "processor.Process")
 	// Add message attributes if available
+	if correlationID != "" {
+		processSpan.SetAttributes(attribute.String("correlation.id", correlationID))
+	}
 	if msg.Node != nil {
 		processSpan.SetAttributes(attribute.String("message.node.id", msg.Node.NodeID))
 	}
@@ -323,6 +336,7 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 			zap.Duration("processingTime", processingTime),
 			zap.String("workflowID", workflowID),
 			zap.String("runID", runID),
+			zap.String("correlationID", correlationID),
 			zap.Error(processErr))
 
 		// Report error if we have workflow information
@@ -352,7 +366,16 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 	// Mark spans as successful
 	span.SetStatus(codes.Ok, "Message processed successfully")
 	processSpan.SetStatus(codes.Ok, "Message processed successfully")
+
+	// Ensure result message has correlation ID
+	if resultMessage.CorrelationID == "" && correlationID != "" {
+		resultMessage.CorrelationID = correlationID
+	}
+
 	// Add result message attributes if available
+	if resultMessage.CorrelationID != "" {
+		span.SetAttributes(attribute.String("result.correlation.id", resultMessage.CorrelationID))
+	}
 	if resultMessage.Node != nil {
 		span.SetAttributes(attribute.String("result.message.node.id", resultMessage.Node.NodeID))
 	}
@@ -364,6 +387,7 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		zap.Int("workerID", workerID),
 		zap.String("workflowID", workflowID),
 		zap.String("runID", runID),
+		zap.String("correlationID", correlationID),
 		zap.Duration("processingTime", processingTime),
 		zap.Any("resultMessage", resultMessage)) // Log the result message
 

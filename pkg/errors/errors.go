@@ -18,6 +18,7 @@ const (
 	Unauthorized
 	Conflict
 	ValidationFailed
+	PermissionDenied
 )
 
 // AppError represents a custom application error
@@ -86,6 +87,15 @@ func NewUnauthorizedError(message string, code string, cause error) *AppError {
 	}
 }
 
+func NewPermissionDeniedError(message string, code string, cause error) *AppError {
+	return &AppError{
+		Type:    PermissionDenied,
+		Message: message,
+		Code:    code,
+		Err:     cause,
+	}
+}
+
 // NewAppErrorWithCause creates an AppError with an underlying cause
 func NewInternalError(metaData string, message string, code string, cause error) *AppError {
 	var errorMessage string
@@ -113,6 +123,8 @@ func (e *AppError) ToGRPCError() error {
 		grpcCode = codes.InvalidArgument
 	case Unauthorized:
 		grpcCode = codes.Unauthenticated
+	case PermissionDenied:
+		grpcCode = codes.PermissionDenied
 	case Conflict:
 		grpcCode = codes.AlreadyExists
 	case ValidationFailed:
