@@ -299,6 +299,36 @@ if err := runner.Run(ctx); err != nil {
 | `logger` | `*zap.Logger` | Structured logger (cannot be nil) |
 | `tracingConfig` | `*tracing.TracingConfig` | Tracing setup (nil disables tracing) |
 
+### Configuring MaxDeliver (Retry Limit)
+
+Control how many times messages are retried before being considered failed. This prevents infinite retry loops for permanent failures while allowing transient failures to recover.
+
+**Default**: 5 retries (2.5 minutes with 30s AckWait)
+
+```go
+// Configure MaxDeliver before calling EnsureConsumer
+c.SetMaxDeliver(20)  // 20 retries = 10 minutes total (with 30s AckWait)
+
+// Or use one of these common configurations:
+c.SetMaxDeliver(5)   // Default: 2.5 minutes (good for fast-moving systems)
+c.SetMaxDeliver(20)  // 10 minutes (handles most incidents)
+c.SetMaxDeliver(100) // 50 minutes (very conservative)
+c.SetMaxDeliver(-1)  // Unlimited retries (not recommended)
+```
+
+**Calculation**: `Total Retry Time = MaxDeliver × AckWait`
+
+- With default AckWait of 30 seconds:
+  - MaxDeliver: 5 → 2.5 minutes
+  - MaxDeliver: 20 → 10 minutes
+  - MaxDeliver: 100 → 50 minutes
+
+**When to adjust**:
+
+- **Increase** if your services have longer MTTR (Mean Time To Recovery)
+- **Decrease** for fast-moving systems where old messages become stale
+- Consider your typical incident response time
+
 ### Automatic Callback Reporting
 
 The Runner automatically reports processing results:

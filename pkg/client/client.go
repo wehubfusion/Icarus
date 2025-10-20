@@ -153,6 +153,22 @@ func (c *Client) SetLogger(logger *zap.Logger) {
 	}
 }
 
+// SetMaxDeliver sets the maximum number of delivery attempts for all consumers.
+// This controls how many times a message will be redelivered before being considered failed.
+// Default is 5 retries. Set to -1 for unlimited retries (not recommended).
+//
+// Example with 30s AckWait:
+//   - MaxDeliver: 5 = 2.5 minutes total retry time
+//   - MaxDeliver: 20 = 10 minutes total retry time
+//   - MaxDeliver: 100 = 50 minutes total retry time
+//
+// Call this method before calling EnsureConsumer to apply the setting.
+func (c *Client) SetMaxDeliver(maxDeliver int) {
+	if c.Messages != nil {
+		c.Messages.SetMaxDeliver(maxDeliver)
+	}
+}
+
 // Close gracefully closes the NATS connection and cleans up all resources.
 // It drains in-flight messages before closing to ensure no message loss.
 //

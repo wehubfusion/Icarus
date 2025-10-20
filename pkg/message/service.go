@@ -83,8 +83,9 @@ func (s *natsSubAdapter) Fetch(batch int, opts ...nats.PullOpt) ([]*nats.Msg, er
 // MessageService provides methods for publishing and managing messages over JetStream.
 // All operations use JetStream exclusively with proper acknowledgment handling.
 type MessageService struct {
-	js     JSContext
-	logger *zap.Logger
+	js         JSContext
+	logger     *zap.Logger
+	maxDeliver int // Maximum number of delivery attempts before giving up (default: 5)
 }
 
 // validateMessage performs strict validation on the message for callback operations
@@ -147,6 +148,7 @@ func (s *MessageService) publishWithRetry(ctx context.Context, subject string, m
 
 // NewMessageService creates a new message service with the given JetStream context.
 // Any implementation that satisfies JSContext (including nats.JetStreamContext) can be used.
+// The service uses a default MaxDeliver of 5 retries, which can be changed with SetMaxDeliver.
 func NewMessageService(js JSContext) (*MessageService, error) {
 	if js == nil {
 		return nil, fmt.Errorf("JetStream context cannot be nil")
@@ -154,8 +156,9 @@ func NewMessageService(js JSContext) (*MessageService, error) {
 
 	logger, _ := zap.NewProduction()
 	return &MessageService{
-		js:     js,
-		logger: logger,
+		js:         js,
+		logger:     logger,
+		maxDeliver: 5, // Default: retry up to 5 times (2.5 minutes with 30s AckWait)
 	}, nil
 }
 
@@ -164,6 +167,13 @@ func (s *MessageService) SetLogger(logger *zap.Logger) {
 	if logger != nil {
 		s.logger = logger
 	}
+}
+
+// SetMaxDeliver sets the maximum number of delivery attempts for consumers.
+// This controls how many times a message will be redelivered before being considered failed.
+// Default is 5 retries. Set to -1 for unlimited retries (not recommended).
+func (s *MessageService) SetMaxDeliver(maxDeliver int) {
+	s.maxDeliver = maxDeliver
 }
 
 // EnsureStream creates the JetStream stream if it doesn't exist, or validates it exists.
@@ -226,7 +236,7 @@ func (s *MessageService) EnsureConsumer(streamName, consumerName string) error {
 				AckPolicy:     nats.AckExplicitPolicy,
 				DeliverPolicy: nats.DeliverAllPolicy,
 				MaxAckPending: 1000,
-				MaxDeliver:    100, // Retry up to 100 times before giving up
+				MaxDeliver:    s.maxDeliver,
 			}
 
 			_, err = s.js.AddConsumer(streamName, consumerConfig)
@@ -236,7 +246,8 @@ func (s *MessageService) EnsureConsumer(streamName, consumerName string) error {
 
 			s.logger.Info("Successfully created JetStream consumer",
 				zap.String("stream", streamName),
-				zap.String("consumer", consumerName))
+				zap.String("consumer", consumerName),
+				zap.Int("max_deliver", s.maxDeliver))
 		} else {
 			return fmt.Errorf("failed to get consumer info for '%s' in stream '%s': %w", consumerName, streamName, err)
 		}
