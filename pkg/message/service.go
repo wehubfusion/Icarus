@@ -83,22 +83,26 @@ func (s *natsSubAdapter) Fetch(batch int, opts ...nats.PullOpt) ([]*nats.Msg, er
 // MessageService provides methods for publishing and managing messages over JetStream.
 // All operations use JetStream exclusively with proper acknowledgment handling.
 type MessageService struct {
-	js     JSContext
-	logger *zap.Logger
+	js                JSContext
+	logger            *zap.Logger
+	maxDeliver        int // Maximum number of delivery attempts before giving up (default: 5)
+	publishMaxRetries int // Maximum number of retry attempts for publish operations (default: 3)
 }
 
 // validateMessage performs strict validation on the message for callback operations
+// Auto-populates CreatedAt and UpdatedAt if they are empty
 func (s *MessageService) validateMessage(msg *Message) error {
 	if msg == nil {
 		return fmt.Errorf("message cannot be nil")
 	}
 
+	// Auto-populate timestamps if empty (framework responsibility, not service responsibility)
+	now := time.Now().Format(time.RFC3339)
 	if msg.CreatedAt == "" {
-		return fmt.Errorf("message CreatedAt is required")
+		msg.CreatedAt = now
 	}
-
 	if msg.UpdatedAt == "" {
-		return fmt.Errorf("message UpdatedAt is required")
+		msg.UpdatedAt = now
 	}
 
 	if msg.Workflow == nil {
@@ -145,15 +149,28 @@ func (s *MessageService) publishWithRetry(ctx context.Context, subject string, m
 
 // NewMessageService creates a new message service with the given JetStream context.
 // Any implementation that satisfies JSContext (including nats.JetStreamContext) can be used.
-func NewMessageService(js JSContext) (*MessageService, error) {
+// The maxDeliver parameter controls the maximum number of delivery attempts for consumers.
+// The publishMaxRetries parameter controls the maximum number of retry attempts for publish operations.
+func NewMessageService(js JSContext, maxDeliver int, publishMaxRetries int) (*MessageService, error) {
 	if js == nil {
 		return nil, fmt.Errorf("JetStream context cannot be nil")
 	}
 
+	// Use default if not set or invalid
+	if maxDeliver == 0 {
+		maxDeliver = 5 // Default: retry up to 5 times (2.5 minutes with 30s AckWait)
+	}
+
+	if publishMaxRetries == 0 {
+		publishMaxRetries = 3 // Default: 3 retries for publish operations
+	}
+
 	logger, _ := zap.NewProduction()
 	return &MessageService{
-		js:     js,
-		logger: logger,
+		js:                js,
+		logger:            logger,
+		maxDeliver:        maxDeliver,
+		publishMaxRetries: publishMaxRetries,
 	}, nil
 }
 
@@ -224,6 +241,7 @@ func (s *MessageService) EnsureConsumer(streamName, consumerName string) error {
 				AckPolicy:     nats.AckExplicitPolicy,
 				DeliverPolicy: nats.DeliverAllPolicy,
 				MaxAckPending: 1000,
+				MaxDeliver:    s.maxDeliver,
 			}
 
 			_, err = s.js.AddConsumer(streamName, consumerConfig)
@@ -233,7 +251,8 @@ func (s *MessageService) EnsureConsumer(streamName, consumerName string) error {
 
 			s.logger.Info("Successfully created JetStream consumer",
 				zap.String("stream", streamName),
-				zap.String("consumer", consumerName))
+				zap.String("consumer", consumerName),
+				zap.Int("max_deliver", s.maxDeliver))
 		} else {
 			return fmt.Errorf("failed to get consumer info for '%s' in stream '%s': %w", consumerName, streamName, err)
 		}
@@ -300,6 +319,10 @@ func (s *MessageService) ensureStreamForSubject(subject string) error {
 
 // getMessageIdentifier creates a unique identifier for logging purposes
 func (s *MessageService) getMessageIdentifier(msg *Message) string {
+	// Prefer correlation ID if available
+	if msg.CorrelationID != "" {
+		return fmt.Sprintf("correlation:%s", msg.CorrelationID)
+	}
 	if msg.Workflow != nil {
 		return fmt.Sprintf("workflow:%s/run:%s", msg.Workflow.WorkflowID, msg.Workflow.RunID)
 	}
@@ -505,8 +528,14 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 	// Add result type metadata to the result message
 	resultMessage.WithMetadata("result_type", string(ResultTypeSuccess))
 
+	// If correlation ID is not set but we have workflow info, generate one
+	if resultMessage.CorrelationID == "" && resultMessage.Workflow != nil {
+		resultMessage.CorrelationID = fmt.Sprintf("%s-%s", resultMessage.Workflow.WorkflowID, resultMessage.Workflow.RunID)
+	}
+
 	s.logger.Info("Reporting success",
 		zap.String("message_identifier", s.getMessageIdentifier(&resultMessage)),
+		zap.String("correlation_id", resultMessage.CorrelationID),
 		zap.String("workflow_id", func() string {
 			if resultMessage.Workflow != nil {
 				return resultMessage.Workflow.WorkflowID
@@ -522,8 +551,8 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Attempt to publish with retries (using default retry settings)
-	if err := s.publishWithRetry(ctx, "result", &resultMessage, 3, time.Second); err != nil {
+	// Attempt to publish with retries (using configured retry settings)
+	if err := s.publishWithRetry(ctx, "result", &resultMessage, s.publishMaxRetries, time.Second); err != nil {
 		s.logger.Error("Failed to publish success report",
 			zap.String("message_identifier", s.getMessageIdentifier(&resultMessage)),
 			zap.Error(err))
@@ -554,23 +583,46 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 // The message contains the provided error details and is published to the "result" subject
 // with metadata indicating it represents a failed result.
 //
+// Error Classification:
+//   - Internal errors (transient failures): NAK the message for retry
+//   - Other errors (permanent failures like BadRequest, NotFound, etc.): ACK the message to prevent redelivery
+//
 // Parameters:
 //   - workflowID: The unique identifier of the workflow that failed
 //   - runID: The unique identifier of this specific workflow execution run
-//   - errorMsg: The error message or details describing what went wrong
-//   - msg: NATS message to negatively acknowledge after error reporting (can be nil)
+//   - err: The error that occurred (can be *AppError or regular error)
+//   - msg: NATS message to acknowledge/nak after error reporting (can be nil)
 //
 // Returns an error if the message cannot be published.
-func (s *MessageService) ReportError(ctx context.Context, workflowID, runID string, errorMsg string, msg *nats.Msg) error {
+func (s *MessageService) ReportError(ctx context.Context, workflowID, runID string, err error, msg *nats.Msg) error {
+	// Determine if this is a transient or permanent failure
+	isTransient := true // Default to transient (retry)
+	errorMsg := err.Error()
+
+	// Check if this is an AppError with a specific type
+	if appErr, ok := err.(*sdkerrors.AppError); ok {
+		// Only Internal errors are transient, all others are permanent
+		isTransient = (appErr.Type == sdkerrors.Internal)
+	}
+
 	message := NewWorkflowMessage(workflowID, runID).
 		WithPayload("callback-service", errorMsg, fmt.Sprintf("error-%s-%s", workflowID, runID)).
+		WithCorrelationID(fmt.Sprintf("%s-%s", workflowID, runID)).
 		WithMetadata("result_type", string(ResultTypeError)).
-		WithMetadata("correlation_id", fmt.Sprintf("%s-%s", workflowID, runID))
+		WithMetadata("correlation_id", fmt.Sprintf("%s-%s", workflowID, runID)).
+		WithMetadata("error_classification", func() string {
+			if isTransient {
+				return "transient"
+			}
+			return "permanent"
+		}())
 
 	s.logger.Info("Reporting error",
 		zap.String("workflow_id", workflowID),
 		zap.String("run_id", runID),
-		zap.String("error_message", errorMsg))
+		zap.String("correlation_id", message.CorrelationID),
+		zap.String("error_message", errorMsg),
+		zap.Bool("is_transient", isTransient))
 
 	// Validate message
 	if err := s.validateMessage(message); err != nil {
@@ -581,34 +633,47 @@ func (s *MessageService) ReportError(ctx context.Context, workflowID, runID stri
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Attempt to publish with retries (using default retry settings)
-	if err := s.publishWithRetry(ctx, "result", message, 3, time.Second); err != nil {
+	// Attempt to publish with retries (using configured retry settings)
+	if publishErr := s.publishWithRetry(ctx, "result", message, s.publishMaxRetries, time.Second); publishErr != nil {
 		s.logger.Error("Failed to publish error report",
 			zap.String("workflow_id", workflowID),
 			zap.String("run_id", runID),
-			zap.Error(err))
+			zap.Error(publishErr))
 		// If we have a source message, nak it since both processing and reporting failed
 		if msg != nil {
 			_ = msg.Nak()
 		}
-		return err
+		return publishErr
 	}
 
-	// If we have a source message and error reporting succeeded, still nak it
-	// because the original processing failed (that's why we're reporting an error)
+	// Handle acknowledgment based on error type
 	if msg != nil {
-		if err := msg.Nak(); err != nil {
-			s.logger.Error("Failed to negatively acknowledge source message after error report",
+		if isTransient {
+			// Transient failure: NAK for retry
+			if nakErr := msg.Nak(); nakErr != nil {
+				s.logger.Error("Failed to negatively acknowledge source message after transient error report",
+					zap.String("workflow_id", workflowID),
+					zap.String("run_id", runID),
+					zap.Error(nakErr))
+				return fmt.Errorf("failed to negatively acknowledge source message: %w", nakErr)
+			}
+			s.logger.Info("Transient error report published and source message nak'd for retry",
 				zap.String("workflow_id", workflowID),
-				zap.String("run_id", runID),
-				zap.Error(err))
-			// Log but don't fail - the error callback was published successfully
-			return fmt.Errorf("failed to negatively acknowledge source message: %w", err)
+				zap.String("run_id", runID))
+		} else {
+			// Permanent failure: ACK to prevent redelivery
+			if ackErr := msg.Ack(); ackErr != nil {
+				s.logger.Error("Failed to acknowledge source message after permanent error report",
+					zap.String("workflow_id", workflowID),
+					zap.String("run_id", runID),
+					zap.Error(ackErr))
+				return fmt.Errorf("failed to acknowledge source message: %w", ackErr)
+			}
+			s.logger.Info("Permanent error report published and source message ack'd to prevent redelivery",
+				zap.String("workflow_id", workflowID),
+				zap.String("run_id", runID))
 		}
 	}
 
-	s.logger.Info("Error report published and source message nak'd",
-		zap.String("workflow_id", workflowID),
-		zap.String("run_id", runID))
 	return nil
 }

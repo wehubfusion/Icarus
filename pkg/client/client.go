@@ -122,7 +122,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.js = js
 
 	// Initialize message service with JetStream (wrapped to interface for testability)
-	msgService, err := message.NewMessageService(message.WrapNATSJetStream(c.js))
+	msgService, err := message.NewMessageService(message.WrapNATSJetStream(c.js), c.config.MaxDeliver, c.config.PublishMaxRetries)
 	if err != nil {
 		// Clean up connection on service initialization failure
 		_ = nats.Close(c.conn)
@@ -139,7 +139,7 @@ func (c *Client) Connect(ctx context.Context) error {
 // Useful for tests to avoid connecting to a real NATS server.
 func NewClientWithJSContext(js message.JSContext) *Client {
 	logger, _ := zap.NewProduction()
-	svc, _ := message.NewMessageService(js)
+	svc, _ := message.NewMessageService(js, 5, 3) // Use defaults: MaxDeliver=5, PublishMaxRetries=3
 	return &Client{
 		Messages: svc,
 		logger:   logger,

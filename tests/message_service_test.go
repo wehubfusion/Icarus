@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 func TestMessageServiceCreation(t *testing.T) {
 	// Test with valid JSContext
 	mockJS := NewMockJS()
-	service, err := message.NewMessageService(mockJS)
+	service, err := message.NewMessageService(mockJS, 5, 3)
 	if err != nil {
 		t.Fatalf("NewMessageService failed: %v", err)
 	}
@@ -24,7 +25,7 @@ func TestMessageServiceCreation(t *testing.T) {
 	}
 
 	// Test with nil JSContext
-	_, err = message.NewMessageService(nil)
+	_, err = message.NewMessageService(nil, 5, 3)
 	if err == nil {
 		t.Error("Expected error for nil JSContext")
 	}
@@ -32,7 +33,7 @@ func TestMessageServiceCreation(t *testing.T) {
 
 func TestMessageServiceSetLogger(t *testing.T) {
 	mockJS := NewMockJS()
-	service, err := message.NewMessageService(mockJS)
+	service, err := message.NewMessageService(mockJS, 5, 3)
 	if err != nil {
 		t.Fatalf("NewMessageService failed: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestMessageServiceReportError(t *testing.T) {
 
 	workflowID := "workflow-123"
 	runID := "run-456"
-	errorMsg := "processing failed"
+	errorMsg := fmt.Errorf("processing failed")
 
 	// Create a mock NATS message for acknowledgment
 	natsMsg := &nats.Msg{
@@ -110,15 +111,16 @@ func TestMessageServiceReportSuccessValidation(t *testing.T) {
 		t.Error("Expected validation error for message without workflow")
 	}
 
-	// Test with message missing CreatedAt
+	// Test with message missing CreatedAt - the framework now auto-populates timestamps
+	// so this test verifies that the message succeeds with auto-populated timestamps
 	invalidMessage2 := &message.Message{
 		Workflow:  &message.Workflow{WorkflowID: "test", RunID: "test"},
 		Payload:   &message.Payload{Source: "test", Data: "data", Reference: "ref"},
 		UpdatedAt: time.Now().Format(time.RFC3339),
 	}
 	err = c.Messages.ReportSuccess(ctx, *invalidMessage2, nil)
-	if err == nil {
-		t.Error("Expected validation error for message without CreatedAt")
+	if err != nil {
+		t.Errorf("Unexpected error - framework should auto-populate CreatedAt: %v", err)
 	}
 
 	// Test with message missing UpdatedAt - note that the current implementation
@@ -156,13 +158,13 @@ func TestMessageServiceReportErrorValidation(t *testing.T) {
 	// These tests verify the current behavior rather than enforcing validation
 
 	// Test with empty workflow ID (currently allowed)
-	err := c.Messages.ReportError(ctx, "", "run-123", "error message", nil)
+	err := c.Messages.ReportError(ctx, "", "run-123", fmt.Errorf("error message"), nil)
 	if err != nil {
 		t.Errorf("Unexpected error with empty workflow ID: %v", err)
 	}
 
 	// Test with empty run ID (currently allowed)
-	err = c.Messages.ReportError(ctx, "workflow-123", "", "error message", nil)
+	err = c.Messages.ReportError(ctx, "workflow-123", "", fmt.Errorf("error message"), nil)
 	if err != nil {
 		t.Errorf("Unexpected error with empty run ID: %v", err)
 	}
@@ -201,7 +203,7 @@ func TestMessageServiceReportWithPublishError(t *testing.T) {
 	}
 
 	// Test ReportError with publish error
-	err = c.Messages.ReportError(ctx, "workflow-123", "run-456", "error message", nil)
+	err = c.Messages.ReportError(ctx, "workflow-123", "run-456", fmt.Errorf("error message"), nil)
 	if err == nil {
 		t.Error("Expected error when publish fails")
 	}
@@ -284,7 +286,7 @@ func TestMessageServiceContextCancellation(t *testing.T) {
 	}
 
 	// Test ReportError with cancelled context
-	err = c.Messages.ReportError(ctx, "workflow-123", "run-456", "error message", nil)
+	err = c.Messages.ReportError(ctx, "workflow-123", "run-456", fmt.Errorf("error message"), nil)
 	if err == nil {
 		t.Error("Expected error for cancelled context in ReportError")
 	}

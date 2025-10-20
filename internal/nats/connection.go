@@ -34,16 +34,33 @@ type ConnectionConfig struct {
 
 	// Password is an optional password for authentication
 	Password string
+
+	// MaxDeliver is the maximum number of delivery attempts for JetStream consumers.
+	// This controls how many times a message will be redelivered before being considered failed.
+	// Default is 5 retries. Set to -1 for unlimited retries (not recommended).
+	//
+	// Example with 30s AckWait:
+	//   - MaxDeliver: 5 = 2.5 minutes total retry time
+	//   - MaxDeliver: 20 = 10 minutes total retry time
+	//   - MaxDeliver: 100 = 50 minutes total retry time
+	MaxDeliver int
+
+	// PublishMaxRetries is the maximum number of retry attempts when publishing messages fails.
+	// This applies to callback publishing (ReportSuccess, ReportError) to ensure reliable delivery.
+	// Default is 3 retries with 1 second delay between retries.
+	PublishMaxRetries int
 }
 
 // DefaultConnectionConfig returns a configuration with sensible defaults
 func DefaultConnectionConfig(url string) *ConnectionConfig {
 	return &ConnectionConfig{
-		URL:           url,
-		Name:          "nats-sdk-client",
-		MaxReconnects: 10,
-		ReconnectWait: 2 * time.Second,
-		Timeout:       5 * time.Second,
+		URL:               url,
+		Name:              "nats-sdk-client",
+		MaxReconnects:     10,
+		ReconnectWait:     2 * time.Second,
+		Timeout:           5 * time.Second,
+		MaxDeliver:        5, // Default: retry up to 5 times (2.5 minutes with 30s AckWait)
+		PublishMaxRetries: 3, // Default: 3 retries for publish operations
 	}
 }
 
@@ -149,4 +166,3 @@ func WaitForConnection(ctx context.Context, conn *nats.Conn, checkInterval time.
 		}
 	}
 }
-

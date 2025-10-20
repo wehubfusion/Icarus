@@ -115,6 +115,13 @@ func main() {
 	c.SetLogger(logger)
 	c.Messages.SetLogger(logger)
 
+	// Note: MaxDeliver is configured in ConnectionConfig before Connect()
+	// Default is 5 retries. With 30s AckWait, this gives 2.5 minutes total retry time.
+	// To customize, use NewClientWithConfig with a custom config:
+	// config := nats.DefaultConnectionConfig(natsURL)
+	// config.MaxDeliver = 20  // 20 retries = 10 minutes total with 30s AckWait
+	// c := client.NewClientWithConfig(config)
+
 	// Get JetStream context for stream/consumer setup
 	js := c.JetStream()
 	if js == nil {
