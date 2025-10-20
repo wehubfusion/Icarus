@@ -16,7 +16,7 @@ import (
 func TestMessageServiceCreation(t *testing.T) {
 	// Test with valid JSContext
 	mockJS := NewMockJS()
-	service, err := message.NewMessageService(mockJS)
+	service, err := message.NewMessageService(mockJS, 5, 3)
 	if err != nil {
 		t.Fatalf("NewMessageService failed: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestMessageServiceCreation(t *testing.T) {
 	}
 
 	// Test with nil JSContext
-	_, err = message.NewMessageService(nil)
+	_, err = message.NewMessageService(nil, 5, 3)
 	if err == nil {
 		t.Error("Expected error for nil JSContext")
 	}
@@ -33,7 +33,7 @@ func TestMessageServiceCreation(t *testing.T) {
 
 func TestMessageServiceSetLogger(t *testing.T) {
 	mockJS := NewMockJS()
-	service, err := message.NewMessageService(mockJS)
+	service, err := message.NewMessageService(mockJS, 5, 3)
 	if err != nil {
 		t.Fatalf("NewMessageService failed: %v", err)
 	}

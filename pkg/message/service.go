@@ -83,9 +83,10 @@ func (s *natsSubAdapter) Fetch(batch int, opts ...nats.PullOpt) ([]*nats.Msg, er
 // MessageService provides methods for publishing and managing messages over JetStream.
 // All operations use JetStream exclusively with proper acknowledgment handling.
 type MessageService struct {
-	js         JSContext
-	logger     *zap.Logger
-	maxDeliver int // Maximum number of delivery attempts before giving up (default: 5)
+	js                JSContext
+	logger            *zap.Logger
+	maxDeliver        int // Maximum number of delivery attempts before giving up (default: 5)
+	publishMaxRetries int // Maximum number of retry attempts for publish operations (default: 3)
 }
 
 // validateMessage performs strict validation on the message for callback operations
@@ -148,17 +149,28 @@ func (s *MessageService) publishWithRetry(ctx context.Context, subject string, m
 
 // NewMessageService creates a new message service with the given JetStream context.
 // Any implementation that satisfies JSContext (including nats.JetStreamContext) can be used.
-// The service uses a default MaxDeliver of 5 retries, which can be changed with SetMaxDeliver.
-func NewMessageService(js JSContext) (*MessageService, error) {
+// The maxDeliver parameter controls the maximum number of delivery attempts for consumers.
+// The publishMaxRetries parameter controls the maximum number of retry attempts for publish operations.
+func NewMessageService(js JSContext, maxDeliver int, publishMaxRetries int) (*MessageService, error) {
 	if js == nil {
 		return nil, fmt.Errorf("JetStream context cannot be nil")
 	}
 
+	// Use default if not set or invalid
+	if maxDeliver == 0 {
+		maxDeliver = 5 // Default: retry up to 5 times (2.5 minutes with 30s AckWait)
+	}
+
+	if publishMaxRetries == 0 {
+		publishMaxRetries = 3 // Default: 3 retries for publish operations
+	}
+
 	logger, _ := zap.NewProduction()
 	return &MessageService{
-		js:         js,
-		logger:     logger,
-		maxDeliver: 5, // Default: retry up to 5 times (2.5 minutes with 30s AckWait)
+		js:                js,
+		logger:            logger,
+		maxDeliver:        maxDeliver,
+		publishMaxRetries: publishMaxRetries,
 	}, nil
 }
 
@@ -167,13 +179,6 @@ func (s *MessageService) SetLogger(logger *zap.Logger) {
 	if logger != nil {
 		s.logger = logger
 	}
-}
-
-// SetMaxDeliver sets the maximum number of delivery attempts for consumers.
-// This controls how many times a message will be redelivered before being considered failed.
-// Default is 5 retries. Set to -1 for unlimited retries (not recommended).
-func (s *MessageService) SetMaxDeliver(maxDeliver int) {
-	s.maxDeliver = maxDeliver
 }
 
 // EnsureStream creates the JetStream stream if it doesn't exist, or validates it exists.
@@ -536,8 +541,8 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Attempt to publish with retries (using default retry settings)
-	if err := s.publishWithRetry(ctx, "result", &resultMessage, 3, time.Second); err != nil {
+	// Attempt to publish with retries (using configured retry settings)
+	if err := s.publishWithRetry(ctx, "result", &resultMessage, s.publishMaxRetries, time.Second); err != nil {
 		s.logger.Error("Failed to publish success report",
 			zap.String("message_identifier", s.getMessageIdentifier(&resultMessage)),
 			zap.Error(err))
@@ -616,8 +621,8 @@ func (s *MessageService) ReportError(ctx context.Context, workflowID, runID stri
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Attempt to publish with retries (using default retry settings)
-	if publishErr := s.publishWithRetry(ctx, "result", message, 3, time.Second); publishErr != nil {
+	// Attempt to publish with retries (using configured retry settings)
+	if publishErr := s.publishWithRetry(ctx, "result", message, s.publishMaxRetries, time.Second); publishErr != nil {
 		s.logger.Error("Failed to publish error report",
 			zap.String("workflow_id", workflowID),
 			zap.String("run_id", runID),

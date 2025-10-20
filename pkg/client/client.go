@@ -122,7 +122,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.js = js
 
 	// Initialize message service with JetStream (wrapped to interface for testability)
-	msgService, err := message.NewMessageService(message.WrapNATSJetStream(c.js))
+	msgService, err := message.NewMessageService(message.WrapNATSJetStream(c.js), c.config.MaxDeliver, c.config.PublishMaxRetries)
 	if err != nil {
 		// Clean up connection on service initialization failure
 		_ = nats.Close(c.conn)
@@ -139,7 +139,7 @@ func (c *Client) Connect(ctx context.Context) error {
 // Useful for tests to avoid connecting to a real NATS server.
 func NewClientWithJSContext(js message.JSContext) *Client {
 	logger, _ := zap.NewProduction()
-	svc, _ := message.NewMessageService(js)
+	svc, _ := message.NewMessageService(js, 5, 3) // Use defaults: MaxDeliver=5, PublishMaxRetries=3
 	return &Client{
 		Messages: svc,
 		logger:   logger,
@@ -150,22 +150,6 @@ func NewClientWithJSContext(js message.JSContext) *Client {
 func (c *Client) SetLogger(logger *zap.Logger) {
 	if logger != nil {
 		c.logger = logger
-	}
-}
-
-// SetMaxDeliver sets the maximum number of delivery attempts for all consumers.
-// This controls how many times a message will be redelivered before being considered failed.
-// Default is 5 retries. Set to -1 for unlimited retries (not recommended).
-//
-// Example with 30s AckWait:
-//   - MaxDeliver: 5 = 2.5 minutes total retry time
-//   - MaxDeliver: 20 = 10 minutes total retry time
-//   - MaxDeliver: 100 = 50 minutes total retry time
-//
-// Call this method before calling EnsureConsumer to apply the setting.
-func (c *Client) SetMaxDeliver(maxDeliver int) {
-	if c.Messages != nil {
-		c.Messages.SetMaxDeliver(maxDeliver)
 	}
 }
 

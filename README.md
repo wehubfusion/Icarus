@@ -306,14 +306,20 @@ Control how many times messages are retried before being considered failed. This
 **Default**: 5 retries (2.5 minutes with 30s AckWait)
 
 ```go
-// Configure MaxDeliver before calling EnsureConsumer
-c.SetMaxDeliver(20)  // 20 retries = 10 minutes total (with 30s AckWait)
+// Configure MaxDeliver in ConnectionConfig before Connect()
+config := nats.DefaultConnectionConfig("nats://localhost:4222")
+config.MaxDeliver = 20  // 20 retries = 10 minutes total (with 30s AckWait)
+
+c := client.NewClientWithConfig(config)
+if err := c.Connect(ctx); err != nil {
+    logger.Fatal("Failed to connect", zap.Error(err))
+}
 
 // Or use one of these common configurations:
-c.SetMaxDeliver(5)   // Default: 2.5 minutes (good for fast-moving systems)
-c.SetMaxDeliver(20)  // 10 minutes (handles most incidents)
-c.SetMaxDeliver(100) // 50 minutes (very conservative)
-c.SetMaxDeliver(-1)  // Unlimited retries (not recommended)
+config.MaxDeliver = 5    // Default: 2.5 minutes (good for fast-moving systems)
+config.MaxDeliver = 20   // 10 minutes (handles most incidents)
+config.MaxDeliver = 100  // 50 minutes (very conservative)
+config.MaxDeliver = -1   // Unlimited retries (not recommended)
 ```
 
 **Calculation**: `Total Retry Time = MaxDeliver × AckWait`
