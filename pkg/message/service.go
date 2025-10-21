@@ -85,8 +85,10 @@ func (s *natsSubAdapter) Fetch(batch int, opts ...nats.PullOpt) ([]*nats.Msg, er
 type MessageService struct {
 	js                JSContext
 	logger            *zap.Logger
-	maxDeliver        int // Maximum number of delivery attempts before giving up (default: 5)
-	publishMaxRetries int // Maximum number of retry attempts for publish operations (default: 3)
+	maxDeliver        int    // Maximum number of delivery attempts before giving up (default: 5)
+	publishMaxRetries int    // Maximum number of retry attempts for publish operations (default: 3)
+	resultStream      string // JetStream stream name for publishing results (e.g., RESULTS_UAT)
+	resultSubject     string // Subject for publishing results (e.g., result.uat)
 }
 
 // validateMessage performs strict validation on the message for callback operations
@@ -151,7 +153,8 @@ func (s *MessageService) publishWithRetry(ctx context.Context, subject string, m
 // Any implementation that satisfies JSContext (including nats.JetStreamContext) can be used.
 // The maxDeliver parameter controls the maximum number of delivery attempts for consumers.
 // The publishMaxRetries parameter controls the maximum number of retry attempts for publish operations.
-func NewMessageService(js JSContext, maxDeliver int, publishMaxRetries int) (*MessageService, error) {
+// The resultStream and resultSubject parameters configure where results are published (e.g., RESULTS_UAT, result.uat).
+func NewMessageService(js JSContext, maxDeliver int, publishMaxRetries int, resultStream string, resultSubject string) (*MessageService, error) {
 	if js == nil {
 		return nil, fmt.Errorf("JetStream context cannot be nil")
 	}
@@ -165,12 +168,22 @@ func NewMessageService(js JSContext, maxDeliver int, publishMaxRetries int) (*Me
 		publishMaxRetries = 3 // Default: 3 retries for publish operations
 	}
 
+	if resultStream == "" {
+		resultStream = "RESULTS" // Default result stream
+	}
+
+	if resultSubject == "" {
+		resultSubject = "result" // Default result subject
+	}
+
 	logger, _ := zap.NewProduction()
 	return &MessageService{
 		js:                js,
 		logger:            logger,
 		maxDeliver:        maxDeliver,
 		publishMaxRetries: publishMaxRetries,
+		resultStream:      resultStream,
+		resultSubject:     resultSubject,
 	}, nil
 }
 
@@ -552,7 +565,7 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 	}
 
 	// Attempt to publish with retries (using configured retry settings)
-	if err := s.publishWithRetry(ctx, "result", &resultMessage, s.publishMaxRetries, time.Second); err != nil {
+	if err := s.publishWithRetry(ctx, s.resultSubject, &resultMessage, s.publishMaxRetries, time.Second); err != nil {
 		s.logger.Error("Failed to publish success report",
 			zap.String("message_identifier", s.getMessageIdentifier(&resultMessage)),
 			zap.Error(err))
@@ -634,7 +647,7 @@ func (s *MessageService) ReportError(ctx context.Context, workflowID, runID stri
 	}
 
 	// Attempt to publish with retries (using configured retry settings)
-	if publishErr := s.publishWithRetry(ctx, "result", message, s.publishMaxRetries, time.Second); publishErr != nil {
+	if publishErr := s.publishWithRetry(ctx, s.resultSubject, message, s.publishMaxRetries, time.Second); publishErr != nil {
 		s.logger.Error("Failed to publish error report",
 			zap.String("workflow_id", workflowID),
 			zap.String("run_id", runID),

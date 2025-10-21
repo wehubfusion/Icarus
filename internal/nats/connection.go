@@ -49,6 +49,16 @@ type ConnectionConfig struct {
 	// This applies to callback publishing (ReportSuccess, ReportError) to ensure reliable delivery.
 	// Default is 3 retries with 1 second delay between retries.
 	PublishMaxRetries int
+
+	// ResultStream is the name of the JetStream stream where results are published.
+	// This should be environment-specific (e.g., RESULTS_UAT, RESULTS_PROD).
+	// Default is "RESULTS".
+	ResultStream string
+
+	// ResultSubject is the subject where results are published.
+	// This should be environment-specific (e.g., result.uat, result.prod).
+	// Default is "result".
+	ResultSubject string
 }
 
 // DefaultConnectionConfig returns a configuration with sensible defaults
@@ -61,6 +71,8 @@ func DefaultConnectionConfig(url string) *ConnectionConfig {
 		Timeout:           5 * time.Second,
 		MaxDeliver:        5, // Default: retry up to 5 times (2.5 minutes with 30s AckWait)
 		PublishMaxRetries: 3, // Default: 3 retries for publish operations
+		ResultStream:      "RESULTS",
+		ResultSubject:     "result",
 	}
 }
 
