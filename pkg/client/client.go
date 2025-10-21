@@ -160,24 +160,6 @@ func (c *Client) SetLogger(logger *zap.Logger) {
 	}
 }
 
-// SetResultStream sets the result stream name for this client.
-// Must be called before Connect() to take effect.
-// This configures which stream results will be published to (e.g., RESULTS_UAT, RESULTS_PROD).
-func (c *Client) SetResultStream(stream string) {
-	if c.config != nil {
-		c.config.ResultStream = stream
-	}
-}
-
-// SetResultSubject sets the result subject for this client.
-// Must be called before Connect() to take effect.
-// This configures which subject results will be published to (e.g., result.uat, result.prod).
-func (c *Client) SetResultSubject(subject string) {
-	if c.config != nil {
-		c.config.ResultSubject = subject
-	}
-}
-
 // Close gracefully closes the NATS connection and cleans up all resources.
 // It drains in-flight messages before closing to ensure no message loss.
 //
