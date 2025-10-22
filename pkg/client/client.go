@@ -45,17 +45,25 @@ type Client struct {
 
 // NewClient creates a new JetStream SDK client with default configuration.
 // The URL parameter specifies the NATS server address (e.g., "nats://localhost:4222").
+// The resultStream and resultSubject parameters configure where results are published (e.g., RESULTS_UAT, result.uat).
 //
 // Note: JetStream must be enabled on the NATS server for this SDK to function.
 // The client must be connected using Connect() before use.
 //
 // Example:
 //
-//	client := client.NewClient("nats://localhost:4222")
-func NewClient(url string) *Client {
+//	client := client.NewClient("nats://localhost:4222", "RESULTS_UAT", "result.uat")
+func NewClient(url string, resultStream string, resultSubject string) *Client {
 	logger, _ := zap.NewProduction()
+	config := nats.DefaultConnectionConfig(url)
+	if resultStream != "" {
+		config.ResultStream = resultStream
+	}
+	if resultSubject != "" {
+		config.ResultSubject = resultSubject
+	}
 	return &Client{
-		config: nats.DefaultConnectionConfig(url),
+		config: config,
 		logger: logger,
 	}
 }
@@ -157,24 +165,6 @@ func NewClientWithJSContext(js message.JSContext) *Client {
 func (c *Client) SetLogger(logger *zap.Logger) {
 	if logger != nil {
 		c.logger = logger
-	}
-}
-
-// SetResultStream sets the result stream name for this client.
-// Must be called before Connect() to take effect.
-// This configures which stream results will be published to (e.g., RESULTS_UAT, RESULTS_PROD).
-func (c *Client) SetResultStream(stream string) {
-	if c.config != nil && stream != "" {
-		c.config.ResultStream = stream
-	}
-}
-
-// SetResultSubject sets the result subject for this client.
-// Must be called before Connect() to take effect.
-// This configures which subject results will be published to (e.g., result.uat, result.prod).
-func (c *Client) SetResultSubject(subject string) {
-	if c.config != nil && subject != "" {
-		c.config.ResultSubject = subject
 	}
 }
 

@@ -173,7 +173,7 @@ func main() {
 
 	// Create Icarus client
 	ctx := context.Background()
-	icarusClient := client.NewClient(natsURL)
+	icarusClient := client.NewClient(natsURL, "RESULTS", "result")
 	icarusClient.SetLogger(logger) // Use the same logger for consistency
 	err = icarusClient.Connect(ctx)
 	if err != nil {

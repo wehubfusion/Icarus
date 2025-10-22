@@ -26,7 +26,7 @@ func main() {
 		natsURL = url
 	}
 
-	client := client.NewClient(natsURL)
+	client := client.NewClient(natsURL, "RESULTS", "result")
 	ctx := context.Background()
 
 	// Connect to NATS JetStream
