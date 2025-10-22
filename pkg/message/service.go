@@ -281,17 +281,31 @@ func (s *MessageService) EnsureConsumer(streamName, consumerName string) error {
 }
 
 // ensureStreamForSubject ensures a stream exists that can handle the given subject.
-// It extracts the stream name from the subject (first segment before dot) and creates
-// the stream if it doesn't exist.
+// For result subjects, it uses the configured resultStream.
+// For other subjects, it extracts the stream name from the subject (first segment before dot)
+// and creates the stream if it doesn't exist.
 func (s *MessageService) ensureStreamForSubject(subject string) error {
-	// Extract stream name from subject (first part before dot)
-	streamName := subject
-	if idx := len(subject); idx > 0 {
-		// Find first dot to extract stream name
-		for i, c := range subject {
-			if c == '.' {
-				streamName = subject[:i]
-				break
+	var streamName string
+	var isResultSubject bool
+
+	// Check if this is a result subject
+	if s.resultSubject != "" && subject == s.resultSubject {
+		// Use the configured result stream
+		streamName = s.resultStream
+		isResultSubject = true
+		s.logger.Debug("Using configured result stream",
+			zap.String("stream", streamName),
+			zap.String("subject", subject))
+	} else {
+		// Extract stream name from subject (first part before dot)
+		streamName = subject
+		if idx := len(subject); idx > 0 {
+			// Find first dot to extract stream name
+			for i, c := range subject {
+				if c == '.' {
+					streamName = subject[:i]
+					break
+				}
 			}
 		}
 	}
@@ -299,15 +313,25 @@ func (s *MessageService) ensureStreamForSubject(subject string) error {
 	// Check if stream exists
 	_, err := s.js.StreamInfo(streamName)
 	if err != nil {
-		// Stream doesn't exist, create it
+		// Stream doesn't exist
 		if err == nats.ErrStreamNotFound {
+			// Create stream (both result streams and regular streams)
 			s.logger.Info("Creating JetStream stream for subject",
 				zap.String("stream", streamName),
-				zap.String("subject", subject))
+				zap.String("subject", subject),
+				zap.Bool("is_result_stream", isResultSubject))
+
+			// For result streams, use a more specific subject pattern
+			// For other streams, use wildcard pattern
+			subjectPattern := fmt.Sprintf("%s.>", streamName)
+			if isResultSubject {
+				// Result streams use the exact subject pattern without wildcard
+				subjectPattern = fmt.Sprintf("%s.*", streamName)
+			}
 
 			streamConfig := &nats.StreamConfig{
 				Name:     streamName,
-				Subjects: []string{fmt.Sprintf("%s.>", streamName)},
+				Subjects: []string{subjectPattern},
 				Storage:  nats.FileStorage,
 				MaxAge:   24 * time.Hour,
 				MaxMsgs:  100000,
@@ -321,7 +345,8 @@ func (s *MessageService) ensureStreamForSubject(subject string) error {
 
 			s.logger.Info("Successfully created JetStream stream",
 				zap.String("stream", streamName),
-				zap.String("subject_pattern", fmt.Sprintf("%s.>", streamName)))
+				zap.String("subject_pattern", subjectPattern),
+				zap.Bool("is_result_stream", isResultSubject))
 		} else {
 			return fmt.Errorf("failed to get stream info for '%s': %w", streamName, err)
 		}
