@@ -321,12 +321,17 @@ func (s *MessageService) ensureStreamForSubject(subject string) error {
 				zap.String("subject", subject),
 				zap.Bool("is_result_stream", isResultSubject))
 
-			// For result streams, use a more specific subject pattern
-			// For other streams, use wildcard pattern
-			subjectPattern := fmt.Sprintf("%s.>", streamName)
+			// For result subjects, use the configured subject pattern
+			// For other subjects, derive pattern from subject
+			var subjectPattern string
 			if isResultSubject {
-				// Result streams use the exact subject pattern without wildcard
-				subjectPattern = fmt.Sprintf("%s.*", streamName)
+				// Result subjects use the configured subject with > wildcard
+				// e.g., "result.uat.>" matches "result.uat", "result.uat.X", etc.
+				subjectPattern = fmt.Sprintf("%s.>", subject)
+			} else {
+				// Regular subjects use stream name derived pattern
+				// e.g., "HTTP_REQUESTS_UAT.>" for stream "HTTP_REQUESTS_UAT"
+				subjectPattern = fmt.Sprintf("%s.>", streamName)
 			}
 
 			streamConfig := &nats.StreamConfig{
