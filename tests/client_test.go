@@ -10,7 +10,7 @@ import (
 func TestClientCreation(t *testing.T) {
 	// Test creating client with URL
 	url := "nats://localhost:4222"
-	c := client.NewClient(url)
+	c := client.NewClient(url, "RESULTS", "result")
 	if c == nil {
 		t.Fatal("Expected client to be created")
 	}
@@ -66,7 +66,7 @@ func TestClientConfiguration(t *testing.T) {
 	}
 
 	for _, url := range urls {
-		c := client.NewClient(url)
+		c := client.NewClient(url, "RESULTS", "result")
 		if c == nil {
 			t.Errorf("Failed to create client with URL: %s", url)
 		}
@@ -85,7 +85,7 @@ func TestClientServiceInitialization(t *testing.T) {
 }
 
 func TestClientStats(t *testing.T) {
-	c := client.NewClient("nats://localhost:4222")
+	c := client.NewClient("nats://localhost:4222", "RESULTS", "result")
 
 	// Test stats with no connection
 	stats := c.Stats()
@@ -95,7 +95,7 @@ func TestClientStats(t *testing.T) {
 }
 
 func TestClientSetLogger(t *testing.T) {
-	c := client.NewClient("nats://localhost:4222")
+	c := client.NewClient("nats://localhost:4222", "RESULTS", "result")
 
 	// Test setting a custom logger
 	logger, _ := zap.NewProduction()
@@ -106,7 +106,7 @@ func TestClientSetLogger(t *testing.T) {
 }
 
 func TestClientClose(t *testing.T) {
-	c := client.NewClient("nats://localhost:4222")
+	c := client.NewClient("nats://localhost:4222", "RESULTS", "result")
 
 	// Test closing without connection
 	err := c.Close()
@@ -116,7 +116,7 @@ func TestClientClose(t *testing.T) {
 }
 
 func TestClientJetStreamAccess(t *testing.T) {
-	c := client.NewClient("nats://localhost:4222")
+	c := client.NewClient("nats://localhost:4222", "RESULTS", "result")
 
 	// Test JetStream access without connection
 	js := c.JetStream()
@@ -126,7 +126,7 @@ func TestClientJetStreamAccess(t *testing.T) {
 }
 
 func TestClientConnectionAccess(t *testing.T) {
-	c := client.NewClient("nats://localhost:4222")
+	c := client.NewClient("nats://localhost:4222", "RESULTS", "result")
 
 	// Test Connection access without connection
 	conn := c.Connection()

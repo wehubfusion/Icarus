@@ -45,17 +45,25 @@ type Client struct {
 
 // NewClient creates a new JetStream SDK client with default configuration.
 // The URL parameter specifies the NATS server address (e.g., "nats://localhost:4222").
+// The resultStream and resultSubject parameters configure where results are published (e.g., RESULTS_UAT, result.uat).
 //
 // Note: JetStream must be enabled on the NATS server for this SDK to function.
 // The client must be connected using Connect() before use.
 //
 // Example:
 //
-//	client := client.NewClient("nats://localhost:4222")
-func NewClient(url string) *Client {
+//	client := client.NewClient("nats://localhost:4222", "RESULTS_UAT", "result.uat")
+func NewClient(url string, resultStream string, resultSubject string) *Client {
 	logger, _ := zap.NewProduction()
+	config := nats.DefaultConnectionConfig(url)
+	if resultStream != "" {
+		config.ResultStream = resultStream
+	}
+	if resultSubject != "" {
+		config.ResultSubject = resultSubject
+	}
 	return &Client{
-		config: nats.DefaultConnectionConfig(url),
+		config: config,
 		logger: logger,
 	}
 }
@@ -122,7 +130,13 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.js = js
 
 	// Initialize message service with JetStream (wrapped to interface for testability)
-	msgService, err := message.NewMessageService(message.WrapNATSJetStream(c.js), c.config.MaxDeliver, c.config.PublishMaxRetries)
+	msgService, err := message.NewMessageService(
+		message.WrapNATSJetStream(c.js),
+		c.config.MaxDeliver,
+		c.config.PublishMaxRetries,
+		c.config.ResultStream,
+		c.config.ResultSubject,
+	)
 	if err != nil {
 		// Clean up connection on service initialization failure
 		_ = nats.Close(c.conn)
@@ -139,7 +153,8 @@ func (c *Client) Connect(ctx context.Context) error {
 // Useful for tests to avoid connecting to a real NATS server.
 func NewClientWithJSContext(js message.JSContext) *Client {
 	logger, _ := zap.NewProduction()
-	svc, _ := message.NewMessageService(js, 5, 3) // Use defaults: MaxDeliver=5, PublishMaxRetries=3
+	// Use defaults: MaxDeliver=5, PublishMaxRetries=3, ResultStream=RESULTS, ResultSubject=result
+	svc, _ := message.NewMessageService(js, 5, 3, "RESULTS", "result")
 	return &Client{
 		Messages: svc,
 		logger:   logger,

@@ -95,7 +95,7 @@ func main() {
 	fmt.Println()
 
 	// Create and connect to NATS with JetStream
-	c := client.NewClient("nats://localhost:4222")
+	c := client.NewClient("nats://localhost:4222", "RESULTS", "result")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
