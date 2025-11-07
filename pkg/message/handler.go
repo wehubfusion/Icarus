@@ -118,6 +118,14 @@ func ValidationMiddleware() Middleware {
 			if msg.Workflow == nil && msg.Node == nil && msg.Payload == nil {
 				return fmt.Errorf("message must contain at least workflow, node, or payload information")
 			}
+
+			// Validate embedded nodes if present
+			if len(msg.EmbeddedNodes) > 0 {
+				if err := msg.ValidateEmbeddedNodes(); err != nil {
+					return fmt.Errorf("invalid embedded nodes: %w", err)
+				}
+			}
+
 			return next(ctx, msg)
 		}
 	}

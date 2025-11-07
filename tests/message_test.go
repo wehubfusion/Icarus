@@ -316,3 +316,312 @@ func TestNATSMsgWrapper(t *testing.T) {
 		t.Errorf("Respond should not error without real NATS message, got: %v", err)
 	}
 }
+
+// Test IsUnit method
+func TestMessage_IsUnit(t *testing.T) {
+	// Test message without embedded nodes
+	msg := message.NewMessage()
+	if msg.IsUnit() {
+		t.Error("Message without embedded nodes should not be a unit")
+	}
+
+	// Test message with embedded nodes
+	embeddedNodes := []message.EmbeddedNode{
+		{NodeID: "node1", PluginType: "test", ExecutionOrder: 0},
+	}
+	msg.WithEmbeddedNodes(embeddedNodes)
+	if !msg.IsUnit() {
+		t.Error("Message with embedded nodes should be a unit")
+	}
+}
+
+// Test ValidateEmbeddedNodes success
+func TestMessage_ValidateEmbeddedNodes_Success(t *testing.T) {
+	msg := message.NewMessage().WithNode("parent", nil)
+	embeddedNodes := []message.EmbeddedNode{
+		{NodeID: "node1", PluginType: "test", ExecutionOrder: 0},
+		{NodeID: "node2", PluginType: "test", ExecutionOrder: 1},
+	}
+	msg.WithEmbeddedNodes(embeddedNodes)
+
+	err := msg.ValidateEmbeddedNodes()
+	if err != nil {
+		t.Errorf("ValidateEmbeddedNodes should succeed, got: %v", err)
+	}
+}
+
+// Test ValidateEmbeddedNodes with duplicate IDs
+func TestMessage_ValidateEmbeddedNodes_DuplicateIDs(t *testing.T) {
+	msg := message.NewMessage()
+	embeddedNodes := []message.EmbeddedNode{
+		{NodeID: "node1", PluginType: "test", ExecutionOrder: 0},
+		{NodeID: "node1", PluginType: "test", ExecutionOrder: 1},
+	}
+	msg.WithEmbeddedNodes(embeddedNodes)
+
+	err := msg.ValidateEmbeddedNodes()
+	if err == nil {
+		t.Error("ValidateEmbeddedNodes should fail with duplicate IDs")
+	}
+}
+
+// Test ValidateEmbeddedNodes with missing NodeID
+func TestMessage_ValidateEmbeddedNodes_MissingNodeID(t *testing.T) {
+	msg := message.NewMessage()
+	embeddedNodes := []message.EmbeddedNode{
+		{NodeID: "", PluginType: "test", ExecutionOrder: 0},
+	}
+	msg.WithEmbeddedNodes(embeddedNodes)
+
+	err := msg.ValidateEmbeddedNodes()
+	if err == nil {
+		t.Error("ValidateEmbeddedNodes should fail with missing NodeID")
+	}
+}
+
+// Test ValidateEmbeddedNodes with missing PluginType
+func TestMessage_ValidateEmbeddedNodes_MissingPluginType(t *testing.T) {
+	msg := message.NewMessage()
+	embeddedNodes := []message.EmbeddedNode{
+		{NodeID: "node1", PluginType: "", ExecutionOrder: 0},
+	}
+	msg.WithEmbeddedNodes(embeddedNodes)
+
+	err := msg.ValidateEmbeddedNodes()
+	if err == nil {
+		t.Error("ValidateEmbeddedNodes should fail with missing PluginType")
+	}
+}
+
+// Test ValidateEmbeddedNodes with negative execution order
+func TestMessage_ValidateEmbeddedNodes_NegativeOrder(t *testing.T) {
+	msg := message.NewMessage()
+	embeddedNodes := []message.EmbeddedNode{
+		{NodeID: "node1", PluginType: "test", ExecutionOrder: -1},
+	}
+	msg.WithEmbeddedNodes(embeddedNodes)
+
+	err := msg.ValidateEmbeddedNodes()
+	if err == nil {
+		t.Error("ValidateEmbeddedNodes should fail with negative execution order")
+	}
+}
+
+// Test ValidateEmbeddedNodes with invalid field mapping references
+func TestMessage_ValidateEmbeddedNodes_InvalidReferences(t *testing.T) {
+	msg := message.NewMessage().WithNode("parent", nil)
+	embeddedNodes := []message.EmbeddedNode{
+		{
+			NodeID:        "node1",
+			PluginType:    "test",
+			ExecutionOrder: 0,
+			FieldMappings: []message.FieldMapping{
+				{SourceNodeID: "unknown_node", SourceEndpoint: "output"},
+			},
+		},
+	}
+	msg.WithEmbeddedNodes(embeddedNodes)
+
+	err := msg.ValidateEmbeddedNodes()
+	if err == nil {
+		t.Error("ValidateEmbeddedNodes should fail with invalid field mapping reference")
+	}
+}
+
+// Test GetEmbeddedNodeByID
+func TestMessage_GetEmbeddedNodeByID(t *testing.T) {
+	msg := message.NewMessage()
+	embeddedNodes := []message.EmbeddedNode{
+		{NodeID: "node1", PluginType: "test1", ExecutionOrder: 0},
+		{NodeID: "node2", PluginType: "test2", ExecutionOrder: 1},
+	}
+	msg.WithEmbeddedNodes(embeddedNodes)
+
+	// Test finding existing node
+	node := msg.GetEmbeddedNodeByID("node2")
+	if node == nil {
+		t.Fatal("GetEmbeddedNodeByID should find existing node")
+	}
+	if node.NodeID != "node2" {
+		t.Errorf("Expected node2, got %s", node.NodeID)
+	}
+	if node.PluginType != "test2" {
+		t.Errorf("Expected test2, got %s", node.PluginType)
+	}
+
+	// Test finding non-existent node
+	node = msg.GetEmbeddedNodeByID("nonexistent")
+	if node != nil {
+		t.Error("GetEmbeddedNodeByID should return nil for non-existent node")
+	}
+}
+
+// Test GetEmbeddedNodesByOrder
+func TestMessage_GetEmbeddedNodesByOrder(t *testing.T) {
+	msg := message.NewMessage()
+	embeddedNodes := []message.EmbeddedNode{
+		{NodeID: "node3", PluginType: "test3", ExecutionOrder: 2},
+		{NodeID: "node1", PluginType: "test1", ExecutionOrder: 0},
+		{NodeID: "node2", PluginType: "test2", ExecutionOrder: 1},
+	}
+	msg.WithEmbeddedNodes(embeddedNodes)
+
+	// Get sorted nodes
+	sorted := msg.GetEmbeddedNodesByOrder()
+	if len(sorted) != 3 {
+		t.Fatalf("Expected 3 nodes, got %d", len(sorted))
+	}
+
+	// Verify order
+	if sorted[0].NodeID != "node1" || sorted[0].ExecutionOrder != 0 {
+		t.Errorf("Expected node1 at index 0, got %s with order %d", sorted[0].NodeID, sorted[0].ExecutionOrder)
+	}
+	if sorted[1].NodeID != "node2" || sorted[1].ExecutionOrder != 1 {
+		t.Errorf("Expected node2 at index 1, got %s with order %d", sorted[1].NodeID, sorted[1].ExecutionOrder)
+	}
+	if sorted[2].NodeID != "node3" || sorted[2].ExecutionOrder != 2 {
+		t.Errorf("Expected node3 at index 2, got %s with order %d", sorted[2].NodeID, sorted[2].ExecutionOrder)
+	}
+
+	// Test with empty embedded nodes
+	emptyMsg := message.NewMessage()
+	emptySorted := emptyMsg.GetEmbeddedNodesByOrder()
+	if emptySorted != nil {
+		t.Error("GetEmbeddedNodesByOrder should return nil for message without embedded nodes")
+	}
+}
+
+// Test HasConnection
+func TestMessage_HasConnection(t *testing.T) {
+	msg := message.NewMessage()
+
+	// Test without connection
+	if msg.HasConnection() {
+		t.Error("Message without connection should return false")
+	}
+
+	// Test with connection but no ID
+	msg.WithConnection(&message.ConnectionDetails{Type: "postgres"})
+	if msg.HasConnection() {
+		t.Error("Message with connection but no ID should return false")
+	}
+
+	// Test with valid connection
+	msg.WithConnection(&message.ConnectionDetails{ConnectionID: "conn123", Type: "postgres"})
+	if !msg.HasConnection() {
+		t.Error("Message with valid connection should return true")
+	}
+}
+
+// Test HasSchema
+func TestMessage_HasSchema(t *testing.T) {
+	msg := message.NewMessage()
+
+	// Test without schema
+	if msg.HasSchema() {
+		t.Error("Message without schema should return false")
+	}
+
+	// Test with schema but no ID
+	msg.WithSchema(&message.SchemaDetails{Name: "users"})
+	if msg.HasSchema() {
+		t.Error("Message with schema but no ID should return false")
+	}
+
+	// Test with valid schema
+	msg.WithSchema(&message.SchemaDetails{SchemaID: "schema123", Name: "users"})
+	if !msg.HasSchema() {
+		t.Error("Message with valid schema should return true")
+	}
+}
+
+// Test message serialization with embedded nodes
+func TestMessage_SerializationWithEmbeddedNodes(t *testing.T) {
+	original := message.NewWorkflowMessage("workflow-123", "run-456").
+		WithNode("parent-node", nil).
+		WithPayload("test", "test data", "ref-123")
+
+	embeddedNodes := []message.EmbeddedNode{
+		{
+			NodeID:         "node1",
+			PluginType:     "postgres",
+			ExecutionOrder: 0,
+			FieldMappings: []message.FieldMapping{
+				{SourceNodeID: "parent-node", SourceEndpoint: "output", DataType: "string"},
+			},
+		},
+		{NodeID: "node2", PluginType: "transform", ExecutionOrder: 1},
+	}
+	original.WithEmbeddedNodes(embeddedNodes)
+
+	conn := &message.ConnectionDetails{ConnectionID: "conn123", Type: "postgres"}
+	original.WithConnection(conn)
+
+	schema := &message.SchemaDetails{SchemaID: "schema123", Name: "users"}
+	original.WithSchema(schema)
+
+	// Serialize
+	data, err := original.ToBytes()
+	if err != nil {
+		t.Fatalf("Failed to serialize message with embedded nodes: %v", err)
+	}
+
+	// Deserialize
+	deserialized, err := message.FromBytes(data)
+	if err != nil {
+		t.Fatalf("Failed to deserialize message with embedded nodes: %v", err)
+	}
+
+	// Verify embedded nodes
+	if len(deserialized.EmbeddedNodes) != 2 {
+		t.Fatalf("Expected 2 embedded nodes, got %d", len(deserialized.EmbeddedNodes))
+	}
+
+	if deserialized.EmbeddedNodes[0].NodeID != "node1" {
+		t.Errorf("Expected node1, got %s", deserialized.EmbeddedNodes[0].NodeID)
+	}
+	if deserialized.EmbeddedNodes[0].PluginType != "postgres" {
+		t.Errorf("Expected postgres, got %s", deserialized.EmbeddedNodes[0].PluginType)
+	}
+	if len(deserialized.EmbeddedNodes[0].FieldMappings) != 1 {
+		t.Errorf("Expected 1 field mapping, got %d", len(deserialized.EmbeddedNodes[0].FieldMappings))
+	}
+
+	// Verify connection
+	if !deserialized.HasConnection() {
+		t.Error("Deserialized message should have connection")
+	}
+	if deserialized.Connection.ConnectionID != "conn123" {
+		t.Errorf("Expected conn123, got %s", deserialized.Connection.ConnectionID)
+	}
+
+	// Verify schema
+	if !deserialized.HasSchema() {
+		t.Error("Deserialized message should have schema")
+	}
+	if deserialized.Schema.SchemaID != "schema123" {
+		t.Errorf("Expected schema123, got %s", deserialized.Schema.SchemaID)
+	}
+}
+
+// Test WithEmbeddedNodes builder
+func TestMessage_WithEmbeddedNodes_Fluent(t *testing.T) {
+	embeddedNodes := []message.EmbeddedNode{
+		{NodeID: "node1", PluginType: "test", ExecutionOrder: 0},
+	}
+
+	msg := message.NewMessage().
+		WithNode("parent", nil).
+		WithEmbeddedNodes(embeddedNodes).
+		WithPayload("test", "data", "ref")
+
+	if !msg.IsUnit() {
+		t.Error("Message should be a unit after WithEmbeddedNodes")
+	}
+	if len(msg.EmbeddedNodes) != 1 {
+		t.Errorf("Expected 1 embedded node, got %d", len(msg.EmbeddedNodes))
+	}
+	if msg.Payload == nil {
+		t.Error("Fluent builder should preserve all fields")
+	}
+}
