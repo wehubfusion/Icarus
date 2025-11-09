@@ -48,9 +48,12 @@ func (p *Processor) ProcessEmbeddedNodes(
 		return nodes[i].ExecutionOrder < nodes[j].ExecutionOrder
 	})
 
+	// Create output registry and store parent output
+	outputRegistry := NewOutputRegistry()
+	outputRegistry.Set(msg.Node.NodeID, parentOutput)
+
 	// Process each node sequentially
 	results := make([]EmbeddedNodeResult, 0, len(nodes))
-	currentOutput := parentOutput // Start with parent output
 
 	for _, embNode := range nodes {
 		startTime := time.Now()
@@ -61,18 +64,22 @@ func (p *Processor) ProcessEmbeddedNodes(
 
 		for _, mapping := range embNode.FieldMappings {
 			if mapping.Iterate {
-				sourceValue := gjson.GetBytes(currentOutput, mapping.SourceEndpoint)
-				if sourceValue.IsArray() {
-					hasIterateMapping = true
-					iterateArray = sourceValue.Value().([]interface{})
-					break
+				// Get source output from registry for iterate check
+				sourceOutput, exists := outputRegistry.Get(mapping.SourceNodeID)
+				if exists {
+					sourceValue := gjson.GetBytes(sourceOutput, mapping.SourceEndpoint)
+					if sourceValue.IsArray() {
+						hasIterateMapping = true
+						iterateArray = sourceValue.Value().([]interface{})
+						break
+					}
 				}
 			}
 		}
 
 		if hasIterateMapping {
 			// Process array items using iteration package
-			itemResults, err := p.processArrayIteration(ctx, embNode, iterateArray)
+			itemResults, err := p.processArrayIteration(ctx, embNode, iterateArray, outputRegistry)
 			if err != nil {
 				// Record iteration failure
 				results = append(results, EmbeddedNodeResult{
@@ -98,13 +105,14 @@ func (p *Processor) ProcessEmbeddedNodes(
 				ExecutionOrder:       embNode.ExecutionOrder,
 				ProcessingDurationMs: time.Since(startTime).Milliseconds(),
 			})
-			currentOutput = aggregated
+			// Store result in registry
+			outputRegistry.Set(embNode.NodeID, aggregated)
 			continue
 		}
 
 		// Normal processing (no iteration)
 		// Apply field mappings to prepare input for this node
-		mappedInput, err := p.fieldMapper.ApplyMappings(currentOutput, embNode.FieldMappings, []byte("{}"))
+		mappedInput, err := p.fieldMapper.ApplyMappings(outputRegistry, embNode.FieldMappings, []byte("{}"))
 		if err != nil {
 			// Field mapping failed - record as failed result
 			results = append(results, EmbeddedNodeResult{
@@ -145,7 +153,8 @@ func (p *Processor) ProcessEmbeddedNodes(
 			continue
 		}
 
-		// Store result and update current output for next node (chaining)
+		// Store result in registry and results list
+		outputRegistry.Set(embNode.NodeID, nodeOutput)
 		results = append(results, EmbeddedNodeResult{
 			NodeID:               embNode.NodeID,
 			PluginType:           embNode.PluginType,
@@ -155,7 +164,6 @@ func (p *Processor) ProcessEmbeddedNodes(
 			ExecutionOrder:       embNode.ExecutionOrder,
 			ProcessingDurationMs: time.Since(startTime).Milliseconds(),
 		})
-		currentOutput = nodeOutput // Chain outputs to next node
 	}
 
 	return results, nil
@@ -167,6 +175,7 @@ func (p *Processor) processArrayIteration(
 	ctx context.Context,
 	embNode message.EmbeddedNode,
 	items []interface{},
+	outputRegistry *OutputRegistry,
 ) ([]interface{}, error) {
 	// Create iterator with sequential strategy by default
 	// Could be made configurable via embNode.Configuration in the future
@@ -182,9 +191,22 @@ func (p *Processor) processArrayIteration(
 			return nil, fmt.Errorf("failed to marshal item: %w", err)
 		}
 
-		// Apply field mappings with item as input
-		// Note: For iterate mode, we map from the item, not the parent output
-		mappedInput, err := p.fieldMapper.ApplyMappings(itemJSON, embNode.FieldMappings, []byte("{}"))
+		// Create a local registry for this iteration that includes the item
+		// This allows mappings to reference both the current item and other nodes
+		localRegistry := NewOutputRegistry()
+
+		// Copy all existing outputs from parent registry
+		for nodeID, output := range outputRegistry.GetAll() {
+			localRegistry.Set(nodeID, output)
+		}
+
+		// Add current item as a special source that can be referenced
+		// Using a temporary ID for the iteration item
+		itemNodeID := fmt.Sprintf("%s_item_%d", embNode.NodeID, index)
+		localRegistry.Set(itemNodeID, itemJSON)
+
+		// Apply field mappings with local registry
+		mappedInput, err := p.fieldMapper.ApplyMappings(localRegistry, embNode.FieldMappings, []byte("{}"))
 		if err != nil {
 			return nil, fmt.Errorf("field mapping failed: %w", err)
 		}

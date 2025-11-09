@@ -17,9 +17,10 @@ func NewFieldMapper() *FieldMapper {
 	return &FieldMapper{}
 }
 
-// ApplyMappings applies field mappings from source node output to destination input
+// ApplyMappings applies field mappings from multiple source nodes to destination input
+// It uses the OutputRegistry to look up source outputs by sourceNodeId
 func (fm *FieldMapper) ApplyMappings(
-	sourceOutput []byte,
+	outputRegistry *OutputRegistry,
 	mappings []message.FieldMapping,
 	destinationInput []byte,
 ) ([]byte, error) {
@@ -35,44 +36,68 @@ func (fm *FieldMapper) ApplyMappings(
 		destJSON = "{}"
 	}
 
-	// Parse source output as JSON
-	if !json.Valid(sourceOutput) {
-		return nil, fmt.Errorf("source output is not valid JSON")
-	}
-	sourceJSON := string(sourceOutput)
+	// Group mappings by source node ID for efficient processing
+	mappingsBySource := fm.groupMappingsBySource(mappings)
 
-	// Apply each mapping
-	for _, mapping := range mappings {
-		// Extract value from source using JSONPath
-		sourceValue := gjson.Get(sourceJSON, mapping.SourceEndpoint)
-		if !sourceValue.Exists() {
-			// Skip if source field not found
+	// Apply mappings from each source node
+	for sourceNodeID, sourceMappings := range mappingsBySource {
+		// Get source output from registry
+		sourceOutput, exists := outputRegistry.Get(sourceNodeID)
+		if !exists {
+			// Source node hasn't executed yet or doesn't exist
+			// Skip these mappings (allows for optional dependencies)
 			continue
 		}
 
-		// Handle iterate flag for array processing
-		if mapping.Iterate && sourceValue.IsArray() {
-			// For iterate mode, we map the entire array to each destination
-			for _, destEndpoint := range mapping.DestinationEndpoints {
-				var err error
-				destJSON, err = sjson.Set(destJSON, destEndpoint, sourceValue.Value())
-				if err != nil {
-					return nil, fmt.Errorf("failed to set destination field %s: %w", destEndpoint, err)
-				}
+		// Validate source output is JSON
+		if !json.Valid(sourceOutput) {
+			return nil, fmt.Errorf("source output from node %s is not valid JSON", sourceNodeID)
+		}
+		sourceJSON := string(sourceOutput)
+
+		// Apply each mapping from this source
+		for _, mapping := range sourceMappings {
+			// Extract value from source using JSONPath
+			sourceValue := gjson.Get(sourceJSON, mapping.SourceEndpoint)
+			if !sourceValue.Exists() {
+				// Skip if source field not found (allows for optional fields)
+				continue
 			}
-		} else {
-			// Map value to each destination endpoint
-			for _, destEndpoint := range mapping.DestinationEndpoints {
-				var err error
-				destJSON, err = sjson.Set(destJSON, destEndpoint, sourceValue.Value())
-				if err != nil {
-					return nil, fmt.Errorf("failed to set destination field %s: %w", destEndpoint, err)
+
+			// Handle iterate flag for array processing
+			if mapping.Iterate && sourceValue.IsArray() {
+				// For iterate mode, map the entire array to each destination
+				for _, destEndpoint := range mapping.DestinationEndpoints {
+					var err error
+					destJSON, err = sjson.Set(destJSON, destEndpoint, sourceValue.Value())
+					if err != nil {
+						return nil, fmt.Errorf("failed to set destination field %s: %w", destEndpoint, err)
+					}
+				}
+			} else {
+				// Map value to each destination endpoint
+				for _, destEndpoint := range mapping.DestinationEndpoints {
+					var err error
+					destJSON, err = sjson.Set(destJSON, destEndpoint, sourceValue.Value())
+					if err != nil {
+						return nil, fmt.Errorf("failed to set destination field %s: %w", destEndpoint, err)
+					}
 				}
 			}
 		}
 	}
 
 	return []byte(destJSON), nil
+}
+
+// groupMappingsBySource groups field mappings by their source node ID
+func (fm *FieldMapper) groupMappingsBySource(mappings []message.FieldMapping) map[string][]message.FieldMapping {
+	grouped := make(map[string][]message.FieldMapping)
+	for _, mapping := range mappings {
+		sourceID := mapping.SourceNodeID
+		grouped[sourceID] = append(grouped[sourceID], mapping)
+	}
+	return grouped
 }
 
 // MergeInputs merges multiple input sources into a single JSON object

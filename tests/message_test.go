@@ -317,11 +317,11 @@ func TestNATSMsgWrapper(t *testing.T) {
 	}
 }
 
-// Test IsUnit method
-func TestMessage_IsUnit(t *testing.T) {
+// Test HasEmbeddedNodes method
+func TestMessage_HasEmbeddedNodes(t *testing.T) {
 	// Test message without embedded nodes
 	msg := message.NewMessage()
-	if msg.IsUnit() {
+	if msg.HasEmbeddedNodes() {
 		t.Error("Message without embedded nodes should not be a unit")
 	}
 
@@ -330,7 +330,7 @@ func TestMessage_IsUnit(t *testing.T) {
 		{NodeID: "node1", PluginType: "test", ExecutionOrder: 0},
 	}
 	msg.WithEmbeddedNodes(embeddedNodes)
-	if !msg.IsUnit() {
+	if !msg.HasEmbeddedNodes() {
 		t.Error("Message with embedded nodes should be a unit")
 	}
 }
@@ -615,7 +615,7 @@ func TestMessage_WithEmbeddedNodes_Fluent(t *testing.T) {
 		WithEmbeddedNodes(embeddedNodes).
 		WithPayload("test", "data", "ref")
 
-	if !msg.IsUnit() {
+	if !msg.HasEmbeddedNodes() {
 		t.Error("Message should be a unit after WithEmbeddedNodes")
 	}
 	if len(msg.EmbeddedNodes) != 1 {

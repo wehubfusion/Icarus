@@ -378,8 +378,8 @@ func (m *Message) ValidateEmbeddedNodes() error {
 	return nil
 }
 
-// IsUnit returns true if this message represents a unit (has embedded nodes)
-func (m *Message) IsUnit() bool {
+// HasEmbeddedNodes returns true if this message represents a unit (has embedded nodes)
+func (m *Message) HasEmbeddedNodes() bool {
 	return len(m.EmbeddedNodes) > 0
 }
 
