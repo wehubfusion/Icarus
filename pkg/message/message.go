@@ -2,6 +2,7 @@ package message
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -31,6 +32,40 @@ type Output struct {
 	DestinationType string `json:"destinationType"`
 }
 
+// FieldMapping represents field mapping between nodes
+type FieldMapping struct {
+	SourceNodeID         string   `json:"sourceNodeId"`
+	SourceEndpoint       string   `json:"sourceEndpoint"`
+	DestinationEndpoints []string `json:"destinationEndpoints"`
+	DataType             string   `json:"dataType"`
+	Iterate              bool     `json:"iterate"`
+}
+
+// ConnectionDetails represents connection information
+type ConnectionDetails struct {
+	ConnectionID string          `json:"connectionId"`
+	Type         string          `json:"type"`
+	Config       json.RawMessage `json:"config"`
+}
+
+// SchemaDetails represents schema information
+type SchemaDetails struct {
+	SchemaID string          `json:"schemaId"`
+	Name     string          `json:"name"`
+	Fields   json.RawMessage `json:"fields"`
+}
+
+// EmbeddedNode represents a node to be executed within a parent node
+type EmbeddedNode struct {
+	NodeID         string             `json:"nodeId"`
+	PluginType     string             `json:"pluginType"`
+	Configuration  json.RawMessage    `json:"configuration"`
+	ExecutionOrder int                `json:"executionOrder"`
+	FieldMappings  []FieldMapping     `json:"fieldMappings,omitempty"`
+	Connection     *ConnectionDetails `json:"connection,omitempty"`
+	Schema         *SchemaDetails     `json:"schema,omitempty"`
+}
+
 // Message represents a structured message that can be sent over JetStream.
 // All messages are serialized to JSON for transmission and include timestamps.
 // Messages published to JetStream are persisted according to the stream's configuration.
@@ -52,6 +87,15 @@ type Message struct {
 
 	// Metadata holds additional key-value pairs for the message
 	Metadata map[string]string `json:"metadata,omitempty"`
+
+	// EmbeddedNodes contains child nodes to be executed within the parent node
+	EmbeddedNodes []EmbeddedNode `json:"embeddedNodes,omitempty"`
+
+	// Connection contains connection details for the parent node
+	Connection *ConnectionDetails `json:"connection,omitempty"`
+
+	// Schema contains schema details for the parent node
+	Schema *SchemaDetails `json:"schema,omitempty"`
 
 	// CreatedAt is the timestamp when the message was created
 	CreatedAt string `json:"createdAt"`
@@ -130,6 +174,27 @@ func (m *Message) WithOutput(destinationType string) *Message {
 	m.Output = &Output{
 		DestinationType: destinationType,
 	}
+	m.UpdatedAt = time.Now().Format(time.RFC3339)
+	return m
+}
+
+// WithEmbeddedNodes adds embedded nodes to the message
+func (m *Message) WithEmbeddedNodes(nodes []EmbeddedNode) *Message {
+	m.EmbeddedNodes = nodes
+	m.UpdatedAt = time.Now().Format(time.RFC3339)
+	return m
+}
+
+// WithConnection adds connection details to the message
+func (m *Message) WithConnection(connection *ConnectionDetails) *Message {
+	m.Connection = connection
+	m.UpdatedAt = time.Now().Format(time.RFC3339)
+	return m
+}
+
+// WithSchema adds schema details to the message
+func (m *Message) WithSchema(schema *SchemaDetails) *Message {
+	m.Schema = schema
 	m.UpdatedAt = time.Now().Format(time.RFC3339)
 	return m
 }
@@ -261,4 +326,100 @@ func (m *Message) Term() error {
 // Returns nil if this message was not created from a NATS message.
 func (m *Message) GetNATSMsg() *nats.Msg {
 	return m.natsMsg
+}
+
+// ValidateEmbeddedNodes validates the embedded nodes structure
+func (m *Message) ValidateEmbeddedNodes() error {
+	if len(m.EmbeddedNodes) == 0 {
+		return nil // No embedded nodes is valid
+	}
+
+	// Check for duplicate node IDs
+	seen := make(map[string]bool)
+	for _, node := range m.EmbeddedNodes {
+		if node.NodeID == "" {
+			return fmt.Errorf("embedded node missing NodeID")
+		}
+		if node.PluginType == "" {
+			return fmt.Errorf("embedded node %s missing PluginType", node.NodeID)
+		}
+		if seen[node.NodeID] {
+			return fmt.Errorf("duplicate embedded node ID: %s", node.NodeID)
+		}
+		seen[node.NodeID] = true
+	}
+
+	// Validate execution order sequence
+	for _, node := range m.EmbeddedNodes {
+		if node.ExecutionOrder < 0 {
+			return fmt.Errorf("embedded node %s has negative execution order", node.NodeID)
+		}
+	}
+
+	// Validate field mappings reference valid nodes
+	for _, node := range m.EmbeddedNodes {
+		for _, mapping := range node.FieldMappings {
+			if mapping.SourceNodeID != "" && mapping.SourceNodeID != m.Node.NodeID {
+				// Check if source is another embedded node
+				found := false
+				for _, other := range m.EmbeddedNodes {
+					if other.NodeID == mapping.SourceNodeID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("field mapping references unknown source node: %s", mapping.SourceNodeID)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// HasEmbeddedNodes returns true if this message represents a unit (has embedded nodes)
+func (m *Message) HasEmbeddedNodes() bool {
+	return len(m.EmbeddedNodes) > 0
+}
+
+// GetEmbeddedNodeByID returns an embedded node by its ID
+func (m *Message) GetEmbeddedNodeByID(nodeID string) *EmbeddedNode {
+	for i := range m.EmbeddedNodes {
+		if m.EmbeddedNodes[i].NodeID == nodeID {
+			return &m.EmbeddedNodes[i]
+		}
+	}
+	return nil
+}
+
+// GetEmbeddedNodesByOrder returns embedded nodes sorted by execution order
+func (m *Message) GetEmbeddedNodesByOrder() []EmbeddedNode {
+	if len(m.EmbeddedNodes) == 0 {
+		return nil
+	}
+
+	nodes := make([]EmbeddedNode, len(m.EmbeddedNodes))
+	copy(nodes, m.EmbeddedNodes)
+
+	// Sort by execution order
+	for i := 0; i < len(nodes)-1; i++ {
+		for j := i + 1; j < len(nodes); j++ {
+			if nodes[i].ExecutionOrder > nodes[j].ExecutionOrder {
+				nodes[i], nodes[j] = nodes[j], nodes[i]
+			}
+		}
+	}
+
+	return nodes
+}
+
+// HasConnection returns true if the message has connection details
+func (m *Message) HasConnection() bool {
+	return m.Connection != nil && m.Connection.ConnectionID != ""
+}
+
+// HasSchema returns true if the message has schema details
+func (m *Message) HasSchema() bool {
+	return m.Schema != nil && m.Schema.SchemaID != ""
 }

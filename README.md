@@ -835,6 +835,15 @@ type Message struct {
     // Metadata holds additional key-value pairs
     Metadata map[string]string `json:"metadata,omitempty"`
 
+    // EmbeddedNodes contains child nodes to be executed within the parent node (optional)
+    EmbeddedNodes []EmbeddedNode `json:"embeddedNodes,omitempty"`
+
+    // Connection contains connection details for the parent node (optional)
+    Connection *ConnectionDetails `json:"connection,omitempty"`
+
+    // Schema contains schema details for the parent node (optional)
+    Schema *SchemaDetails `json:"schema,omitempty"`
+
     // CreatedAt is the timestamp when the message was created
     CreatedAt string `json:"createdAt"`
 
@@ -850,7 +859,60 @@ type Message struct {
 - **Payload**: Contains `Source`, `Data`, and `Reference` for the message content
 - **Output**: Contains `DestinationType` for routing information
 - **Metadata**: Flexible key-value pairs for additional information
+- **EmbeddedNodes**: Array of child nodes to execute within the parent node (for unit processing)
+- **Connection**: Connection details (ConnectionID, Type, Config) for database/API connections
+- **Schema**: Schema details (SchemaID, Name, Fields) for data validation
 - **Timestamps**: RFC3339 formatted creation and update timestamps
+
+#### Unit Processing
+
+Messages now support **unit processing** where a parent node can contain multiple embedded child nodes to be executed together. This enables atomic execution of related operations with proper field mapping between nodes.
+
+```go
+// Create a message with embedded nodes (unit processing)
+embeddedNodes := []message.EmbeddedNode{
+    {
+        NodeID:         "child-node-1",
+        PluginType:     "transform",
+        Configuration:  []byte(`{"operation": "map"}`),
+        ExecutionOrder: 1,
+        FieldMappings: []message.FieldMapping{
+            {
+                SourceNodeID:         "parent",
+                SourceEndpoint:       "/data/input",
+                DestinationEndpoints: []string{"/input"},
+                DataType:             "json",
+            },
+        },
+    },
+    {
+        NodeID:         "child-node-2",
+        PluginType:     "output",
+        Configuration:  []byte(`{"destination": "database"}`),
+        ExecutionOrder: 2,
+    },
+}
+
+msg := message.NewWorkflowMessage("workflow-123", "run-456").
+    WithNode("parent-node", nil).
+    WithEmbeddedNodes(embeddedNodes).
+    WithConnection(&message.ConnectionDetails{
+        ConnectionID: "conn-789",
+        Type:         "postgres",
+        Config:       []byte(`{"host": "localhost", "port": 5432}`),
+    }).
+    WithSchema(&message.SchemaDetails{
+        SchemaID: "schema-456",
+        Name:     "users",
+        Fields:   []byte(`[{"name": "id", "type": "int"}]`),
+    })
+```
+
+**Key Features:**
+- **ExecutionOrder**: Controls the sequence of embedded node execution
+- **FieldMappings**: Maps data between parent and child nodes or between child nodes
+- **Connection/Schema**: Shared across parent and embedded nodes for consistency
+- **Backward Compatible**: Messages without embedded nodes work as before
 
 ### Creating Messages
 
