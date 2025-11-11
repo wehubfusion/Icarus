@@ -2,6 +2,10 @@ package all
 
 import (
 	"github.com/wehubfusion/Icarus/pkg/embedded"
+	"github.com/wehubfusion/Icarus/pkg/embedded/processors/dateformatter"
+	"github.com/wehubfusion/Icarus/pkg/embedded/processors/jsonops"
+	"github.com/wehubfusion/Icarus/pkg/embedded/processors/jsrunner"
+	"github.com/wehubfusion/Icarus/pkg/embedded/processors/simplecondition"
 	"github.com/wehubfusion/Icarus/pkg/embedded/processors/strings"
 )
 
@@ -11,6 +15,18 @@ func NewRegistry() *embedded.ExecutorRegistry {
 
 	// Register strings executor
 	registry.Register(strings.NewExecutor())
+
+	// Register JavaScript runner executor
+	registry.Register(jsrunner.NewExecutor())
+
+	// Register JSON operations executor
+	registry.Register(jsonops.NewExecutor())
+
+	// Register date formatter executor
+	registry.Register(dateformatter.NewExecutor())
+
+	// Register simple condition executor
+	registry.Register(simplecondition.NewExecutor())
 
 	return registry
 }
