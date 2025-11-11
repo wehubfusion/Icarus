@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -16,19 +17,43 @@ import (
 type Processor struct {
 	registry    *ExecutorRegistry
 	fieldMapper *FieldMapper
+	concurrent  bool // Enable concurrent execution by depth
 }
 
-// NewProcessor creates a new embedded node processor
+// NewProcessor creates a new embedded node processor with concurrent execution enabled by default
 func NewProcessor(registry *ExecutorRegistry) *Processor {
 	return &Processor{
 		registry:    registry,
 		fieldMapper: NewFieldMapper(),
+		concurrent:  true, // Enable concurrent execution by default
 	}
 }
 
-// ProcessEmbeddedNodes processes all embedded nodes in a message sequentially
-// It chains the output of each node to the next, applying field mappings
+// NewProcessorWithConfig creates a new embedded node processor with custom configuration
+func NewProcessorWithConfig(registry *ExecutorRegistry, concurrent bool) *Processor {
+	return &Processor{
+		registry:    registry,
+		fieldMapper: NewFieldMapper(),
+		concurrent:  concurrent,
+	}
+}
+
+// ProcessEmbeddedNodes processes embedded nodes either concurrently or sequentially
+// based on the processor configuration. Dispatches to the appropriate implementation.
 func (p *Processor) ProcessEmbeddedNodes(
+	ctx context.Context,
+	msg *message.Message,
+	parentOutput []byte,
+) ([]EmbeddedNodeResult, error) {
+	if p.concurrent {
+		return p.ProcessEmbeddedNodesConcurrent(ctx, msg, parentOutput)
+	}
+	return p.processEmbeddedNodesSequential(ctx, msg, parentOutput)
+}
+
+// processEmbeddedNodesSequential processes all embedded nodes in a message sequentially
+// It chains the output of each node to the next, applying field mappings
+func (p *Processor) processEmbeddedNodesSequential(
 	ctx context.Context,
 	msg *message.Message,
 	parentOutput []byte,
@@ -56,117 +81,198 @@ func (p *Processor) ProcessEmbeddedNodes(
 	results := make([]EmbeddedNodeResult, 0, len(nodes))
 
 	for _, embNode := range nodes {
-		startTime := time.Now()
-
-		// Check if this node has iterate mappings
-		hasIterateMapping := false
-		var iterateArray []interface{}
-
-		for _, mapping := range embNode.FieldMappings {
-			if mapping.Iterate {
-				// Get source output from registry for iterate check
-				sourceOutput, exists := outputRegistry.Get(mapping.SourceNodeID)
-				if exists {
-					sourceValue := gjson.GetBytes(sourceOutput, mapping.SourceEndpoint)
-					if sourceValue.IsArray() {
-						hasIterateMapping = true
-						iterateArray = sourceValue.Value().([]interface{})
-						break
-					}
-				}
-			}
-		}
-
-		if hasIterateMapping {
-			// Process array items using iteration package
-			itemResults, err := p.processArrayIteration(ctx, embNode, iterateArray, outputRegistry)
-			if err != nil {
-				// Record iteration failure
-				results = append(results, EmbeddedNodeResult{
-					NodeID:               embNode.NodeID,
-					PluginType:           embNode.PluginType,
-					Status:               "failed",
-					Output:               []byte("{}"),
-					Error:                fmt.Sprintf("array iteration failed: %v", err),
-					ExecutionOrder:       embNode.ExecutionOrder,
-					ProcessingDurationMs: time.Since(startTime).Milliseconds(),
-				})
-				continue
-			}
-
-			// Aggregate item results into single output
-			aggregated, _ := json.Marshal(itemResults)
-			results = append(results, EmbeddedNodeResult{
-				NodeID:               embNode.NodeID,
-				PluginType:           embNode.PluginType,
-				Status:               "success",
-				Output:               aggregated,
-				Error:                "",
-				ExecutionOrder:       embNode.ExecutionOrder,
-				ProcessingDurationMs: time.Since(startTime).Milliseconds(),
-			})
-			// Store result in registry
-			outputRegistry.Set(embNode.NodeID, aggregated)
-			continue
-		}
-
-		// Normal processing (no iteration)
-		// Apply field mappings to prepare input for this node
-		mappedInput, err := p.fieldMapper.ApplyMappings(outputRegistry, embNode.FieldMappings, []byte("{}"))
-		if err != nil {
-			// Field mapping failed - record as failed result
-			results = append(results, EmbeddedNodeResult{
-				NodeID:               embNode.NodeID,
-				PluginType:           embNode.PluginType,
-				Status:               "failed",
-				Output:               []byte("{}"),
-				Error:                fmt.Sprintf("field mapping failed: %v", err),
-				ExecutionOrder:       embNode.ExecutionOrder,
-				ProcessingDurationMs: time.Since(startTime).Milliseconds(),
-			})
-			continue
-		}
-
-		// Create node configuration
-		nodeConfig := NodeConfig{
-			NodeID:        embNode.NodeID,
-			PluginType:    embNode.PluginType,
-			Configuration: embNode.Configuration,
-			Input:         mappedInput,
-			Connection:    embNode.Connection,
-			Schema:        embNode.Schema,
-		}
-
-		// Execute the node
-		nodeOutput, err := p.registry.Execute(ctx, nodeConfig)
-		if err != nil {
-			// Execution failed - record as failed result
-			results = append(results, EmbeddedNodeResult{
-				NodeID:               embNode.NodeID,
-				PluginType:           embNode.PluginType,
-				Status:               "failed",
-				Output:               []byte("{}"),
-				Error:                err.Error(),
-				ExecutionOrder:       embNode.ExecutionOrder,
-				ProcessingDurationMs: time.Since(startTime).Milliseconds(),
-			})
-			continue
-		}
-
-		// Store result in registry and results list
-		outputRegistry.Set(embNode.NodeID, nodeOutput)
-		results = append(results, EmbeddedNodeResult{
-			NodeID:               embNode.NodeID,
-			PluginType:           embNode.PluginType,
-			Status:               "success",
-			Output:               nodeOutput,
-			Error:                "",
-			ExecutionOrder:       embNode.ExecutionOrder,
-			ProcessingDurationMs: time.Since(startTime).Milliseconds(),
-		})
+		result := p.processNode(ctx, embNode, outputRegistry)
+		results = append(results, result)
 	}
 
 	return results, nil
+}
+
+// ProcessEmbeddedNodesConcurrent processes embedded nodes concurrently by depth level
+// Nodes at the same depth level execute in parallel, while maintaining dependency order across levels
+func (p *Processor) ProcessEmbeddedNodesConcurrent(
+	ctx context.Context,
+	msg *message.Message,
+	parentOutput []byte,
+) ([]EmbeddedNodeResult, error) {
+	if msg == nil {
+		return nil, fmt.Errorf("message cannot be nil")
+	}
+
+	if len(msg.EmbeddedNodes) == 0 {
+		return []EmbeddedNodeResult{}, nil
+	}
+
+	// Group nodes by depth
+	depthGroups := groupNodesByDepth(msg.EmbeddedNodes)
+	maxDepth := getMaxDepth(depthGroups)
+
+	// Create thread-safe output registry
+	outputRegistry := NewOutputRegistry()
+	outputRegistry.Set(msg.Node.NodeID, parentOutput)
+
+	// Process each depth level sequentially
+	// Within each level, process nodes concurrently
+	var allResults []EmbeddedNodeResult
+	var resultsMu sync.Mutex
+
+	for depth := 0; depth <= maxDepth; depth++ {
+		nodes := depthGroups[depth]
+		if len(nodes) == 0 {
+			continue
+		}
+
+		var wg sync.WaitGroup
+		for _, node := range nodes {
+			wg.Add(1)
+			go func(embNode message.EmbeddedNode) {
+				defer wg.Done()
+				result := p.processNode(ctx, embNode, outputRegistry)
+
+				resultsMu.Lock()
+				allResults = append(allResults, result)
+				resultsMu.Unlock()
+			}(node)
+		}
+		wg.Wait() // Wait for all nodes at this depth to complete
+	}
+
+	return allResults, nil
+}
+
+// groupNodesByDepth groups embedded nodes by their depth value
+// Returns a map where the key is the depth level and the value is a slice of nodes at that depth
+func groupNodesByDepth(nodes []message.EmbeddedNode) map[int][]message.EmbeddedNode {
+	groups := make(map[int][]message.EmbeddedNode)
+	for _, node := range nodes {
+		groups[node.Depth] = append(groups[node.Depth], node)
+	}
+	return groups
+}
+
+// getMaxDepth finds the maximum depth value in the depth groups
+func getMaxDepth(depthGroups map[int][]message.EmbeddedNode) int {
+	maxDepth := 0
+	for depth := range depthGroups {
+		if depth > maxDepth {
+			maxDepth = depth
+		}
+	}
+	return maxDepth
+}
+
+// processNode executes a single embedded node and returns the result
+// This function is extracted to support both sequential and concurrent execution
+func (p *Processor) processNode(
+	ctx context.Context,
+	embNode message.EmbeddedNode,
+	outputRegistry *OutputRegistry,
+) EmbeddedNodeResult {
+	startTime := time.Now()
+
+	// Check if this node has iterate mappings
+	hasIterateMapping := false
+	var iterateArray []interface{}
+
+	for _, mapping := range embNode.FieldMappings {
+		if mapping.Iterate {
+			// Get source output from registry for iterate check
+			sourceOutput, exists := outputRegistry.Get(mapping.SourceNodeID)
+			if exists {
+				sourceValue := gjson.GetBytes(sourceOutput, mapping.SourceEndpoint)
+				if sourceValue.IsArray() {
+					hasIterateMapping = true
+					iterateArray = sourceValue.Value().([]interface{})
+					break
+				}
+			}
+		}
+	}
+
+	if hasIterateMapping {
+		// Process array items using iteration package
+		itemResults, err := p.processArrayIteration(ctx, embNode, iterateArray, outputRegistry)
+		if err != nil {
+			// Record iteration failure
+			return EmbeddedNodeResult{
+				NodeID:               embNode.NodeID,
+				PluginType:           embNode.PluginType,
+				Status:               "failed",
+				Output:               []byte("{}"),
+				Error:                fmt.Sprintf("array iteration failed: %v", err),
+				ExecutionOrder:       embNode.ExecutionOrder,
+				ProcessingDurationMs: time.Since(startTime).Milliseconds(),
+			}
+		}
+
+		// Aggregate item results into single output
+		aggregated, _ := json.Marshal(itemResults)
+		result := EmbeddedNodeResult{
+			NodeID:               embNode.NodeID,
+			PluginType:           embNode.PluginType,
+			Status:               "success",
+			Output:               aggregated,
+			Error:                "",
+			ExecutionOrder:       embNode.ExecutionOrder,
+			ProcessingDurationMs: time.Since(startTime).Milliseconds(),
+		}
+		// Store result in registry
+		outputRegistry.Set(embNode.NodeID, aggregated)
+		return result
+	}
+
+	// Normal processing (no iteration)
+	// Apply field mappings to prepare input for this node
+	mappedInput, err := p.fieldMapper.ApplyMappings(outputRegistry, embNode.FieldMappings, []byte("{}"))
+	if err != nil {
+		// Field mapping failed - record as failed result
+		return EmbeddedNodeResult{
+			NodeID:               embNode.NodeID,
+			PluginType:           embNode.PluginType,
+			Status:               "failed",
+			Output:               []byte("{}"),
+			Error:                fmt.Sprintf("field mapping failed: %v", err),
+			ExecutionOrder:       embNode.ExecutionOrder,
+			ProcessingDurationMs: time.Since(startTime).Milliseconds(),
+		}
+	}
+
+	// Create node configuration
+	nodeConfig := NodeConfig{
+		NodeID:        embNode.NodeID,
+		PluginType:    embNode.PluginType,
+		Configuration: embNode.Configuration,
+		Input:         mappedInput,
+		Connection:    embNode.Connection,
+		Schema:        embNode.Schema,
+	}
+
+	// Execute the node
+	nodeOutput, err := p.registry.Execute(ctx, nodeConfig)
+	if err != nil {
+		// Execution failed - record as failed result
+		return EmbeddedNodeResult{
+			NodeID:               embNode.NodeID,
+			PluginType:           embNode.PluginType,
+			Status:               "failed",
+			Output:               []byte("{}"),
+			Error:                err.Error(),
+			ExecutionOrder:       embNode.ExecutionOrder,
+			ProcessingDurationMs: time.Since(startTime).Milliseconds(),
+		}
+	}
+
+	// Store result in registry and return result
+	outputRegistry.Set(embNode.NodeID, nodeOutput)
+	return EmbeddedNodeResult{
+		NodeID:               embNode.NodeID,
+		PluginType:           embNode.PluginType,
+		Status:               "success",
+		Output:               nodeOutput,
+		Error:                "",
+		ExecutionOrder:       embNode.ExecutionOrder,
+		ProcessingDurationMs: time.Since(startTime).Milliseconds(),
+	}
 }
 
 // processArrayIteration processes an array of items for a single embedded node
