@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tidwall/gjson"
+	"github.com/wehubfusion/Icarus/pkg/concurrency"
 	"github.com/wehubfusion/Icarus/pkg/iteration"
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
@@ -18,6 +19,7 @@ type Processor struct {
 	registry    *ExecutorRegistry
 	fieldMapper *FieldMapper
 	concurrent  bool // Enable concurrent execution by depth
+	limiter     *concurrency.Limiter
 }
 
 // NewProcessor creates a new embedded node processor with concurrent execution enabled by default
@@ -26,6 +28,7 @@ func NewProcessor(registry *ExecutorRegistry) *Processor {
 		registry:    registry,
 		fieldMapper: NewFieldMapper(),
 		concurrent:  true, // Enable concurrent execution by default
+		limiter:     nil,  // No limiter by default
 	}
 }
 
@@ -35,6 +38,17 @@ func NewProcessorWithConfig(registry *ExecutorRegistry, concurrent bool) *Proces
 		registry:    registry,
 		fieldMapper: NewFieldMapper(),
 		concurrent:  concurrent,
+		limiter:     nil, // No limiter by default
+	}
+}
+
+// NewProcessorWithLimiter creates a new embedded node processor with concurrency limiter
+func NewProcessorWithLimiter(registry *ExecutorRegistry, concurrent bool, limiter *concurrency.Limiter) *Processor {
+	return &Processor{
+		registry:    registry,
+		fieldMapper: NewFieldMapper(),
+		concurrent:  concurrent,
+		limiter:     limiter,
 	}
 }
 
@@ -125,14 +139,53 @@ func (p *Processor) ProcessEmbeddedNodesConcurrent(
 		var wg sync.WaitGroup
 		for _, node := range nodes {
 			wg.Add(1)
-			go func(embNode message.EmbeddedNode) {
-				defer wg.Done()
-				result := p.processNode(ctx, embNode, outputRegistry)
 
-				resultsMu.Lock()
-				allResults = append(allResults, result)
-				resultsMu.Unlock()
-			}(node)
+			// Use limiter if available, otherwise spawn goroutine directly
+			if p.limiter != nil {
+				// Capture node in closure
+				embNode := node
+				err := p.limiter.Go(ctx, func() error {
+					defer wg.Done()
+					result := p.processNode(ctx, embNode, outputRegistry)
+
+					resultsMu.Lock()
+					allResults = append(allResults, result)
+					resultsMu.Unlock()
+
+					// Return error if processing failed (for circuit breaker)
+					if result.Status == "failed" {
+						return fmt.Errorf("node %s failed: %s", result.NodeID, result.Error)
+					}
+					return nil
+				})
+
+				// If limiter fails to acquire (circuit breaker open or context cancelled)
+				if err != nil {
+					wg.Done() // Balance the Add(1) above
+					result := EmbeddedNodeResult{
+						NodeID:               embNode.NodeID,
+						PluginType:           embNode.PluginType,
+						Status:               "failed",
+						Output:               []byte("{}"),
+						Error:                fmt.Sprintf("limiter error: %v", err),
+						ExecutionOrder:       embNode.ExecutionOrder,
+						ProcessingDurationMs: 0,
+					}
+					resultsMu.Lock()
+					allResults = append(allResults, result)
+					resultsMu.Unlock()
+				}
+			} else {
+				// No limiter, spawn goroutine directly
+				go func(embNode message.EmbeddedNode) {
+					defer wg.Done()
+					result := p.processNode(ctx, embNode, outputRegistry)
+
+					resultsMu.Lock()
+					allResults = append(allResults, result)
+					resultsMu.Unlock()
+				}(node)
+			}
 		}
 		wg.Wait() // Wait for all nodes at this depth to complete
 	}
@@ -285,9 +338,17 @@ func (p *Processor) processArrayIteration(
 ) ([]interface{}, error) {
 	// Create iterator with sequential strategy by default
 	// Could be made configurable via embNode.Configuration in the future
-	iterator := iteration.NewIterator(iteration.Config{
-		Strategy: iteration.StrategySequential,
-	})
+	var iterator *iteration.Iterator
+
+	if p.limiter != nil {
+		iterator = iteration.NewIteratorWithLimiter(iteration.Config{
+			Strategy: iteration.StrategySequential,
+		}, p.limiter)
+	} else {
+		iterator = iteration.NewIterator(iteration.Config{
+			Strategy: iteration.StrategySequential,
+		})
+	}
 
 	// Process each item through the node
 	return iterator.Process(ctx, items, func(ctx context.Context, item interface{}, index int) (interface{}, error) {

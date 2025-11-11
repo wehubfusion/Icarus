@@ -21,6 +21,7 @@ A clean, future-proof Go SDK for messaging over NATS JetStream with idiomatic pa
 - **Connection Management**: Automatic reconnection and connection health monitoring
 - **Full JetStream Integration**: Automatic JetStream context initialization and advanced operations
 - **Structured Logging**: Built-in zap logger integration with configurable log levels
+- **Kubernetes-Aware Concurrency Control**: Production-ready goroutine limiting with automatic CPU quota detection, circuit breaker protection, and comprehensive observability
 - **Future-Proof**: Designed for easy extension with growing process management capabilities
 
 ## Installation
@@ -675,6 +676,243 @@ The callback system handles message acknowledgment automatically:
 - **Success Callbacks**: Original message is acknowledged after successful callback publication
 - **Error Callbacks**: Original message is negatively acknowledged after callback publication
 - **Retry Logic**: Callbacks are published with retry logic for reliability
+
+## Concurrency Control
+
+Icarus provides production-ready, Kubernetes-aware concurrency control that prevents unlimited goroutine creation, provides observability, and scales properly in containerized environments.
+
+### Features
+
+- **Semaphore-Based Limiting**: Prevents unlimited goroutine creation with bounded concurrency
+- **Circuit Breaker**: Automatic failure detection and graceful degradation under load
+- **Kubernetes-Aware**: Automatically detects and respects container CPU limits using `automaxprocs`
+- **Configurable**: Environment variables for fine-tuning based on workload characteristics
+- **Observable**: Comprehensive metrics logged every 30 seconds
+- **Thread-Safe**: All operations use atomic counters and proper synchronization
+
+### Quick Start
+
+```go
+import (
+    "github.com/wehubfusion/Icarus/pkg/concurrency"
+    "github.com/wehubfusion/Icarus/pkg/runner"
+)
+
+func main() {
+    // Initialize Kubernetes-aware concurrency (respects cgroup CPU limits)
+    undoMaxprocs := concurrency.InitializeForKubernetes()
+    defer undoMaxprocs()
+    
+    // Load configuration (auto-detects environment)
+    config := concurrency.LoadConfig()
+    
+    // Create limiter with optimal settings
+    limiter := concurrency.NewLimiter(config.MaxConcurrent)
+    
+    // Log configuration for observability
+    logger.Info("Concurrency initialized",
+        zap.Int("max_concurrent", config.MaxConcurrent),
+        zap.Int("runner_workers", config.RunnerWorkers),
+        zap.Int("effective_cpus", config.EffectiveCPUs),
+        zap.Bool("is_kubernetes", config.IsKubernetes),
+    )
+    
+    // Pass limiter to runner and processor
+    runner, err := runner.NewRunner(
+        client,
+        processor,
+        "TASKS",
+        "consumer",
+        10,                   // batch size
+        config.RunnerWorkers, // workers from config
+        5*time.Minute,
+        logger,
+        nil,    // tracing
+        limiter, // concurrency limiter
+    )
+}
+```
+
+### Configuration
+
+Concurrency is configured through environment variables with intelligent defaults:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ICARUS_MAX_CONCURRENT` | Explicit max concurrent goroutines | Auto-detected |
+| `ICARUS_CONCURRENCY_MULTIPLIER` | CPU × multiplier for max concurrent | K8s: 2, Bare: 4 |
+| `ICARUS_RUNNER_WORKERS` | Number of NATS consumer workers | max(CPU, 4) |
+| `ICARUS_PROCESSOR_MODE` | `concurrent` or `sequential` processing | `concurrent` |
+| `ICARUS_ITERATOR_MODE` | `parallel` or `sequential` array iteration | `sequential` |
+
+**Configuration Priority**: Explicit env vars > auto-detection > defaults
+
+**Environment Detection**:
+- **Kubernetes**: Detected via `KUBERNETES_SERVICE_HOST` environment variable
+- **CPU Limits**: Automatically detected using `runtime.GOMAXPROCS(0)` which respects cgroup limits
+
+### Usage with Processor
+
+The limiter automatically controls goroutine creation in embedded node processing:
+
+```go
+import (
+    "github.com/wehubfusion/Icarus/pkg/embedded"
+    "github.com/wehubfusion/Icarus/pkg/concurrency"
+)
+
+// Create processor with limiter
+processor := embedded.NewProcessorWithLimiter(
+    registry,
+    true,    // concurrent mode
+    limiter, // concurrency limiter
+)
+
+// Process embedded nodes - goroutines are automatically limited
+results, err := processor.ProcessEmbeddedNodes(ctx, msg, parentOutput)
+```
+
+### Usage with Iterator
+
+Control array iteration concurrency:
+
+```go
+import (
+    "github.com/wehubfusion/Icarus/pkg/iteration"
+    "github.com/wehubfusion/Icarus/pkg/concurrency"
+)
+
+// Create iterator with limiter
+iterator := iteration.NewIteratorWithLimiter(
+    iteration.Config{
+        Strategy: iteration.StrategyParallel,
+    },
+    limiter,
+)
+
+// Process items - worker goroutines are automatically limited
+results, err := iterator.Process(ctx, items, processFn)
+```
+
+### Observability
+
+The runner logs concurrency metrics every 30 seconds:
+
+```json
+{
+  "level": "info",
+  "msg": "Concurrency metrics",
+  "active_goroutines": 45,
+  "peak_concurrent": 78,
+  "total_acquired": 1523,
+  "total_released": 1478,
+  "avg_wait_time": "15ms",
+  "circuit_breaker": "closed"
+}
+```
+
+**Key Metrics**:
+- **active_goroutines**: Current concurrent operations
+- **peak_concurrent**: Maximum concurrency reached since start
+- **total_acquired/released**: Cumulative slot acquisitions
+- **avg_wait_time**: Average time waiting for a concurrency slot
+- **circuit_breaker**: Protection state (closed/open/half-open)
+
+### Circuit Breaker
+
+Protects against cascade failures during overload:
+
+- **Threshold**: Opens after 100 consecutive failures
+- **Reset Timeout**: 30 seconds before attempting recovery
+- **Half-Open State**: Tests recovery with limited traffic
+- **Automatic Recovery**: Closes after 5 consecutive successes
+
+When the circuit breaker is open, new operations fail immediately instead of overwhelming the system.
+
+### Tuning Guidelines
+
+#### CPU-Bound Workloads
+
+Increase concurrency and enable parallelism:
+
+```bash
+export ICARUS_CONCURRENCY_MULTIPLIER=4
+export ICARUS_PROCESSOR_MODE=concurrent
+export ICARUS_ITERATOR_MODE=parallel
+```
+
+Monitor CPU throttling and adjust as needed.
+
+#### I/O-Bound Workloads
+
+Use higher concurrency with conservative CPU allocation:
+
+```bash
+export ICARUS_CONCURRENCY_MULTIPLIER=8
+export ICARUS_RUNNER_WORKERS=12
+```
+
+Higher concurrency allows better I/O overlap.
+
+#### Memory-Constrained Environments
+
+Reduce concurrency and use sequential processing:
+
+```bash
+export ICARUS_CONCURRENCY_MULTIPLIER=1
+export ICARUS_PROCESSOR_MODE=sequential
+export ICARUS_ITERATOR_MODE=sequential
+export ICARUS_RUNNER_WORKERS=2
+```
+
+### Kubernetes Deployment
+
+See the `k8s/` directory for complete Kubernetes manifests including:
+- ConfigMap with concurrency settings
+- Deployment with proper resource limits
+- HorizontalPodAutoscaler for automatic scaling
+- Service for health and metrics endpoints
+
+```bash
+# Deploy with default settings
+kubectl apply -f k8s/
+
+# Monitor concurrency metrics
+kubectl logs -f -l app=icarus-processor | grep "Concurrency metrics"
+
+# Check autoscaling
+kubectl get hpa icarus-processor-hpa
+```
+
+**Critical for Kubernetes**: Set CPU limits in your deployment:
+
+```yaml
+resources:
+  limits:
+    cpu: "2000m"  # automaxprocs uses this to set GOMAXPROCS
+    memory: "4Gi"
+```
+
+### Best Practices
+
+1. **Always Initialize**: Call `concurrency.InitializeForKubernetes()` at the start of `main()`
+2. **Pass Limiter Through**: Pass the limiter to Runner, Processor, and Iterator
+3. **Monitor Metrics**: Watch for high `avg_wait_time` or `circuit_breaker: open`
+4. **Start Conservative**: Begin with default settings, scale up based on metrics
+5. **Set Resource Limits**: In Kubernetes, always set both requests and limits
+6. **Test Scaling**: Verify behavior under load before production deployment
+
+### Troubleshooting
+
+**High Wait Times**: Increase `ICARUS_CONCURRENCY_MULTIPLIER` or scale horizontally
+
+**Circuit Breaker Opens**: Check downstream services and reduce load temporarily
+
+**CPU Throttling**: Increase CPU limits in Kubernetes or reduce concurrency multiplier
+
+**Memory Pressure**: Reduce max concurrent operations and use sequential modes
+
+See `k8s/README.md` for detailed troubleshooting guides.
 
 ## Advanced Usage
 

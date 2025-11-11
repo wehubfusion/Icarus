@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: icarus-processor-service
+  namespace: default
+  labels:
+    app: icarus-processor
+spec:
+  type: ClusterIP
+  selector:
+    app: icarus-processor
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+  sessionAffinity: None

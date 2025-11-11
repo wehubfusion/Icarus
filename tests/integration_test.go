@@ -112,6 +112,7 @@ func TestRunnerIntegration(t *testing.T) {
 		30*time.Second, // process timeout
 		logger,
 		nil, // no tracing config
+		nil, // no limiter
 	)
 	if err != nil {
 		t.Fatalf("Failed to create runner: %v", err)
@@ -169,6 +170,7 @@ func TestRunnerWithFailingProcessor(t *testing.T) {
 		30*time.Second, // process timeout
 		logger,
 		nil, // no tracing config
+		nil, // no limiter
 	)
 	if err != nil {
 		t.Fatalf("Failed to create runner: %v", err)

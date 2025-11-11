@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/wehubfusion/Icarus/pkg/client"
+	"github.com/wehubfusion/Icarus/pkg/concurrency"
 	"github.com/wehubfusion/Icarus/pkg/message"
 	"github.com/wehubfusion/Icarus/pkg/tracing"
 	"go.opentelemetry.io/otel"
@@ -40,6 +41,7 @@ type Runner struct {
 	processTimeout  time.Duration
 	tracer          trace.Tracer
 	tracingShutdown func(context.Context) error
+	limiter         *concurrency.Limiter
 }
 
 // NewRunner creates a new Runner instance with a connected client and stream/consumer configuration.
@@ -50,8 +52,9 @@ type Runner struct {
 // processTimeout specifies the maximum time allowed for processing a single message.
 // logger is the zap logger instance for structured logging.
 // tracingConfig is optional - if nil, no tracing will be set up. If provided, tracing will be automatically configured and cleaned up.
+// limiter is optional - if nil, no concurrency limiting will be applied beyond the worker pool.
 // Returns an error if any of the parameters are invalid.
-func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, numWorkers int, processTimeout time.Duration, logger *zap.Logger, tracingConfig *tracing.TracingConfig) (*Runner, error) {
+func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, numWorkers int, processTimeout time.Duration, logger *zap.Logger, tracingConfig *tracing.TracingConfig, limiter *concurrency.Limiter) (*Runner, error) {
 	if client == nil {
 		return nil, errors.New("client cannot be nil")
 	}
@@ -96,6 +99,7 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 		processTimeout: processTimeout,
 		logger:         logger,
 		tracer:         otel.Tracer("icarus/runner"),
+		limiter:        limiter,
 	}
 
 	// Setup tracing if configuration is provided
@@ -140,6 +144,15 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Use WaitGroup to wait for all goroutines to finish
 	var wg sync.WaitGroup
+
+	// Start concurrency stats logging if limiter is available
+	if r.limiter != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.logConcurrencyStats(ctx)
+		}()
+	}
 
 	// Start worker goroutines
 	for i := 0; i < r.numWorkers; i++ {
@@ -411,4 +424,34 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		}
 	}
 
+}
+
+// logConcurrencyStats periodically logs concurrency metrics for observability
+func (r *Runner) logConcurrencyStats(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if r.limiter == nil {
+				return
+			}
+
+			metrics := r.limiter.GetMetrics()
+			avgWait := r.limiter.GetAverageWaitTime()
+			circuitState := r.limiter.GetCircuitBreakerState()
+
+			r.logger.Info("Concurrency metrics",
+				zap.Int64("active_goroutines", r.limiter.CurrentActive()),
+				zap.Int64("peak_concurrent", metrics.PeakConcurrent),
+				zap.Int64("total_acquired", metrics.TotalAcquired),
+				zap.Int64("total_released", metrics.TotalReleased),
+				zap.Duration("avg_wait_time", avgWait),
+				zap.String("circuit_breaker", circuitState),
+			)
+		case <-ctx.Done():
+			return
+		}
+	}
 }

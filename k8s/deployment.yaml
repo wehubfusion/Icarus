@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: icarus-processor
+  namespace: default
+  labels:
+    app: icarus-processor
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: icarus-processor
+  template:
+    metadata:
+      labels:
+        app: icarus-processor
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Pod anti-affinity to distribute across nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - icarus-processor
+                topologyKey: kubernetes.io/hostname
+      
+      containers:
+        - name: processor
+          image: icarus-processor:latest
+          imagePullPolicy: IfNotPresent
+          
+          # Import all config from ConfigMap as environment variables
+          envFrom:
+            - configMapRef:
+                name: icarus-concurrency-config
+          
+          # Additional environment variables
+          env:
+            - name: NATS_URL
+              value: "nats://nats-service:4222"
+            - name: STREAM_NAME
+              value: "TASKS"
+            - name: CONSUMER_NAME
+              value: "task-processor"
+          
+          # Resource requests and limits
+          # CRITICAL: automaxprocs uses these CPU limits to set GOMAXPROCS
+          resources:
+            requests:
+              cpu: "1000m"      # 1 CPU core requested
+              memory: "2Gi"     # 2GB memory requested
+            limits:
+              cpu: "2000m"      # Max 2 CPU cores
+              memory: "4Gi"     # Max 4GB memory
+          
+          # Liveness probe - restart if unhealthy
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          # Readiness probe - remove from service if not ready
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          
+          # Ports
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          
+          # Security context
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          
+      # Graceful shutdown
+      terminationGracePeriodSeconds: 30
+      
+      # Security context for pod
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
