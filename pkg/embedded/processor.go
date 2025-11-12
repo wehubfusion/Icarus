@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -223,6 +224,21 @@ func (p *Processor) processNode(
 ) EmbeddedNodeResult {
 	startTime := time.Now()
 
+	// Check event trigger conditions before executing
+	shouldExecute, skipReason := p.checkEventTriggers(embNode, outputRegistry)
+	if !shouldExecute {
+		// Event trigger conditions not met - skip this node
+		return EmbeddedNodeResult{
+			NodeID:               embNode.NodeID,
+			PluginType:           embNode.PluginType,
+			Status:               "skipped",
+			Output:               []byte("{}"),
+			Error:                skipReason,
+			ExecutionOrder:       embNode.ExecutionOrder,
+			ProcessingDurationMs: time.Since(startTime).Milliseconds(),
+		}
+	}
+
 	// Check if this node has iterate mappings
 	hasIterateMapping := false
 	var iterateArray []interface{}
@@ -326,6 +342,69 @@ func (p *Processor) processNode(
 		ExecutionOrder:       embNode.ExecutionOrder,
 		ProcessingDurationMs: time.Since(startTime).Milliseconds(),
 	}
+}
+
+// checkEventTriggers checks if all event trigger conditions are met for a node
+// Returns (shouldExecute bool, skipReason string)
+func (p *Processor) checkEventTriggers(
+	embNode message.EmbeddedNode,
+	outputRegistry *OutputRegistry,
+) (bool, string) {
+	// Find all event trigger field mappings
+	eventTriggers := []message.FieldMapping{}
+	for _, mapping := range embNode.FieldMappings {
+		if mapping.IsEventTrigger {
+			eventTriggers = append(eventTriggers, mapping)
+		}
+	}
+
+	// If no event triggers, always execute
+	if len(eventTriggers) == 0 {
+		return true, ""
+	}
+
+	// Check each event trigger - ALL must be satisfied for node to execute
+	for _, trigger := range eventTriggers {
+		// Get source output from registry
+		sourceOutput, exists := outputRegistry.Get(trigger.SourceNodeID)
+		if !exists {
+			// Source node hasn't executed yet or failed
+			return false, fmt.Sprintf("event trigger source node '%s' not found", trigger.SourceNodeID)
+		}
+
+		// Check if the trigger endpoint has data and is truthy
+		// Normalize endpoint path (gjson doesn't use leading slash)
+		endpoint := strings.TrimPrefix(trigger.SourceEndpoint, "/")
+		sourceValue := gjson.GetBytes(sourceOutput, endpoint)
+
+		// Event is NOT fired if:
+		// - Endpoint doesn't exist
+		// - Value is null
+		// - Value is false (boolean)
+		// - Value is empty string
+		if !sourceValue.Exists() {
+			return false, fmt.Sprintf("event not fired: endpoint '%s' from node '%s' not found",
+				trigger.SourceEndpoint, trigger.SourceNodeID)
+		}
+
+		if sourceValue.Type == gjson.Null {
+			return false, fmt.Sprintf("event not fired: endpoint '%s' from node '%s' is null",
+				trigger.SourceEndpoint, trigger.SourceNodeID)
+		}
+
+		if sourceValue.IsBool() && !sourceValue.Bool() {
+			return false, fmt.Sprintf("event not fired: endpoint '%s' from node '%s' is false",
+				trigger.SourceEndpoint, trigger.SourceNodeID)
+		}
+
+		if sourceValue.Type == gjson.String && sourceValue.String() == "" {
+			return false, fmt.Sprintf("event not fired: endpoint '%s' from node '%s' is empty",
+				trigger.SourceEndpoint, trigger.SourceNodeID)
+		}
+	}
+
+	// All event triggers satisfied
+	return true, ""
 }
 
 // processArrayIteration processes an array of items for a single embedded node

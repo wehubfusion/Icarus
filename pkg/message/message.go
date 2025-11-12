@@ -39,6 +39,7 @@ type FieldMapping struct {
 	DestinationEndpoints []string `json:"destinationEndpoints"`
 	DataType             string   `json:"dataType"`
 	Iterate              bool     `json:"iterate"`
+	IsEventTrigger       bool     `json:"isEventTrigger,omitempty"` // True when this mapping is an event trigger (conditional execution)
 }
 
 // ConnectionDetails represents connection information

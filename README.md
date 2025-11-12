@@ -1212,6 +1212,335 @@ normalized := strings.Normalize("café") // "cafe"
 
 All functions are Unicode-aware and handle multi-byte characters correctly.
 
+## Schema Validation and Transformation
+
+The SDK includes a comprehensive schema package for data validation, transformation, and structuring according to JSON Schema definitions:
+
+```go
+import "github.com/wehubfusion/Icarus/pkg/schema"
+
+// Create schema engine
+engine := schema.NewEngine()
+
+// Parse and process data with schema
+result, err := engine.ProcessWithSchema(
+    inputData,           // JSON data to process
+    schemaDefinition,    // Schema definition (JSON)
+    schema.ProcessOptions{
+        ApplyDefaults:  true,  // Apply default values from schema
+        ValidateData:   true,  // Validate data against schema
+        StructureData:  false, // Restructure data to match schema
+        TruncateFields: true,  // Remove fields not in schema
+        TruncateLevel:  0,     // Truncation depth (0 = all levels)
+        StrictMode:     false, // Strict validation mode
+    },
+)
+
+if err != nil {
+    log.Fatalf("Schema processing failed: %v", err)
+}
+
+// Access results
+if result.Valid {
+    processedData := result.Data
+    fmt.Println("Data validated and transformed successfully")
+} else {
+    for _, err := range result.Errors {
+        fmt.Printf("Validation error at %s: %s\n", err.Path, err.Message)
+    }
+}
+```
+
+### Schema Types
+
+The schema package supports the following data types:
+
+- **STRING**: Text data with optional length, pattern, format, and enum constraints
+- **NUMBER**: Numeric data with optional min/max constraints
+- **BOOLEAN**: True/false values
+- **OBJECT**: Nested objects with properties
+- **ARRAY**: Arrays with item schema and optional length, uniqueness constraints
+- **DATE**: Date values (YYYY-MM-DD format)
+- **DATETIME**: DateTime values (RFC3339 format)
+- **BYTE**: Base64-encoded binary data with optional decoded byte length constraints
+- **ANY**: Any JSON value (no validation)
+
+### Validation Rules
+
+Each property in a schema can have validation rules:
+
+**String Validations:**
+```json
+{
+  "type": "STRING",
+  "validation": {
+    "minLength": 3,
+    "maxLength": 50,
+    "pattern": "^[a-zA-Z]+$",
+    "format": "email",
+    "enum": ["option1", "option2"]
+  }
+}
+```
+
+**Number Validations:**
+```json
+{
+  "type": "NUMBER",
+  "validation": {
+    "minimum": 0,
+    "maximum": 100
+  }
+}
+```
+
+**Array Validations:**
+```json
+{
+  "type": "ARRAY",
+  "validation": {
+    "minItems": 1,
+    "maxItems": 10,
+    "uniqueItems": true
+  },
+  "items": {
+    "type": "STRING"
+  }
+}
+```
+
+**Byte Validations:**
+```json
+{
+  "type": "BYTE",
+  "validation": {
+    "minLength": 100,
+    "maxLength": 1048576
+  }
+}
+```
+
+The `BYTE` type expects base64-encoded string data. Validation rules (`minLength` and `maxLength`) apply to the decoded byte length, not the base64 string length. This allows precise control over binary data sizes for file attachments, images, certificates, and other binary content.
+
+**Example Usage:**
+```go
+// Schema for file upload with size constraints
+schemaJSON := `{
+  "type": "OBJECT",
+  "properties": {
+    "filename": {
+      "type": "STRING",
+      "required": true
+    },
+    "content": {
+      "type": "BYTE",
+      "required": true,
+      "validation": {
+        "minLength": 1,
+        "maxLength": 5242880
+      }
+    }
+  }
+}`
+
+// Input data with base64-encoded file
+inputData := `{
+  "filename": "document.pdf",
+  "content": "JVBERi0xLjQKJeLjz9MKMyAwIG9iago8PC9UeXBl..."
+}`
+
+// Validates that decoded content is between 1 byte and 5MB
+result, err := engine.ProcessWithSchema(
+    []byte(inputData),
+    []byte(schemaJSON),
+    schema.ProcessOptions{ValidateData: true},
+)
+```
+
+### Supported Formats
+
+The schema validator includes built-in format validators:
+
+- `email`: RFC 5322 email validation
+- `uri`: URI/URL validation (HTTP, HTTPS, FTP, WS, WSS)
+- `uuid`: UUID v4 format validation
+- `date`: ISO 8601 date format (YYYY-MM-DD)
+- `datetime`: RFC3339 datetime format
+
+You can also register custom format validators:
+
+```go
+validator := schema.NewValidator()
+validator.RegisterFormat("phone", func(value string) bool {
+    // Custom phone number validation logic
+    return regexp.MustCompile(`^\+?[1-9]\d{1,14}$`).MatchString(value)
+})
+```
+
+### Default Values
+
+The schema engine can automatically apply default values to missing fields:
+
+```go
+// Schema with default values
+schemaJSON := `{
+  "type": "OBJECT",
+  "properties": {
+    "name": {
+      "type": "STRING",
+      "required": true
+    },
+    "country": {
+      "type": "STRING",
+      "default": "US"
+    },
+    "active": {
+      "type": "BOOLEAN",
+      "default": true
+    }
+  }
+}`
+
+// Input data missing 'country' and 'active'
+inputData := `{"name": "John"}`
+
+// Process with defaults
+result, _ := engine.ProcessWithSchema(
+    []byte(inputData),
+    []byte(schemaJSON),
+    schema.ProcessOptions{ApplyDefaults: true},
+)
+
+// Result: {"name": "John", "country": "US", "active": true}
+```
+
+### Data Structuring
+
+The schema engine can restructure data to match the schema structure:
+
+```go
+// Flat input data
+inputData := `{
+  "firstName": "John",
+  "lastName": "Doe",
+  "email": "john@example.com"
+}`
+
+// Nested schema structure
+schemaJSON := `{
+  "type": "OBJECT",
+  "properties": {
+    "user": {
+      "type": "OBJECT",
+      "properties": {
+        "name": {
+          "type": "OBJECT",
+          "properties": {
+            "first": {"type": "STRING"},
+            "last": {"type": "STRING"}
+          }
+        },
+        "contact": {
+          "type": "OBJECT",
+          "properties": {
+            "email": {"type": "STRING"}
+          }
+        }
+      }
+    }
+  }
+}`
+
+// Process with structuring
+result, _ := engine.ProcessWithSchema(
+    []byte(inputData),
+    []byte(schemaJSON),
+    schema.ProcessOptions{StructureData: true},
+)
+
+// Result is restructured to match schema
+```
+
+### Field Truncation
+
+Remove fields not defined in the schema:
+
+```go
+result, _ := engine.ProcessWithSchema(
+    inputData,
+    schemaDefinition,
+    schema.ProcessOptions{
+        TruncateFields: true,
+        TruncateLevel:  0,  // 0 = all levels, 1 = first level only, etc.
+    },
+)
+```
+
+### Components
+
+The schema package is organized into focused components:
+
+- **`types.go`**: Schema structure definitions (Schema, Property, ValidationRules)
+- **`parser.go`**: Schema parsing from JSON
+- **`validator.go`**: Data validation against schemas
+- **`transformer.go`**: Data transformation (defaults, structuring, truncation)
+- **`engine.go`**: Main orchestrator coordinating all operations
+- **`formats.go`**: Format validators (email, UUID, date, etc.)
+- **`errors.go`**: Schema-specific error types
+
+### Usage in Plugins
+
+The schema package is designed to be used by Elysium plugins like `plugin-stage-data`, `plugin-json-operations`, and others that need schema-based validation and transformation:
+
+```go
+import (
+    "github.com/wehubfusion/Icarus/pkg/schema"
+)
+
+// In your plugin activity
+type StageDataActivity struct {
+    schemaEngine *schema.Engine
+}
+
+func NewActivity(logger *zap.Logger) *Activity {
+    return &Activity{
+        schemaEngine: schema.NewEngine(),
+    }
+}
+
+func (a *Activity) Execute(ctx context.Context, req *Request) (*Response, error) {
+    // Fetch schema from Morpheus
+    schemaDefinition := fetchSchemaFromMorpheus(req.SchemaID)
+    
+    // Process data with schema
+    result, err := a.schemaEngine.ProcessWithSchema(
+        req.InputData,
+        schemaDefinition,
+        schema.ProcessOptions{
+            ApplyDefaults:  true,
+            ValidateData:   true,
+            TruncateFields: true,
+        },
+    )
+    
+    if err != nil {
+        return nil, err
+    }
+    
+    if !result.Valid {
+        return &Response{
+            Success: false,
+            ValidationErrors: result.Errors,
+        }, nil
+    }
+    
+    return &Response{
+        Success: true,
+        Data:    result.Data,
+    }, nil
+}
+```
+
 ## Complete Example
 
 Here's a comprehensive example showing the client usage pattern:

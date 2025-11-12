@@ -39,16 +39,26 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 	// Calculate overall result based on logic operator
 	overallResult := e.calculateOverallResult(results, cfg.LogicOperator)
 
-	// Build output
-	output := Output{
-		Result:     overallResult,
-		Conditions: results,
-		Summary: Summary{
+	// Build output with event endpoints for conditional routing
+	output := map[string]interface{}{
+		"result": overallResult,
+		"conditions": results,
+		"summary": Summary{
 			TotalConditions: len(cfg.Conditions),
 			MetConditions:   countMetConditions(results),
 			UnmetConditions: countUnmetConditions(results),
 			LogicOperator:   cfg.LogicOperator,
 		},
+	}
+
+	// Add conditional event endpoints
+	// Only one endpoint fires (has truthy value) based on the condition result
+	if overallResult {
+		output["true"] = true  // TRUE event fires
+		output["false"] = nil  // FALSE event does not fire
+	} else {
+		output["true"] = nil   // TRUE event does not fire
+		output["false"] = true // FALSE event fires
 	}
 
 	// Marshal output
