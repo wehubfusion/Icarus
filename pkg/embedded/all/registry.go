@@ -2,6 +2,7 @@ package all
 
 import (
 	"github.com/wehubfusion/Icarus/pkg/embedded"
+	"github.com/wehubfusion/Icarus/pkg/embedded/processors/constantvalue"
 	"github.com/wehubfusion/Icarus/pkg/embedded/processors/dateformatter"
 	"github.com/wehubfusion/Icarus/pkg/embedded/processors/jsonops"
 	"github.com/wehubfusion/Icarus/pkg/embedded/processors/jsrunner"
@@ -27,6 +28,9 @@ func NewRegistry() *embedded.ExecutorRegistry {
 
 	// Register simple condition executor
 	registry.Register(simplecondition.NewExecutor())
+
+	// Register constant value executor
+	registry.Register(constantvalue.NewExecutor())
 
 	return registry
 }
