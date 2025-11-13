@@ -7,7 +7,6 @@ require (
 	github.com/getsentry/sentry-go v0.35.3
 	github.com/google/uuid v1.6.0
 	github.com/nats-io/nats.go v1.46.1
-	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/stretchr/testify v1.11.1
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5

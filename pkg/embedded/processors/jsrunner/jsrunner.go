@@ -60,13 +60,21 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 		}
 	}
 
+	// Parse schema if provided (injected by enrichment)
+	var schema map[string]interface{}
+	if len(jsConfig.SchemaDefinition) > 0 {
+		if err := json.Unmarshal(jsConfig.SchemaDefinition, &schema); err != nil {
+			return nil, fmt.Errorf("failed to parse schema: %w", err)
+		}
+	}
+
 	// Acquire read lock to ensure pool doesn't change during execution
 	e.mu.RLock()
 	currentPool := e.pool
 	e.mu.RUnlock()
 
 	// Execute with timeout
-	result, err := e.executeWithTimeoutOnPool(ctx, currentPool, &jsConfig, input)
+	result, err := e.executeWithTimeoutOnPool(ctx, currentPool, &jsConfig, input, schema)
 	if err != nil {
 		// Handle JSError types
 		jsErr, ok := err.(*JSError)
@@ -74,7 +82,7 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 			return nil, err
 		}
 
-		// Return error in structured format
+		// Return error in structured format as raw bytes
 		errorOutput := map[string]interface{}{
 			"error": map[string]interface{}{
 				"type":    jsErr.Type,
@@ -87,10 +95,19 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 		return output, fmt.Errorf("%v", jsErr)
 	}
 
-	// Marshal result
-	output, err := json.Marshal(map[string]interface{}{
-		"result": result,
-	})
+	// Convert result to raw bytes
+	// If result is already bytes, return as-is
+	if bytes, ok := result.([]byte); ok {
+		return bytes, nil
+	}
+
+	// If result is a string, convert to bytes
+	if str, ok := result.(string); ok {
+		return []byte(str), nil
+	}
+
+	// Otherwise, marshal to JSON and return bytes
+	output, err := json.Marshal(result)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal output: %w", err)
 	}
@@ -99,7 +116,7 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 }
 
 // executeWithTimeoutOnPool executes JavaScript code with timeout and interrupt handling on a specific pool
-func (e *Executor) executeWithTimeoutOnPool(ctx context.Context, pool *VMPool, config *Config, input map[string]interface{}) (result interface{}, err error) {
+func (e *Executor) executeWithTimeoutOnPool(ctx context.Context, pool *VMPool, config *Config, input map[string]interface{}, schema map[string]interface{}) (result interface{}, err error) {
 	// Recover from panics in script execution
 	defer func() {
 		if r := recover(); r != nil {
@@ -147,6 +164,13 @@ func (e *Executor) executeWithTimeoutOnPool(ctx context.Context, pool *VMPool, c
 		return nil, fmt.Errorf("failed to set input: %w", err)
 	}
 
+	// Inject schema into the VM if provided
+	if schema != nil {
+		if err := vm.vm.Set("schema", schema); err != nil {
+			return nil, fmt.Errorf("failed to set schema: %w", err)
+		}
+	}
+
 	// Execute the script
 	startTime := time.Now()
 	value, err := vm.vm.RunString(config.Script)
@@ -173,14 +197,10 @@ func (e *Executor) executeWithTimeoutOnPool(ctx context.Context, pool *VMPool, c
 	// Export the result
 	result = value.Export()
 
-	// Add execution metadata if result is an object
-	if resultMap, ok := result.(map[string]interface{}); ok {
-		resultMap["__meta__"] = map[string]interface{}{
-			"execution_time_ms": executionTime.Milliseconds(),
-			"vm_reuse_count":    vm.reuseCount,
-		}
-		return resultMap, nil
-	}
+	// Return result as-is (no metadata injection since we're returning raw bytes)
+	// Metadata can be added by the caller if needed
+	_ = executionTime // Keep for potential logging
+	_ = vm.reuseCount // Keep for potential logging
 
 	return result, nil
 }
@@ -259,7 +279,7 @@ func (e *Executor) ExecuteScript(ctx context.Context, script string, input map[s
 	currentPool := e.pool
 	e.mu.RUnlock()
 
-	return e.executeWithTimeoutOnPool(ctx, currentPool, &config, input)
+	return e.executeWithTimeoutOnPool(ctx, currentPool, &config, input, nil)
 }
 
 // CompileScript compiles a script without executing it (useful for validation)

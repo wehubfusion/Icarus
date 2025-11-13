@@ -1166,6 +1166,232 @@ msg = message.NewMessage().
     WithOutput("payment-gateway")
 ```
 
+## StandardOutput Format
+
+All nodes (parent and embedded) output a standardized structure with reserved namespaces for consistent error handling and event routing.
+
+### Output Structure
+
+```json
+{
+  "_meta": {
+    "status": "success|failed|skipped",
+    "node_id": "node-123",
+    "plugin_type": "plugin-http",
+    "execution_time_ms": 150,
+    "timestamp": "2024-01-15T10:30:00Z"
+  },
+  "_events": {
+    "success": true|null,
+    "error": null|true
+  },
+  "_error": {
+    "code": "ERROR_CODE",
+    "message": "Error description",
+    "retryable": true|false
+  },
+  "data": {
+    "... actual plugin output ..."
+  }
+}
+```
+
+### Reserved Namespaces
+
+- **`_meta`**: Execution metadata (status, timing, node information)
+- **`_events`**: Event endpoints for routing (success/error events)
+- **`_error`**: Detailed error information (only present on failure)
+- **`data`**: Actual plugin output data (null on error)
+
+### Error Events
+
+Failed nodes emit error events that can trigger error handling nodes:
+
+```go
+// Failed node output
+{
+  "_events": {
+    "error": true  // Error event fires!
+  },
+  "_error": {
+    "code": "HTTP_TIMEOUT",
+    "message": "Request timed out",
+    "retryable": true
+  }
+}
+
+// Error handler field mapping
+{
+  "sourceEndpoint": "_events/error",
+  "isEventTrigger": true
+}
+```
+
+**Key Feature**: Failed nodes store their outputs in the registry, enabling:
+- Error event routing to error handlers
+- Access to error details for intelligent recovery
+- Rich observability through error metadata
+
+See [Error Handling Guide](../Olympus/docs/ERROR_HANDLING.md) for comprehensive patterns.
+
+## Embedded Node Processors
+
+Icarus includes powerful embedded node processors that enable sophisticated data processing within workflow nodes.
+
+### JSRunner - JavaScript Processor
+
+The JSRunner processor executes JavaScript code with schema-aware capabilities, enabling flexible data transformation and validation.
+
+**Key Features:**
+
+- **Schema-Aware Processing**: Access input schemas directly in JavaScript for meta-programming
+- **Raw Byte Output**: Always returns raw bytes for efficient processing
+- **VM Pooling**: Reuses JavaScript VMs for performance
+- **Configurable Security**: Multiple security levels (strict, standard, permissive)
+- **Timeout Protection**: Configurable execution timeouts
+
+**Basic Usage:**
+
+```go
+import "github.com/wehubfusion/Icarus/pkg/embedded/processors/jsrunner"
+
+// Create executor
+executor := jsrunner.NewExecutor()
+defer executor.Close()
+
+// Configure with schema
+config := jsrunner.Config{
+    Script: `
+        // Access input and schema
+        var requiredFields = Object.keys(schema.properties);
+        
+        // Validate and transform
+        var output = {};
+        for (var key in schema.properties) {
+            var field = schema.properties[key];
+            if (input[key] !== undefined) {
+                output[key] = input[key];
+            } else if (field.default !== undefined) {
+                output[key] = field.default;
+            }
+        }
+        
+        JSON.stringify(output);
+    `,
+}
+
+// Add schema if needed
+schemaBytes, _ := json.Marshal(map[string]interface{}{
+    "type": "OBJECT",
+    "properties": map[string]interface{}{
+        "name": map[string]interface{}{
+            "type": "STRING",
+            "required": true,
+        },
+        "status": map[string]interface{}{
+            "type": "STRING",
+            "default": "active",
+        },
+    },
+})
+config.SchemaDefinition = schemaBytes
+
+// Execute
+configBytes, _ := json.Marshal(config)
+inputBytes, _ := json.Marshal(map[string]interface{}{"name": "John"})
+
+result, err := executor.Execute(ctx, embedded.NodeConfig{
+    Configuration: configBytes,
+    Input:         inputBytes,
+})
+
+// Result is raw bytes: {"name":"John","status":"active"}
+fmt.Println(string(result))
+```
+
+**JavaScript Context:**
+
+Your JavaScript code has access to two global variables:
+
+- **`input`**: The input data (always available)
+- **`schema`**: The schema definition (when `schema_id` is provided and enriched)
+
+**Output Format:**
+
+JSRunner always returns raw bytes (not wrapped JSON):
+
+| JavaScript Return | Output |
+|------------------|--------|
+| String | Raw string as bytes |
+| Number | JSON-marshaled: `42` → `"42"` |
+| Object | JSON-marshaled: `{a:1}` → `{"a":1}` |
+| Array | JSON-marshaled: `[1,2]` → `[1,2]` |
+
+**Schema Integration:**
+
+When used in Elysium workflows, specify `schema_id` in the configuration. Elysium's enrichment framework automatically fetches the schema from Morpheus and injects it before execution:
+
+```json
+{
+  "plugin_type": "plugin-jsrunner",
+  "configuration": {
+    "script": "// Your JS code with schema access",
+    "schema_id": "user-schema"
+  }
+}
+```
+
+The enrichment is transparent - jsrunner receives the full schema definition and makes it available as the `schema` global variable.
+
+**Common Use Cases:**
+
+- Custom validation logic beyond schema rules
+- Dynamic field mapping based on schema
+- Conditional data transformation
+- Applying business rules to data
+- Schema-driven default value application
+
+For detailed examples and API documentation, see `pkg/embedded/processors/jsrunner/README.md`.
+
+### JSONOps Processor
+
+The JSONOps processor provides schema-driven JSON data validation and transformation using Icarus schemas.
+
+**Operations:**
+
+- **parse**: Validate and structure incoming JSON data against a schema
+- **produce**: Validate and encode JSON data to base64 output
+
+**Configuration:**
+
+```go
+import "github.com/wehubfusion/Icarus/pkg/embedded/processors/jsonops"
+
+// Parse operation - validate and structure incoming data
+config := jsonops.Config{
+    Operation: "parse",
+    SchemaID:  "user-input-schema",
+}
+
+// Produce operation - validate and encode output
+config := jsonops.Config{
+    Operation: "produce",
+    SchemaID:  "api-output-schema",
+}
+```
+
+**Key Features:**
+
+- Flat configuration structure (no nested params)
+- Operation-specific smart defaults
+- Schema-based validation using Icarus schemas
+- Base64 encoding for produce operation
+- Integration with Elysium schema enrichment
+
+When executed in Elysium, the `schema_id` is automatically enriched with the full schema definition from Morpheus before processing.
+
+For detailed documentation, see `pkg/embedded/processors/jsonops/README.md`.
+
 ## String Processing Utilities
 
 The SDK includes comprehensive string processing utilities for workflow orchestration and data manipulation:

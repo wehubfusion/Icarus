@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/tidwall/gjson"
 	"github.com/wehubfusion/Icarus/pkg/concurrency"
+	"github.com/wehubfusion/Icarus/pkg/embedded/pathutil"
 	"github.com/wehubfusion/Icarus/pkg/iteration"
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
@@ -163,11 +163,18 @@ func (p *Processor) ProcessEmbeddedNodesConcurrent(
 				// If limiter fails to acquire (circuit breaker open or context cancelled)
 				if err != nil {
 					wg.Done() // Balance the Add(1) above
+					
+					// Wrap limiter error
+					wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, 0, fmt.Errorf("limiter error: %w", err))
+					
+					// Store error output in registry
+					outputRegistry.Set(embNode.NodeID, wrappedOutput)
+					
 					result := EmbeddedNodeResult{
 						NodeID:               embNode.NodeID,
 						PluginType:           embNode.PluginType,
 						Status:               "failed",
-						Output:               []byte("{}"),
+						Output:               wrappedOutput,
 						Error:                fmt.Sprintf("limiter error: %v", err),
 						ExecutionOrder:       embNode.ExecutionOrder,
 						ProcessingDurationMs: 0,
@@ -228,11 +235,16 @@ func (p *Processor) processNode(
 	shouldExecute, skipReason := p.checkEventTriggers(embNode, outputRegistry)
 	if !shouldExecute {
 		// Event trigger conditions not met - skip this node
+		wrappedOutput := WrapSkipped(embNode.NodeID, embNode.PluginType, skipReason)
+		
+		// Store skipped output in registry for downstream nodes to reference
+		outputRegistry.Set(embNode.NodeID, wrappedOutput)
+		
 		return EmbeddedNodeResult{
 			NodeID:               embNode.NodeID,
 			PluginType:           embNode.PluginType,
 			Status:               "skipped",
-			Output:               []byte("{}"),
+			Output:               wrappedOutput,
 			Error:                skipReason,
 			ExecutionOrder:       embNode.ExecutionOrder,
 			ProcessingDurationMs: time.Since(startTime).Milliseconds(),
@@ -261,48 +273,63 @@ func (p *Processor) processNode(
 	if hasIterateMapping {
 		// Process array items using iteration package
 		itemResults, err := p.processArrayIteration(ctx, embNode, iterateArray, outputRegistry)
+		execTime := time.Since(startTime).Milliseconds()
+		
 		if err != nil {
-			// Record iteration failure
+			// Record iteration failure - wrap error output
+			wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, fmt.Errorf("array iteration failed: %w", err))
+			
+			// ALWAYS store in registry (even errors)
+			outputRegistry.Set(embNode.NodeID, wrappedOutput)
+			
 			return EmbeddedNodeResult{
 				NodeID:               embNode.NodeID,
 				PluginType:           embNode.PluginType,
 				Status:               "failed",
-				Output:               []byte("{}"),
+				Output:               wrappedOutput,
 				Error:                fmt.Sprintf("array iteration failed: %v", err),
 				ExecutionOrder:       embNode.ExecutionOrder,
-				ProcessingDurationMs: time.Since(startTime).Milliseconds(),
+				ProcessingDurationMs: execTime,
 			}
 		}
 
-		// Aggregate item results into single output
+		// Aggregate item results into single output and wrap
 		aggregated, _ := json.Marshal(itemResults)
-		result := EmbeddedNodeResult{
+		wrappedOutput := WrapSuccess(embNode.NodeID, embNode.PluginType, execTime, aggregated)
+		
+		// Store wrapped result in registry
+		outputRegistry.Set(embNode.NodeID, wrappedOutput)
+		
+		return EmbeddedNodeResult{
 			NodeID:               embNode.NodeID,
 			PluginType:           embNode.PluginType,
 			Status:               "success",
-			Output:               aggregated,
+			Output:               wrappedOutput,
 			Error:                "",
 			ExecutionOrder:       embNode.ExecutionOrder,
-			ProcessingDurationMs: time.Since(startTime).Milliseconds(),
+			ProcessingDurationMs: execTime,
 		}
-		// Store result in registry
-		outputRegistry.Set(embNode.NodeID, aggregated)
-		return result
 	}
 
 	// Normal processing (no iteration)
 	// Apply field mappings to prepare input for this node
 	mappedInput, err := p.fieldMapper.ApplyMappings(outputRegistry, embNode.FieldMappings, []byte("{}"))
 	if err != nil {
-		// Field mapping failed - record as failed result
+		// Field mapping failed - wrap error output
+		execTime := time.Since(startTime).Milliseconds()
+		wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, fmt.Errorf("field mapping failed: %w", err))
+		
+		// ALWAYS store in registry (even errors)
+		outputRegistry.Set(embNode.NodeID, wrappedOutput)
+		
 		return EmbeddedNodeResult{
 			NodeID:               embNode.NodeID,
 			PluginType:           embNode.PluginType,
 			Status:               "failed",
-			Output:               []byte("{}"),
+			Output:               wrappedOutput,
 			Error:                fmt.Sprintf("field mapping failed: %v", err),
 			ExecutionOrder:       embNode.ExecutionOrder,
-			ProcessingDurationMs: time.Since(startTime).Milliseconds(),
+			ProcessingDurationMs: execTime,
 		}
 	}
 
@@ -318,29 +345,33 @@ func (p *Processor) processNode(
 
 	// Execute the node
 	nodeOutput, err := p.registry.Execute(ctx, nodeConfig)
+	execTime := time.Since(startTime).Milliseconds()
+	
+	var wrappedOutput []byte
+	status := "success"
+	errorMsg := ""
+	
 	if err != nil {
-		// Execution failed - record as failed result
-		return EmbeddedNodeResult{
-			NodeID:               embNode.NodeID,
-			PluginType:           embNode.PluginType,
-			Status:               "failed",
-			Output:               []byte("{}"),
-			Error:                err.Error(),
-			ExecutionOrder:       embNode.ExecutionOrder,
-			ProcessingDurationMs: time.Since(startTime).Milliseconds(),
-		}
+		// Execution failed - wrap error output
+		wrappedOutput = WrapError(embNode.NodeID, embNode.PluginType, execTime, err)
+		status = "failed"
+		errorMsg = err.Error()
+	} else {
+		// Execution succeeded - wrap success output
+		wrappedOutput = WrapSuccess(embNode.NodeID, embNode.PluginType, execTime, nodeOutput)
 	}
-
-	// Store result in registry and return result
-	outputRegistry.Set(embNode.NodeID, nodeOutput)
+	
+	// ALWAYS store in registry (even errors)
+	outputRegistry.Set(embNode.NodeID, wrappedOutput)
+	
 	return EmbeddedNodeResult{
 		NodeID:               embNode.NodeID,
 		PluginType:           embNode.PluginType,
-		Status:               "success",
-		Output:               nodeOutput,
-		Error:                "",
+		Status:               status,
+		Output:               wrappedOutput,
+		Error:                errorMsg,
 		ExecutionOrder:       embNode.ExecutionOrder,
-		ProcessingDurationMs: time.Since(startTime).Milliseconds(),
+		ProcessingDurationMs: execTime,
 	}
 }
 
@@ -372,32 +403,30 @@ func (p *Processor) checkEventTriggers(
 			return false, fmt.Sprintf("event trigger source node '%s' not found", trigger.SourceNodeID)
 		}
 
-		// Check if the trigger endpoint has data and is truthy
-		// Normalize endpoint path (gjson doesn't use leading slash)
-		endpoint := strings.TrimPrefix(trigger.SourceEndpoint, "/")
-		sourceValue := gjson.GetBytes(sourceOutput, endpoint)
+		// Check if the trigger endpoint has data and is truthy using namespace-aware navigation
+		sourceValue, valueExists := pathutil.NavigatePath(sourceOutput, trigger.SourceEndpoint)
 
 		// Event is NOT fired if:
 		// - Endpoint doesn't exist
 		// - Value is null
 		// - Value is false (boolean)
 		// - Value is empty string
-		if !sourceValue.Exists() {
+		if !valueExists {
 			return false, fmt.Sprintf("event not fired: endpoint '%s' from node '%s' not found",
 				trigger.SourceEndpoint, trigger.SourceNodeID)
 		}
 
-		if sourceValue.Type == gjson.Null {
+		if sourceValue == nil {
 			return false, fmt.Sprintf("event not fired: endpoint '%s' from node '%s' is null",
 				trigger.SourceEndpoint, trigger.SourceNodeID)
 		}
 
-		if sourceValue.IsBool() && !sourceValue.Bool() {
+		if boolVal, ok := sourceValue.(bool); ok && !boolVal {
 			return false, fmt.Sprintf("event not fired: endpoint '%s' from node '%s' is false",
 				trigger.SourceEndpoint, trigger.SourceNodeID)
 		}
 
-		if sourceValue.Type == gjson.String && sourceValue.String() == "" {
+		if strVal, ok := sourceValue.(string); ok && strVal == "" {
 			return false, fmt.Sprintf("event not fired: endpoint '%s' from node '%s' is empty",
 				trigger.SourceEndpoint, trigger.SourceNodeID)
 		}

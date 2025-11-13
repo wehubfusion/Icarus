@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"github.com/wehubfusion/Icarus/pkg/embedded/pathutil"
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
@@ -53,32 +53,43 @@ func (fm *FieldMapper) ApplyMappings(
 		if !json.Valid(sourceOutput) {
 			return nil, fmt.Errorf("source output from node %s is not valid JSON", sourceNodeID)
 		}
-		sourceJSON := string(sourceOutput)
 
 		// Apply each mapping from this source
 		for _, mapping := range sourceMappings {
-			// Extract value from source using JSONPath
-			sourceValue := gjson.Get(sourceJSON, mapping.SourceEndpoint)
-			if !sourceValue.Exists() {
+			// Extract value from source using namespace-aware path navigation
+			sourceValue, exists := pathutil.NavigatePath(sourceOutput, mapping.SourceEndpoint)
+			if !exists {
 				// Skip if source field not found (allows for optional fields)
 				continue
 			}
 
 			// Handle iterate flag for array processing
-			if mapping.Iterate && sourceValue.IsArray() {
-				// For iterate mode, map the entire array to each destination
-				for _, destEndpoint := range mapping.DestinationEndpoints {
-					var err error
-					destJSON, err = sjson.Set(destJSON, destEndpoint, sourceValue.Value())
-					if err != nil {
-						return nil, fmt.Errorf("failed to set destination field %s: %w", destEndpoint, err)
+			if mapping.Iterate {
+				// Check if value is an array
+				if arr, ok := sourceValue.([]interface{}); ok {
+					// For iterate mode, map the entire array to each destination
+					for _, destEndpoint := range mapping.DestinationEndpoints {
+						var err error
+						destJSON, err = sjson.Set(destJSON, destEndpoint, arr)
+						if err != nil {
+							return nil, fmt.Errorf("failed to set destination field %s: %w", destEndpoint, err)
+						}
+					}
+				} else {
+					// Not an array, map as single value
+					for _, destEndpoint := range mapping.DestinationEndpoints {
+						var err error
+						destJSON, err = sjson.Set(destJSON, destEndpoint, sourceValue)
+						if err != nil {
+							return nil, fmt.Errorf("failed to set destination field %s: %w", destEndpoint, err)
+						}
 					}
 				}
 			} else {
 				// Map value to each destination endpoint
 				for _, destEndpoint := range mapping.DestinationEndpoints {
 					var err error
-					destJSON, err = sjson.Set(destJSON, destEndpoint, sourceValue.Value())
+					destJSON, err = sjson.Set(destJSON, destEndpoint, sourceValue)
 					if err != nil {
 						return nil, fmt.Errorf("failed to set destination field %s: %w", destEndpoint, err)
 					}

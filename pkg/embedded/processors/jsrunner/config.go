@@ -1,11 +1,22 @@
 package jsrunner
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Config defines the configuration for JavaScript execution
 type Config struct {
 	// Script is the JavaScript code to execute
 	Script string `json:"script"`
+
+	// SchemaDefinition is the input schema (injected by Elysium enrichment)
+	// When provided, the schema is available in JS as a global variable
+	SchemaDefinition json.RawMessage `json:"schema,omitempty"`
+
+	// SchemaID is a reference to a schema in Morpheus (enriched by Elysium)
+	// This is only used as a reference - Elysium enriches it before execution
+	SchemaID string `json:"schema_id,omitempty"`
 
 	// Timeout is the maximum execution time in milliseconds
 	// Default: 5000ms (5 seconds)

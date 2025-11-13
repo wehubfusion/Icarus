@@ -16,11 +16,21 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 	processor := embedded.NewProcessor(registry)
 
 	t.Run("Embedded node skips when event not fired (null)", func(t *testing.T) {
-		// Parent output with event NOT fired
+		// Parent output with event NOT fired (wrapped in StandardOutput format)
 		parentOutput := map[string]interface{}{
-			"result": false,
-			"true":   nil,   // Event NOT fired (null)
-			"false":  true,
+			"_meta": map[string]interface{}{
+				"status":  "success",
+				"node_id": "parent-node",
+			},
+			"_events": map[string]interface{}{
+				"success": true,
+				"error":   nil,
+			},
+			"data": map[string]interface{}{
+				"result": false,
+				"true":   nil,   // Event NOT fired (null)
+				"false":  true,
+			},
 		}
 		parentOutputBytes, _ := json.Marshal(parentOutput)
 
@@ -44,7 +54,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "parent-node",
-						SourceEndpoint:       "/true",  // Looking for /true (which is null)
+						SourceEndpoint:       "data/true",  // Path to event in data namespace
 						DestinationEndpoints: []string{"conditional-node"},
 						DataType:             "EVENT",
 						IsEventTrigger:       true,
@@ -74,9 +84,19 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 	})
 
 	t.Run("Embedded node skips when event is false", func(t *testing.T) {
-		// Parent output with event false
+		// Parent output with event false (wrapped in StandardOutput format)
 		parentOutput := map[string]interface{}{
-			"trigger": false,  // Boolean false
+			"_meta": map[string]interface{}{
+				"status":  "success",
+				"node_id": "parent-node",
+			},
+			"_events": map[string]interface{}{
+				"success": true,
+				"error":   nil,
+			},
+			"data": map[string]interface{}{
+				"trigger": false,  // Boolean false
+			},
 		}
 		parentOutputBytes, _ := json.Marshal(parentOutput)
 
@@ -128,9 +148,19 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 	})
 
 	t.Run("Embedded node skips when event is empty string", func(t *testing.T) {
-		// Parent output with empty string
+		// Parent output with empty string (wrapped in StandardOutput format)
 		parentOutput := map[string]interface{}{
-			"trigger": "",  // Empty string
+			"_meta": map[string]interface{}{
+				"status":  "success",
+				"node_id": "parent-node",
+			},
+			"_events": map[string]interface{}{
+				"success": true,
+				"error":   nil,
+			},
+			"data": map[string]interface{}{
+				"trigger": "",  // Empty string
+			},
 		}
 		parentOutputBytes, _ := json.Marshal(parentOutput)
 
@@ -153,7 +183,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "parent-node",
-						SourceEndpoint:       "/trigger",
+						SourceEndpoint:       "data/trigger",  // Path to event in data namespace
 						DestinationEndpoints: []string{"conditional-node"},
 						DataType:             "EVENT",
 						IsEventTrigger:       true,
@@ -182,9 +212,19 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 	})
 
 	t.Run("Embedded node skips when endpoint doesn't exist", func(t *testing.T) {
-		// Parent output without trigger endpoint
+		// Parent output without trigger endpoint (wrapped in StandardOutput format)
 		parentOutput := map[string]interface{}{
-			"other": "data",
+			"_meta": map[string]interface{}{
+				"status":  "success",
+				"node_id": "parent-node",
+			},
+			"_events": map[string]interface{}{
+				"success": true,
+				"error":   nil,
+			},
+			"data": map[string]interface{}{
+				"other": "data",
+			},
 		}
 		parentOutputBytes, _ := json.Marshal(parentOutput)
 
@@ -207,7 +247,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "parent-node",
-						SourceEndpoint:       "/missing",  // Doesn't exist
+						SourceEndpoint:       "data/missing",  // Path to missing field in data namespace
 						DestinationEndpoints: []string{"conditional-node"},
 						DataType:             "EVENT",
 						IsEventTrigger:       true,
@@ -286,10 +326,20 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 	})
 
 	t.Run("Embedded node executes when event is truthy", func(t *testing.T) {
-		// Parent output with truthy event
+		// Parent output with truthy event (wrapped in StandardOutput format)
 		parentOutput := map[string]interface{}{
-			"trigger": true,  // Truthy value
-			"value":   "test",
+			"_meta": map[string]interface{}{
+				"status":  "success",
+				"node_id": "parent-node",
+			},
+			"_events": map[string]interface{}{
+				"success": true,
+				"error":   nil,
+			},
+			"data": map[string]interface{}{
+				"trigger": true,  // Truthy value
+				"value":   "test",
+			},
 		}
 		parentOutputBytes, _ := json.Marshal(parentOutput)
 
@@ -312,14 +362,14 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "parent-node",
-						SourceEndpoint:       "/trigger",  // Truthy event
+						SourceEndpoint:       "data/trigger",  // Path to truthy event
 						DestinationEndpoints: []string{"conditional-node"},
 						DataType:             "EVENT",
 						IsEventTrigger:       true,
 					},
 					{
 						SourceNodeID:         "parent-node",
-						SourceEndpoint:       "/value",
+						SourceEndpoint:       "data/value",  // Path to field in data namespace
 						DestinationEndpoints: []string{"/value"},
 						DataType:             "FIELD",
 						IsEventTrigger:       false,

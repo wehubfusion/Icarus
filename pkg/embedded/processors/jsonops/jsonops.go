@@ -2,6 +2,7 @@ package jsonops
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 
@@ -32,33 +33,24 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 	// Route to appropriate operation handler
 	switch jsonConfig.Operation {
 	case "parse":
-		return e.executeParse(config.Input, jsonConfig.Params)
+		return e.executeParse(config.Input, jsonConfig)
 
-	case "render":
-		return e.executeRender(config.Input, jsonConfig.Params)
-
-	case "query":
-		return e.executeQuery(config.Input, jsonConfig.Params)
-
-	case "transform":
-		return e.executeTransform(config.Input, jsonConfig.Params)
-
-	case "validate":
-		return e.executeValidate(config.Input, jsonConfig.Params)
+	case "produce":
+		return e.executeProduce(config.Input, jsonConfig)
 
 	default:
 		return nil, fmt.Errorf("unknown operation: %s", jsonConfig.Operation)
 	}
 }
 
-// executeParse executes parse operation
-func (e *Executor) executeParse(input []byte, paramsRaw json.RawMessage) ([]byte, error) {
-	var params ParseParams
-	if err := json.Unmarshal(paramsRaw, &params); err != nil {
-		return nil, fmt.Errorf("failed to parse params: %w", err)
-	}
-
-	result, err := parseToJSON(input, params)
+// executeParse parses and validates JSON against schema
+func (e *Executor) executeParse(input []byte, config Config) ([]byte, error) {
+	// Process with schema
+	result, err := processWithSchema(input, config.Schema, config.SchemaID, SchemaOptions{
+		ApplyDefaults:    config.GetApplyDefaults(),
+		StructureData:    config.GetStructureData(),
+		StrictValidation: config.GetStrictValidation(),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -66,64 +58,40 @@ func (e *Executor) executeParse(input []byte, paramsRaw json.RawMessage) ([]byte
 	return result, nil
 }
 
-// executeRender executes render operation
-func (e *Executor) executeRender(input []byte, paramsRaw json.RawMessage) ([]byte, error) {
-	var params RenderParams
-	if err := json.Unmarshal(paramsRaw, &params); err != nil {
-		return nil, fmt.Errorf("failed to parse params: %w", err)
-	}
-
-	result, err := renderToJSON(input, params)
+// executeProduce validates, structures, and encodes JSON to base64
+func (e *Executor) executeProduce(input []byte, config Config) ([]byte, error) {
+	// Process with schema (no defaults on produce)
+	processedJSON, err := processWithSchema(input, config.Schema, config.SchemaID, SchemaOptions{
+		ApplyDefaults:    false, // Never apply defaults on produce
+		StructureData:    config.GetStructureData(),
+		StrictValidation: config.GetStrictValidation(),
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	return result, nil
-}
-
-// executeQuery executes query operation
-func (e *Executor) executeQuery(input []byte, paramsRaw json.RawMessage) ([]byte, error) {
-	var params QueryParams
-	if err := json.Unmarshal(paramsRaw, &params); err != nil {
-		return nil, fmt.Errorf("failed to parse params: %w", err)
+	// Pretty print if requested
+	if config.Pretty {
+		var prettyData interface{}
+		if err := json.Unmarshal(processedJSON, &prettyData); err != nil {
+			return nil, fmt.Errorf("failed to parse for pretty printing: %w", err)
+		}
+		processedJSON, err = json.MarshalIndent(prettyData, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("failed to pretty print: %w", err)
+		}
 	}
 
-	result, err := queryToJSON(input, params)
-	if err != nil {
-		return nil, err
+	// Encode to base64
+	encoded := base64.StdEncoding.EncodeToString(processedJSON)
+
+	// Return as JSON object with base64 data
+	result := map[string]string{
+		"data":     encoded,
+		"encoding": "base64",
 	}
 
-	return result, nil
-}
-
-// executeTransform executes transform operation
-func (e *Executor) executeTransform(input []byte, paramsRaw json.RawMessage) ([]byte, error) {
-	var params TransformParams
-	if err := json.Unmarshal(paramsRaw, &params); err != nil {
-		return nil, fmt.Errorf("failed to parse params: %w", err)
-	}
-
-	result, err := transform(input, params)
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
-}
-
-// executeValidate executes validate operation
-func (e *Executor) executeValidate(input []byte, paramsRaw json.RawMessage) ([]byte, error) {
-	var params ValidateParams
-	if err := json.Unmarshal(paramsRaw, &params); err != nil {
-		return nil, fmt.Errorf("failed to parse params: %w", err)
-	}
-
-	result, err := validateToJSON(input, params)
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
+	return json.Marshal(result)
 }
 
 // PluginType returns the plugin type this executor handles
