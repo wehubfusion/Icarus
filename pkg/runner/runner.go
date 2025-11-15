@@ -355,12 +355,19 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		// Report error if we have workflow information
 		// Use a background context with timeout to ensure reporting works even if parent context is cancelled
 		if workflowID != "" && runID != "" {
+			// Extract executionID from message metadata
+			executionID := ""
+			if msg.Metadata != nil {
+				executionID = msg.Metadata["execution_id"]
+			}
+			
 			reportCtx, reportCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if reportErr := r.client.Messages.ReportError(reportCtx, workflowID, runID, processErr, msg.GetNATSMsg()); reportErr != nil {
+			if reportErr := r.client.Messages.ReportError(reportCtx, executionID, workflowID, runID, processErr, msg.GetNATSMsg()); reportErr != nil {
 				r.logger.Error("Error reporting failure",
 					zap.Int("workerID", workerID),
 					zap.String("workflowID", workflowID),
 					zap.String("runID", runID),
+					zap.String("executionID", executionID),
 					zap.Error(reportErr))
 			}
 			reportCancel()

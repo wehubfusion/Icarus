@@ -218,14 +218,15 @@ func runExamples(ctx context.Context, client *client.Client, sigChan chan os.Sig
 	}
 
 	// Demonstrate error callback reporting
+	errorExecutionID := uuid.New().String()
 	errorWorkflowID := uuid.New().String()
 	errorRunID := uuid.New().String()
 
-	fmt.Printf("Reporting error for workflow: %s, run: %s\n", errorWorkflowID, errorRunID)
+	fmt.Printf("Reporting error for execution: %s, workflow: %s, run: %s\n", errorExecutionID, errorWorkflowID, errorRunID)
 
 	// Report a failed workflow execution
 	errorData := fmt.Errorf("Database connection timeout after 3 retries at 2024-10-07T10:30:00Z")
-	if err := client.Messages.ReportError(ctx, errorWorkflowID, errorRunID, errorData, nil); err != nil {
+	if err := client.Messages.ReportError(ctx, errorExecutionID, errorWorkflowID, errorRunID, errorData, nil); err != nil {
 		log.Printf("Failed to report error: %v", err)
 	} else {
 		fmt.Println("✓ Error callback reported")

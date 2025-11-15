@@ -308,11 +308,12 @@ func TestErrorReportingWorkflow(t *testing.T) {
 
 	workflowID := "error-workflow-" + uuid.New().String()
 	runID := "error-run-" + uuid.New().String()
+	executionID := "exec-" + uuid.New().String()
 
 	// 1. Simulate a processing error
 	errorMessage := fmt.Errorf("simulated processing error")
 
-	err := c.Messages.ReportError(ctx, workflowID, runID, errorMessage, nil)
+	err := c.Messages.ReportError(ctx, executionID, workflowID, runID, errorMessage, nil)
 	if err != nil {
 		t.Errorf("Failed to report error: %v", err)
 	}

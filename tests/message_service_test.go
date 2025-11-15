@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/wehubfusion/Icarus/pkg/client"
 	"github.com/wehubfusion/Icarus/pkg/message"
@@ -61,15 +62,17 @@ func TestMessageServiceReportSuccess(t *testing.T) {
 		Data:    []byte("test data"),
 	}
 
-	// Test ReportSuccess (may fail due to mock NATS message acknowledgment)
+	// Test ReportSuccess (will fail without Temporal metadata, which is expected)
 	err := c.Messages.ReportSuccess(ctx, *resultMessage, natsMsg)
-	// Note: This may fail with acknowledgment errors in mock environment, which is expected
-	_ = err // Acknowledge that error may occur
+	// Expect error: missing Temporal callback metadata
+	if err == nil {
+		t.Error("Expected error when Temporal callback metadata is missing")
+	}
 
-	// Test ReportSuccess without NATS message (should still work)
+	// Test ReportSuccess without NATS message (will also fail without Temporal metadata)
 	err = c.Messages.ReportSuccess(ctx, *resultMessage, nil)
-	if err != nil {
-		t.Errorf("ReportSuccess without NATS message failed: %v", err)
+	if err == nil {
+		t.Error("Expected error when Temporal callback metadata is missing")
 	}
 }
 
@@ -82,21 +85,25 @@ func TestMessageServiceReportError(t *testing.T) {
 	errorMsg := fmt.Errorf("processing failed")
 
 	// Create a mock NATS message for acknowledgment
+	executionID := "exec-" + uuid.New().String()
+	
 	natsMsg := &nats.Msg{
 		Subject: "test.subject",
 		Reply:   "test.reply",
 		Data:    []byte("test data"),
 	}
 
-	// Test ReportError (may fail due to mock NATS message acknowledgment)
-	err := c.Messages.ReportError(ctx, workflowID, runID, errorMsg, natsMsg)
-	// Note: This may fail with acknowledgment errors in mock environment, which is expected
-	_ = err // Acknowledge that error may occur
+	// Test ReportError (will fail without Temporal client, which is expected)
+	err := c.Messages.ReportError(ctx, executionID, workflowID, runID, errorMsg, natsMsg)
+	// Expect error when Temporal client is not initialized (new requirement)
+	if err == nil {
+		t.Error("Expected error when Temporal client not initialized")
+	}
 
-	// Test ReportError without NATS message (should still work)
-	err = c.Messages.ReportError(ctx, workflowID, runID, errorMsg, nil)
-	if err != nil {
-		t.Errorf("ReportError without NATS message failed: %v", err)
+	// Test ReportError without NATS message (will also fail without Temporal client)
+	err = c.Messages.ReportError(ctx, executionID, workflowID, runID, errorMsg, nil)
+	if err == nil {
+		t.Error("Expected error when Temporal client not initialized")
 	}
 }
 
@@ -111,30 +118,29 @@ func TestMessageServiceReportSuccessValidation(t *testing.T) {
 		t.Error("Expected validation error for message without workflow")
 	}
 
-	// Test with message missing CreatedAt - the framework now auto-populates timestamps
-	// so this test verifies that the message succeeds with auto-populated timestamps
+	// Test with message missing Temporal callback metadata (new requirement)
+	// Framework auto-populates timestamps but Temporal metadata is required
 	invalidMessage2 := &message.Message{
 		Workflow:  &message.Workflow{WorkflowID: "test", RunID: "test"},
 		Payload:   &message.Payload{Source: "test", Data: "data", Reference: "ref"},
 		UpdatedAt: time.Now().Format(time.RFC3339),
 	}
 	err = c.Messages.ReportSuccess(ctx, *invalidMessage2, nil)
-	if err != nil {
-		t.Errorf("Unexpected error - framework should auto-populate CreatedAt: %v", err)
+	// Expect error: missing Temporal callback metadata
+	if err == nil {
+		t.Error("Expected error when Temporal callback metadata is missing")
 	}
 
-	// Test with message missing UpdatedAt - note that the current implementation
-	// doesn't validate UpdatedAt field, so this test verifies current behavior
+	// Test with message missing UpdatedAt and Temporal metadata
 	invalidMessage3 := &message.Message{
 		Workflow:  &message.Workflow{WorkflowID: "test", RunID: "test"},
 		Payload:   &message.Payload{Source: "test", Data: "data", Reference: "ref"},
 		CreatedAt: time.Now().Format(time.RFC3339),
-		// UpdatedAt is missing - but this is currently allowed
 	}
 	err = c.Messages.ReportSuccess(ctx, *invalidMessage3, nil)
-	// Note: Current implementation doesn't validate UpdatedAt, so this succeeds
-	if err != nil {
-		t.Errorf("Unexpected error for message without UpdatedAt: %v", err)
+	// Expect error: missing Temporal callback metadata
+	if err == nil {
+		t.Error("Expected error when Temporal callback metadata is missing")
 	}
 
 	// Test with message missing payload
@@ -153,20 +159,21 @@ func TestMessageServiceReportErrorValidation(t *testing.T) {
 	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
 
-	// Note: The current implementation doesn't validate empty workflow/run IDs
-	// It creates messages with empty IDs, which may be valid for some use cases
-	// These tests verify the current behavior rather than enforcing validation
+	// Note: ReportError now requires Temporal client to be initialized
+	// These tests verify that errors are properly handled when client is missing
 
-	// Test with empty workflow ID (currently allowed)
-	err := c.Messages.ReportError(ctx, "", "run-123", fmt.Errorf("error message"), nil)
-	if err != nil {
-		t.Errorf("Unexpected error with empty workflow ID: %v", err)
+	executionID := "exec-" + uuid.New().String()
+
+	// Test with empty workflow ID (will fail due to missing Temporal client)
+	err := c.Messages.ReportError(ctx, executionID, "", "run-123", fmt.Errorf("error message"), nil)
+	if err == nil {
+		t.Error("Expected error when Temporal client not initialized")
 	}
 
-	// Test with empty run ID (currently allowed)
-	err = c.Messages.ReportError(ctx, "workflow-123", "", fmt.Errorf("error message"), nil)
-	if err != nil {
-		t.Errorf("Unexpected error with empty run ID: %v", err)
+	// Test with empty run ID (will fail due to missing Temporal client)
+	err = c.Messages.ReportError(ctx, executionID, "workflow-123", "", fmt.Errorf("error message"), nil)
+	if err == nil {
+		t.Error("Expected error when Temporal client not initialized")
 	}
 }
 
@@ -202,8 +209,10 @@ func TestMessageServiceReportWithPublishError(t *testing.T) {
 		t.Error("Expected error when publish fails")
 	}
 
+	executionID := "exec-" + uuid.New().String()
+
 	// Test ReportError with publish error
-	err = c.Messages.ReportError(ctx, "workflow-123", "run-456", fmt.Errorf("error message"), nil)
+	err = c.Messages.ReportError(ctx, executionID, "workflow-123", "run-456", fmt.Errorf("error message"), nil)
 	if err == nil {
 		t.Error("Expected error when publish fails")
 	}
@@ -285,8 +294,10 @@ func TestMessageServiceContextCancellation(t *testing.T) {
 		t.Error("Expected error for cancelled context in ReportSuccess")
 	}
 
+	executionID := "exec-" + uuid.New().String()
+
 	// Test ReportError with cancelled context
-	err = c.Messages.ReportError(ctx, "workflow-123", "run-456", fmt.Errorf("error message"), nil)
+	err = c.Messages.ReportError(ctx, executionID, "workflow-123", "run-456", fmt.Errorf("error message"), nil)
 	if err == nil {
 		t.Error("Expected error for cancelled context in ReportError")
 	}
