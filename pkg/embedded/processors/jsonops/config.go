@@ -36,10 +36,12 @@ type Config struct {
 
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
+	// Operation is required
 	if c.Operation == "" {
-		return fmt.Errorf("operation cannot be empty")
+		return fmt.Errorf("operation field is required in jsonops configuration")
 	}
 
+	// Validate operation value
 	validOperations := map[string]bool{
 		"parse":   true,
 		"produce": true,

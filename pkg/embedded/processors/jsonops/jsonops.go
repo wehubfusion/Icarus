@@ -25,7 +25,7 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 		return nil, fmt.Errorf("failed to parse jsonops configuration: %w", err)
 	}
 
-	// Validate configuration
+	// Validate configuration (operation is required)
 	if err := jsonConfig.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid jsonops configuration: %w", err)
 	}

@@ -18,6 +18,10 @@ type Config struct {
 	// This is only used as a reference - Elysium enriches it before execution
 	SchemaID string `json:"schema_id,omitempty"`
 
+	// ManualInputs defines input fields manually (alternative to schema)
+	// Each field should have "key" and "type"
+	ManualInputs []InputField `json:"inputs,omitempty"`
+
 	// Timeout is the maximum execution time in milliseconds
 	// Default: 5000ms (5 seconds)
 	Timeout int `json:"timeout,omitempty"`
@@ -154,4 +158,11 @@ type ConfigError struct {
 
 func (e *ConfigError) Error() string {
 	return "config error [" + e.Field + "]: " + e.Message
+}
+
+// InputField represents a manually defined input field
+type InputField struct {
+	Key      string `json:"key"`
+	Type     string `json:"type"`
+	Required bool   `json:"required,omitempty"`
 }

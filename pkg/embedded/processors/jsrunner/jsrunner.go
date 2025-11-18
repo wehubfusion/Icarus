@@ -68,13 +68,32 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 		}
 	}
 
+	// Parse manual inputs if provided (convert to schema-like structure)
+	var manualInputs map[string]interface{}
+	if len(jsConfig.ManualInputs) > 0 {
+		properties := make(map[string]interface{})
+		for _, field := range jsConfig.ManualInputs {
+			fieldDef := map[string]interface{}{
+				"type": field.Type,
+			}
+			if field.Required {
+				fieldDef["required"] = true
+			}
+			properties[field.Key] = fieldDef
+		}
+		manualInputs = map[string]interface{}{
+			"type":       "OBJECT",
+			"properties": properties,
+		}
+	}
+
 	// Acquire read lock to ensure pool doesn't change during execution
 	e.mu.RLock()
 	currentPool := e.pool
 	e.mu.RUnlock()
 
 	// Execute with timeout
-	result, err := e.executeWithTimeoutOnPool(ctx, currentPool, &jsConfig, input, schema)
+	result, err := e.executeWithTimeoutOnPool(ctx, currentPool, &jsConfig, input, schema, manualInputs)
 	if err != nil {
 		// Handle JSError types
 		jsErr, ok := err.(*JSError)
@@ -116,7 +135,7 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 }
 
 // executeWithTimeoutOnPool executes JavaScript code with timeout and interrupt handling on a specific pool
-func (e *Executor) executeWithTimeoutOnPool(ctx context.Context, pool *VMPool, config *Config, input map[string]interface{}, schema map[string]interface{}) (result interface{}, err error) {
+func (e *Executor) executeWithTimeoutOnPool(ctx context.Context, pool *VMPool, config *Config, input map[string]interface{}, schema map[string]interface{}, manualInputs map[string]interface{}) (result interface{}, err error) {
 	// Recover from panics in script execution
 	defer func() {
 		if r := recover(); r != nil {
@@ -164,16 +183,26 @@ func (e *Executor) executeWithTimeoutOnPool(ctx context.Context, pool *VMPool, c
 		return nil, fmt.Errorf("failed to set input: %w", err)
 	}
 
-	// Inject schema into the VM if provided
-	if schema != nil {
+	// Inject schema or manual inputs into the VM (mutually exclusive)
+	if manualInputs != nil {
+		// Manual inputs take precedence - inject as inputSchema
+		if err := vm.vm.Set("inputSchema", manualInputs); err != nil {
+			return nil, fmt.Errorf("failed to set inputSchema: %w", err)
+		}
+	} else if schema != nil {
+		// Only inject schema if manual inputs are not provided
 		if err := vm.vm.Set("schema", schema); err != nil {
 			return nil, fmt.Errorf("failed to set schema: %w", err)
 		}
 	}
 
+	// Wrap script in IIFE to create a new scope and prevent variable conflicts
+	// This ensures const/let declarations don't persist across VM reuses
+	wrappedScript := "(function() {\n" + config.Script + "\n})()"
+
 	// Execute the script
 	startTime := time.Now()
-	value, err := vm.vm.RunString(config.Script)
+	value, err := vm.vm.RunString(wrappedScript)
 	executionTime := time.Since(startTime)
 
 	if err != nil {
@@ -279,7 +308,7 @@ func (e *Executor) ExecuteScript(ctx context.Context, script string, input map[s
 	currentPool := e.pool
 	e.mu.RUnlock()
 
-	return e.executeWithTimeoutOnPool(ctx, currentPool, &config, input, nil)
+	return e.executeWithTimeoutOnPool(ctx, currentPool, &config, input, nil, nil)
 }
 
 // CompileScript compiles a script without executing it (useful for validation)

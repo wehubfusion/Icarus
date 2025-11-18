@@ -15,9 +15,18 @@ func executeFormat(input []byte, params FormatParams) ([]byte, error) {
 		return nil, NewInputError("", fmt.Sprintf("failed to parse input JSON: %v", err))
 	}
 
+	// Check if input is empty
+	if len(inputData) == 0 {
+		return nil, NewInputError("", "input data is empty - no fields provided. The date formatter requires a 'data' field with a date string")
+	}
+
 	// Extract date string from "data" field
 	dateStr, ok := inputData["data"].(string)
 	if !ok {
+		// Check if "data" field exists but is not a string
+		if _, exists := inputData["data"]; exists {
+			return nil, NewInputError("data", fmt.Sprintf("'data' field must be a string value, got: %T", inputData["data"]))
+		}
 		return nil, NewInputError("data", "input must contain a 'data' field with a string value")
 	}
 

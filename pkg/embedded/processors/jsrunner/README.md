@@ -17,9 +17,13 @@ The JSRunner processor enables execution of JavaScript code within embedded node
 {
   "script": "// Your JavaScript code here",
   "schema_id": "user-schema",
-  "timeout": 5000,
-  "enabled_utilities": ["console", "json"],
-  "security_level": "standard"
+  "inputs": [
+    {"key": "name", "type": "STRING", "required": true},
+    {"key": "age", "type": "NUMBER", "required": false}
+  ],
+  "timeout": 20000,
+  "enabled_utilities": ["json"],
+  "security_level": "strict"
 }
 ```
 
@@ -30,10 +34,11 @@ The JSRunner processor enables execution of JavaScript code within embedded node
 | `script` | string | Yes | - | JavaScript code to execute |
 | `schema_id` | string | No | - | Reference to schema in Morpheus (enriched by Elysium) |
 | `schema` | object | No | - | Full schema definition (injected by enrichment) |
-| `timeout` | number | No | 5000 | Maximum execution time in milliseconds |
-| `enabled_utilities` | array | No | `["console", "json"]` | Available utilities in JavaScript |
-| `security_level` | string | No | `"standard"` | Security level: strict, standard, or permissive |
-| `memory_limit_mb` | number | No | 50 | Memory limit (informational) |
+| `inputs` | array | No | - | Manual input field definitions. Each field should have `key`, `type`, and optionally `required`. Alternative to schema. |
+| `timeout` | number | No | 20000 | Maximum execution time in milliseconds |
+| `enabled_utilities` | array | No | `["json"]` | Available utilities in JavaScript |
+| `security_level` | string | No | `"strict"` | Security level: strict, standard, or permissive |
+| `memory_limit_mb` | number | No | 80 | Memory limit (informational) |
 | `max_stack_depth` | number | No | 100 | Maximum call stack depth |
 | `allow_network_access` | boolean | No | false | Enable network utilities (requires permissive mode) |
 
@@ -63,6 +68,8 @@ var userAge = input.age;
 
 The input schema definition, enriched from Morpheus by Elysium. Available when `schema_id` is specified in the configuration.
 
+**Note:** `schema` and `inputs` are mutually exclusive. If `inputs` is provided, `schema` will not be available.
+
 ```javascript
 // Access schema properties
 var fields = Object.keys(schema.properties);
@@ -80,6 +87,47 @@ for (var key in schema.properties) {
   
   if (field.required && value === undefined) {
     errors.push("Missing required field: " + key);
+  }
+}
+```
+
+#### `inputSchema` (when manual inputs are provided)
+
+When `inputs` are defined in the configuration, they are available as `inputSchema` in JavaScript. This provides a schema-like structure based on your manual input definitions.
+
+**Note:** `inputSchema` and `schema` are mutually exclusive. If `inputs` is provided, `schema` will not be available.
+
+```javascript
+// Access manual input definitions
+if (typeof inputSchema !== 'undefined') {
+  var fields = Object.keys(inputSchema.properties);
+  
+  // Check field types
+  for (var key in inputSchema.properties) {
+    var fieldType = inputSchema.properties[key].type;
+    console.log("Field " + key + " has type " + fieldType);
+  }
+  
+  // Use inputSchema for validation
+  var errors = [];
+  for (var key in inputSchema.properties) {
+    var field = inputSchema.properties[key];
+    var value = input[key];
+    
+    // Check required fields
+    if (field.required && value === undefined) {
+      errors.push("Missing required field: " + key);
+    }
+    
+    // Basic type checking
+    if (value !== undefined) {
+      if (field.type === "NUMBER" && typeof value !== "number") {
+        errors.push(key + " must be a number");
+      }
+      if (field.type === "STRING" && typeof value !== "string") {
+        errors.push(key + " must be a string");
+      }
+    }
   }
 }
 ```
@@ -372,8 +420,8 @@ JSRunner uses VM pooling to reuse JavaScript execution contexts:
 
 ### Security Levels
 
-- **strict**: Minimal utilities, maximum restrictions
-- **standard** (default): Balanced security and functionality
+- **strict** (default): Minimal utilities, maximum restrictions
+- **standard**: Balanced security and functionality
 - **permissive**: More utilities, including network access
 
 ### Sandboxing

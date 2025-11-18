@@ -80,4 +80,3 @@ func (r *ExecutorRegistry) RegisteredTypes() []string {
 	}
 	return types
 }
-
