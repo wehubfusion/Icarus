@@ -55,6 +55,17 @@ func (e *Executor) executeParse(input []byte, config Config) ([]byte, error) {
 		return nil, err
 	}
 
+	// If schema processing returns a map that only contains a nested "data" object,
+	// flatten it so downstream nodes can read the parsed payload from the root.
+	// This is a conservative compatibility measure for plans that map payloads
+	// into "/data" before parsing (avoids double-nesting in StandardOutput).
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(result, &parsed); err == nil && len(parsed) == 1 {
+		if inner, hasData := parsed["data"].(map[string]interface{}); hasData {
+			result, _ = json.Marshal(inner)
+		}
+	}
+
 	return result, nil
 }
 
@@ -87,7 +98,7 @@ func (e *Executor) executeProduce(input []byte, config Config) ([]byte, error) {
 
 	// Return as JSON object with base64 data
 	result := map[string]string{
-		"data":     encoded,
+		"result":   encoded,
 		"encoding": "base64",
 	}
 

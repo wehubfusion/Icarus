@@ -16,14 +16,23 @@ func NewRegistry() *embedded.ExecutorRegistry {
 	// Register strings executor
 	registry.Register(strings.NewExecutor())
 
-	// Register JavaScript runner executor
-	registry.Register(jsrunner.NewExecutor())
+	// Register JavaScript runner executor (with both new and legacy names)
+	jsRunnerExecutor := jsrunner.NewExecutor()
+	registry.Register(jsRunnerExecutor)
+	// Also register with legacy name for backward compatibility
+	registry.RegisterWithName(jsRunnerExecutor, "plugin-js")
 
-	// Register JSON operations executor
-	registry.Register(jsonops.NewExecutor())
+	// Register JSON operations executor (with both new and legacy names)
+	jsonOpsExecutor := jsonops.NewExecutor()
+	registry.Register(jsonOpsExecutor)
+	// Also register with legacy name for backward compatibility
+	registry.RegisterWithName(jsonOpsExecutor, "plugin-json-operations")
 
-	// Register date formatter executor
-	registry.Register(dateformatter.NewExecutor())
+	// Register date formatter executor (with both new and legacy names)
+	dateFormatterExecutor := dateformatter.NewExecutor()
+	registry.Register(dateFormatterExecutor)
+	// Also register with legacy name for backward compatibility
+	registry.RegisterWithName(dateFormatterExecutor, "plugin-dateformatter")
 
 	// Register simple condition executor
 	registry.Register(simplecondition.NewExecutor())

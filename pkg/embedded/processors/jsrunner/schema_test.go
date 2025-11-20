@@ -363,7 +363,7 @@ func TestExecutor_SchemaEnrichment_Integration(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.True(t, output["valid"].(bool))
-		assert.NotNil(t, output["data"])
+		assert.NotNil(t, output["result"])
 	})
 
 	t.Run("Missing required field", func(t *testing.T) {

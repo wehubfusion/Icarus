@@ -25,8 +25,8 @@ func WrapSuccess(nodeID, pluginType string, execTime int64, output []byte) []byt
 			Success: true,
 			Error:   nil,
 		},
-		Error: nil,
-		Data:  data,
+		Error:  nil,
+		Result: data,
 	}
 
 	result, _ := json.Marshal(wrapped)
@@ -53,7 +53,7 @@ func WrapError(nodeID, pluginType string, execTime int64, err error) []byte {
 			Retryable: IsRetryable(err),
 			Details:   ExtractErrorDetails(err),
 		},
-		Data: nil,
+		Result: nil,
 	}
 
 	result, _ := json.Marshal(wrapped)
@@ -79,10 +79,9 @@ func WrapSkipped(nodeID, pluginType string, reason string) []byte {
 			Message:   reason,
 			Retryable: false,
 		},
-		Data: nil,
+		Result: nil,
 	}
 
 	result, _ := json.Marshal(wrapped)
 	return result
 }
-

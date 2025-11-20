@@ -60,8 +60,8 @@ func executeDateFormat(t *testing.T, executor *dateformatter.Executor, config, i
 	err = json.Unmarshal(result, &output)
 	require.NoError(t, err, "failed to unmarshal output")
 
-	dateStr, ok := output["data"].(string)
-	require.True(t, ok, "output data field should be a string")
+	dateStr, ok := output["result"].(string)
+	require.True(t, ok, "output result field should be a string")
 
 	return dateStr, nil
 }
@@ -721,7 +721,7 @@ func TestDateFormatter_InputValidation(t *testing.T) {
 		{
 			name:        "data field with wrong type",
 			input:       []byte(`{"data": 12345}`),
-			expectedErr: "input must contain a 'data' field with a string value",
+			expectedErr: "'data' field must be a string value",
 		},
 	}
 
@@ -909,4 +909,3 @@ func TestDateFormatter_EdgeCases(t *testing.T) {
 		})
 	}
 }
-

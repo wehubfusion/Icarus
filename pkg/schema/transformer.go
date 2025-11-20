@@ -13,6 +13,22 @@ func NewTransformer() *Transformer {
 // ApplyDefaults applies default values from schema to data
 // Only applies to fields that are missing (doesn't override existing values)
 func (t *Transformer) ApplyDefaults(data interface{}, schema *Schema) (interface{}, error) {
+	// Validate root data type matches schema type
+	if schema.Type == TypeArray {
+		if data == nil {
+			data = []interface{}{}
+		} else if _, ok := data.([]interface{}); !ok {
+			return nil, fmt.Errorf("schema type is ARRAY but data is %T, expected []interface{}", data)
+		}
+	} else if schema.Type == TypeObject {
+		if data == nil {
+			data = make(map[string]interface{})
+		} else if _, ok := data.(map[string]interface{}); !ok {
+			return nil, fmt.Errorf("schema type is OBJECT but data is %T, expected map[string]interface{}", data)
+		}
+	}
+	// Primitive types (STRING, NUMBER, etc.) pass through without validation
+
 	prop := &Property{
 		Type:       schema.Type,
 		Properties: schema.Properties,
@@ -87,6 +103,22 @@ func (t *Transformer) applyDefaultsToValue(data interface{}, prop *Property) (in
 // StructureData ensures data conforms to schema structure
 // Creates missing structures from schema and removes fields not defined in schema
 func (t *Transformer) StructureData(data interface{}, schema *Schema) (interface{}, error) {
+	// Validate root data type matches schema type
+	if schema.Type == TypeArray {
+		if data == nil {
+			data = []interface{}{}
+		} else if _, ok := data.([]interface{}); !ok {
+			return nil, fmt.Errorf("schema type is ARRAY but data is %T, expected []interface{}", data)
+		}
+	} else if schema.Type == TypeObject {
+		if data == nil {
+			data = make(map[string]interface{})
+		} else if _, ok := data.(map[string]interface{}); !ok {
+			return nil, fmt.Errorf("schema type is OBJECT but data is %T, expected map[string]interface{}", data)
+		}
+	}
+	// Primitive types (STRING, NUMBER, etc.) pass through without validation
+
 	prop := &Property{
 		Type:       schema.Type,
 		Properties: schema.Properties,

@@ -32,7 +32,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 				"success": true,
 				"error":   nil,
 			},
-			"data": map[string]interface{}{
+			"result": map[string]interface{}{
 				"status_code": 200,
 				"payload":     "amqp message data",
 				"headers":     map[string]interface{}{"content-type": "application/json"},
@@ -52,7 +52,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "http-parent",
-						SourceEndpoint:       "payload", // Regular field - auto-resolves to data/payload
+						SourceEndpoint:       "payload", // Regular field in result namespace
 						DestinationEndpoints: []string{"data_value"},
 						IsEventTrigger:       false,
 					},
@@ -83,10 +83,10 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 		require.NoError(t, err)
 
 		// Check that the condition evaluated the mapped field
-		data := output["data"].(map[string]interface{})
+		data := output["result"].(map[string]interface{})
 		conditions := data["conditions"].(map[string]interface{})
 		hasPayload := conditions["has_payload"].(map[string]interface{})
-		
+
 		// The condition should have received "amqp message data" and evaluated it
 		assert.True(t, hasPayload["met"].(bool), "Condition should be met with parent payload")
 		assert.Equal(t, "amqp message data", hasPayload["actual_value"], "Should have received parent payload")
@@ -102,7 +102,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			"_events": map[string]interface{}{
 				"success": true,
 			},
-			"data": map[string]interface{}{
+			"result": map[string]interface{}{
 				"response": map[string]interface{}{
 					"user": map[string]interface{}{
 						"email": "test@example.com",
@@ -123,7 +123,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "parent",
-						SourceEndpoint:       "response/user/email", // Nested path - auto-resolves to data/response/user/email
+						SourceEndpoint:       "response/user/email", // Nested path in result namespace
 						DestinationEndpoints: []string{"user_email"},
 						IsEventTrigger:       false,
 					},
@@ -146,10 +146,10 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 		// Verify email was correctly mapped
 		var output map[string]interface{}
 		json.Unmarshal(results[0].Output, &output)
-		data := output["data"].(map[string]interface{})
+		data := output["result"].(map[string]interface{})
 		conditions := data["conditions"].(map[string]interface{})
 		hasEmail := conditions["has_email"].(map[string]interface{})
-		
+
 		assert.True(t, hasEmail["met"].(bool))
 		assert.Equal(t, "test@example.com", hasEmail["actual_value"])
 	})
@@ -164,7 +164,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			"_events": map[string]interface{}{
 				"success": true,
 			},
-			"data": map[string]interface{}{
+			"result": map[string]interface{}{
 				"Assignment_Category":     "Employee",
 				"Hire_Date":               "2024-01-15",
 				"User_Assignment_Status":  "Active",
@@ -221,13 +221,13 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 		// If field mapping from parent works, both nodes will have "success" status
 		for i, result := range results {
 			assert.Equal(t, "success", result.Status, "Node %d (%s) should succeed with parent mapping", i, result.NodeID)
-			
+
 			// Verify output structure is valid StandardOutput
 			var output map[string]interface{}
 			err = json.Unmarshal(result.Output, &output)
 			require.NoError(t, err, "Node %d output should be valid JSON", i)
-			
-			_, hasData := output["data"]
+
+			_, hasData := output["result"]
 			assert.True(t, hasData, "Node %d output should have data namespace", i)
 		}
 	})
@@ -243,7 +243,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 				"success": true,
 				"error":   nil,
 			},
-			"data": map[string]interface{}{
+			"result": map[string]interface{}{
 				"result": "success",
 			},
 		}
@@ -296,7 +296,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 				"code":    "HTTP_TIMEOUT",
 				"message": "Request timed out",
 			},
-			"data": nil,
+			"result": nil,
 		}
 		parentOutputBytes, _ := json.Marshal(parentOutput)
 
@@ -342,11 +342,11 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 		var output map[string]interface{}
 		err = json.Unmarshal(results[0].Output, &output)
 		require.NoError(t, err)
-		
+
 		// Just verify the error message was successfully mapped (any non-empty value proves it worked)
-		data, hasData := output["data"]
+		data, hasData := output["result"]
 		assert.True(t, hasData, "Error handler output should have data")
-		
+
 		// Test passes if handler executed - detailed output structure depends on simplecondition implementation
 		_ = data
 	})
@@ -363,7 +363,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 				"success": true,
 				"error":   nil,
 			},
-			"data": map[string]interface{}{
+			"result": map[string]interface{}{
 				"payload":     `{"records": [{"id": 1, "name": "test"}]}`,
 				"message_id":  "msg-123",
 				"routing_key": "esr.user",
@@ -375,14 +375,14 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 		embeddedNodes := []message.EmbeddedNode{
 			{
 				NodeID:         "3f5b9695-8d82-484e-babd-8cd54a8631f6", // Actual embedded node ID from ep.json
-				PluginType:     "plugin-simple-condition",                // Using simplecondition for test (real would be json-operations)
+				PluginType:     "plugin-simple-condition",              // Using simplecondition for test (real would be json-operations)
 				Configuration:  []byte(`{"logic_operator": "AND", "conditions": [{"name": "has_payload", "field_path": "parsed_data", "operator": "is_not_empty"}]}`),
 				ExecutionOrder: 1,
 				Depth:          0,
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "07d21e5e-b8d6-40e2-881e-d1f6fe6e7d51", // Parent AMQP node
-						SourceEndpoint:       "payload",                               // ep.json line 31: "/payload"
+						SourceEndpoint:       "payload",                              // ep.json line 31: "/payload"
 						DestinationEndpoints: []string{"parsed_data"},
 						IsEventTrigger:       false,
 					},
@@ -407,63 +407,14 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 		// Verify payload was mapped from parent
 		var output map[string]interface{}
 		json.Unmarshal(results[0].Output, &output)
-		data := output["data"].(map[string]interface{})
+		data := output["result"].(map[string]interface{})
 		conditions := data["conditions"].(map[string]interface{})
 		hasPayload := conditions["has_payload"].(map[string]interface{})
-		
+
 		assert.True(t, hasPayload["met"].(bool))
 		assert.Contains(t, hasPayload["actual_value"], "records", "Should have received parent's payload field")
 	})
 
-	t.Run("Explicit data/ path prefix works", func(t *testing.T) {
-		parentOutput := map[string]interface{}{
-			"_meta": map[string]interface{}{
-				"status":  "success",
-				"node_id": "parent",
-			},
-			"_events": map[string]interface{}{
-				"success": true,
-			},
-			"data": map[string]interface{}{
-				"field1": "value1",
-			},
-		}
-		parentOutputBytes, _ := json.Marshal(parentOutput)
-
-		embeddedNodes := []message.EmbeddedNode{
-			{
-				NodeID:         "explicit-path-test",
-				PluginType:     "plugin-simple-condition",
-				Configuration:  []byte(`{"logic_operator": "AND", "conditions": [{"name": "check", "field_path": "mapped", "operator": "equals", "expected_value": "value1"}]}`),
-				ExecutionOrder: 1,
-				Depth:          0,
-				FieldMappings: []message.FieldMapping{
-					{
-						SourceNodeID:         "parent",
-						SourceEndpoint:       "data/field1", // Explicit data/ prefix
-						DestinationEndpoints: []string{"mapped"},
-						IsEventTrigger:       false,
-					},
-				},
-			},
-		}
-
-		msg := &message.Message{
-			Node:          &message.Node{NodeID: "parent"},
-			Workflow:      &message.Workflow{WorkflowID: "explicit-test", RunID: "explicit-run"},
-			EmbeddedNodes: embeddedNodes,
-		}
-
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputBytes)
-		require.NoError(t, err)
-		require.Len(t, results, 1)
-
-		assert.Equal(t, "success", results[0].Status)
-
-		var output map[string]interface{}
-		json.Unmarshal(results[0].Output, &output)
-		data := output["data"].(map[string]interface{})
-		assert.True(t, data["result"].(bool), "Condition should pass with explicit path")
-	})
+	// Test removed: result/ prefix is no longer stripped for backward compatibility
+	// Paths now navigate as-is in the extracted result, allowing fields named "result"
 }
-

@@ -35,7 +35,7 @@ func TestErrorEventIntegration(t *testing.T) {
 				"code":    "HTTP_TIMEOUT",
 				"message": "Request timed out after 30s",
 			},
-			"data": nil,
+			"result": nil,
 		}
 		parentOutputBytes, _ := json.Marshal(failedParentOutput)
 
@@ -120,7 +120,7 @@ func TestErrorEventIntegration(t *testing.T) {
 				"success": true, // Success event fires!
 				"error":   nil,
 			},
-			"data": map[string]interface{}{
+			"result": map[string]interface{}{
 				"status_code": 200,
 				"body":        "response data",
 			},
@@ -210,7 +210,7 @@ func TestErrorEventIntegration(t *testing.T) {
 				"message":   "Request timed out after 30 seconds",
 				"retryable": true,
 			},
-			"data": nil,
+			"result": nil,
 		}
 		parentOutputBytes, _ := json.Marshal(failedParentOutput)
 
@@ -296,7 +296,7 @@ func TestChainedErrorHandling(t *testing.T) {
 				"code":    "NETWORK_ERROR",
 				"message": "Connection refused",
 			},
-			"data": nil,
+			"result": nil,
 		}
 		parentOutputBytes, _ := json.Marshal(failedOutput)
 
@@ -383,7 +383,7 @@ func TestErrorMetadataAvailability(t *testing.T) {
 					"retry_after": 60,
 				},
 			},
-			"data": nil,
+			"result": nil,
 		}
 		parentOutputBytes, _ := json.Marshal(failedOutput)
 
@@ -440,8 +440,8 @@ func TestErrorMetadataAvailability(t *testing.T) {
 		require.NoError(t, err)
 
 		// The condition should have evaluated the retryable field
-		if data, ok := output["data"].(map[string]interface{}); ok {
-			if conditions, ok := data["conditions"].(map[string]interface{}); ok {
+		if result, ok := output["result"].(map[string]interface{}); ok {
+			if conditions, ok := result["conditions"].(map[string]interface{}); ok {
 				if isRetryable, ok := conditions["is_retryable"].(map[string]interface{}); ok {
 					assert.True(t, isRetryable["met"].(bool), "Retryable condition should be met")
 				}

@@ -102,7 +102,7 @@ Produce validates JSON data against a schema, removes extra fields, encodes to b
 **Output:**
 ```json
 {
-  "data": "eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJhZ2UiOjMwLCJzdGF0dXMiOiJhY3RpdmUifQ==",
+  "result": "eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJhZ2UiOjMwLCJzdGF0dXMiOiJhY3RpdmUifQ==",
   "encoding": "base64"
 }
 ```
@@ -277,7 +277,7 @@ The processor uses the Icarus schema format. See [Olympus SCHEMA.md](../../../..
 **Output (structured and encoded):**
 ```json
 {
-  "data": "eyJ1c2VySWQiOjEyMywiZW1haWwiOiJqb2huQGV4YW1wbGUuY29tIn0=",
+  "result": "eyJ1c2VySWQiOjEyMywiZW1haWwiOiJqb2huQGV4YW1wbGUuY29tIn0=",
   "encoding": "base64"
 }
 ```

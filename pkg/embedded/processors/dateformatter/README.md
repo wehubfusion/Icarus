@@ -98,7 +98,7 @@ The dateformatter expects JSON input with a `data` field containing the date str
 
 ```json
 {
-  "data": "2024-11-13T14:30:00Z"
+  "result": "2024-11-13T14:30:00Z"
 }
 ```
 
@@ -108,7 +108,7 @@ The dateformatter returns JSON output with a `data` field containing the formatt
 
 ```json
 {
-  "data": "2024-11-13 14:30:00"
+  "result": "2024-11-13 14:30:00"
 }
 ```
 
@@ -118,7 +118,7 @@ The dateformatter returns JSON output with a `data` field containing the formatt
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ Input JSON: {"data": "2024-11-13T14:30:00Z"}                   │
+│ Input JSON: {"result": "2024-11-13T14:30:00Z"}                   │
 └────────────────────────┬────────────────────────────────────────┘
                          │
                          ▼
@@ -147,7 +147,7 @@ The dateformatter returns JSON output with a `data` field containing the formatt
                      │
                      ▼
 ┌────────────────────────────────────────────────────────────────┐
-│ Output JSON: {"data": "11-13-2024 09:30:00 AM"}                │
+│ Output JSON: {"result": "11-13-2024 09:30:00 AM"}                │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -190,14 +190,14 @@ Convert dates between formats with optional timezone transformation and style cu
 **Input:**
 ```json
 {
-  "data": "2024-11-13T14:30:00Z"
+  "result": "2024-11-13T14:30:00Z"
 }
 ```
 
 **Output:**
 ```json
 {
-  "data": "11-13-2024 09:30:00 AM"
+  "result": "11-13-2024 09:30:00 AM"
 }
 ```
 
@@ -328,14 +328,14 @@ Convert RFC3339 to human-readable DateTime format:
 **Input:**
 ```json
 {
-  "data": "2024-11-13T14:30:00Z"
+  "result": "2024-11-13T14:30:00Z"
 }
 ```
 
 **Output:**
 ```json
 {
-  "data": "2024-11-13 14:30:00"
+  "result": "2024-11-13 14:30:00"
 }
 ```
 
@@ -361,14 +361,14 @@ Convert UTC time to New York time:
 **Input:**
 ```json
 {
-  "data": "2024-11-13T14:30:00Z"
+  "result": "2024-11-13T14:30:00Z"
 }
 ```
 
 **Output:**
 ```json
 {
-  "data": "2024-11-13T09:30:00-05:00"
+  "result": "2024-11-13T09:30:00-05:00"
 }
 ```
 
@@ -394,14 +394,14 @@ Format with US-style date (MM-DD-YYYY) and 12-hour time:
 **Input:**
 ```json
 {
-  "data": "2024-11-13T14:30:00Z"
+  "result": "2024-11-13T14:30:00Z"
 }
 ```
 
 **Output:**
 ```json
 {
-  "data": "11-13-2024 02:30:00 PM"
+  "result": "11-13-2024 02:30:00 PM"
 }
 ```
 
@@ -426,14 +426,14 @@ Extract just the date from a full timestamp:
 **Input:**
 ```json
 {
-  "data": "2024-11-13T14:30:00Z"
+  "result": "2024-11-13T14:30:00Z"
 }
 ```
 
 **Output:**
 ```json
 {
-  "data": "13/11/2024"
+  "result": "13/11/2024"
 }
 ```
 
@@ -458,14 +458,14 @@ Extract just the time in 12-hour format:
 **Input:**
 ```json
 {
-  "data": "2024-11-13T14:30:00Z"
+  "result": "2024-11-13T14:30:00Z"
 }
 ```
 
 **Output:**
 ```json
 {
-  "data": "02:30 PM"
+  "result": "02:30 PM"
 }
 ```
 
@@ -493,14 +493,14 @@ Convert from Tokyo time to London time:
 **Input:**
 ```json
 {
-  "data": "2024-11-13 23:30:00"
+  "result": "2024-11-13 23:30:00"
 }
 ```
 
 **Output:**
 ```json
 {
-  "data": "13-11-2024 14:30:00"
+  "result": "13-11-2024 14:30:00"
 }
 ```
 
@@ -535,14 +535,14 @@ Convert from Tokyo time to London time:
 **Input from HTTP request:**
 ```json
 {
-  "data": "2024-11-13T14:30:00Z"
+  "result": "2024-11-13T14:30:00Z"
 }
 ```
 
 **Output (formatted for Pacific time):**
 ```json
 {
-  "data": "11/13/2024 06:30 AM"
+  "result": "11/13/2024 06:30 AM"
 }
 ```
 

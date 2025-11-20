@@ -588,7 +588,7 @@ Success callbacks contain:
   },
   "payload": {
     "source": "processor",
-    "data": "Processing completed successfully",
+    "result": "Processing completed successfully",
     "reference": "result-ref"
   },
   "metadata": {
@@ -609,7 +609,7 @@ Error callbacks contain:
   },
   "payload": {
     "source": "callback-service",
-    "data": "Processing failed: connection timeout",
+    "result": "Processing failed: connection timeout",
     "reference": "error-workflow-123-run-456"
   },
   "metadata": {
@@ -1190,7 +1190,7 @@ All nodes (parent and embedded) output a standardized structure with reserved na
     "message": "Error description",
     "retryable": true|false
   },
-  "data": {
+  "result": {
     "... actual plugin output ..."
   }
 }
@@ -1201,7 +1201,7 @@ All nodes (parent and embedded) output a standardized structure with reserved na
 - **`_meta`**: Execution metadata (status, timing, node information)
 - **`_events`**: Event endpoints for routing (success/error events)
 - **`_error`**: Detailed error information (only present on failure)
-- **`data`**: Actual plugin output data (null on error)
+- **`result`**: Actual plugin output result (null on error)
 
 ### Error Events
 

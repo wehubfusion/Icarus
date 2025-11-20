@@ -26,7 +26,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				"success": true,
 				"error":   nil,
 			},
-			"data": map[string]interface{}{
+			"result": map[string]interface{}{
 				"result": false,
 				"true":   nil,   // Event NOT fired (null)
 				"false":  true,
@@ -54,7 +54,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "parent-node",
-						SourceEndpoint:       "data/true",  // Path to event in data namespace
+						SourceEndpoint:       "true",  // Path to event (no data/ prefix needed)
 						DestinationEndpoints: []string{"conditional-node"},
 						DataType:             "EVENT",
 						IsEventTrigger:       true,
@@ -94,7 +94,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				"success": true,
 				"error":   nil,
 			},
-			"data": map[string]interface{}{
+			"result": map[string]interface{}{
 				"trigger": false,  // Boolean false
 			},
 		}
@@ -158,7 +158,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				"success": true,
 				"error":   nil,
 			},
-			"data": map[string]interface{}{
+			"result": map[string]interface{}{
 				"trigger": "",  // Empty string
 			},
 		}
@@ -183,7 +183,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "parent-node",
-						SourceEndpoint:       "data/trigger",  // Path to event in data namespace
+						SourceEndpoint:       "trigger",  // Path to event (no data/ prefix needed)
 						DestinationEndpoints: []string{"conditional-node"},
 						DataType:             "EVENT",
 						IsEventTrigger:       true,
@@ -222,7 +222,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				"success": true,
 				"error":   nil,
 			},
-			"data": map[string]interface{}{
+			"result": map[string]interface{}{
 				"other": "data",
 			},
 		}
@@ -247,7 +247,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "parent-node",
-						SourceEndpoint:       "data/missing",  // Path to missing field in data namespace
+						SourceEndpoint:       "missing",  // Path to missing field (no data/ prefix needed)
 						DestinationEndpoints: []string{"conditional-node"},
 						DataType:             "EVENT",
 						IsEventTrigger:       true,
@@ -336,7 +336,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				"success": true,
 				"error":   nil,
 			},
-			"data": map[string]interface{}{
+			"result": map[string]interface{}{
 				"trigger": true,  // Truthy value
 				"value":   "test",
 			},
@@ -362,14 +362,14 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "parent-node",
-						SourceEndpoint:       "data/trigger",  // Path to truthy event
+						SourceEndpoint:       "trigger",  // Path to truthy event (no data/ prefix needed)
 						DestinationEndpoints: []string{"conditional-node"},
 						DataType:             "EVENT",
 						IsEventTrigger:       true,
 					},
 					{
 						SourceNodeID:         "parent-node",
-						SourceEndpoint:       "data/value",  // Path to field in data namespace
+						SourceEndpoint:       "value",  // Path to field (no data/ prefix needed)
 						DestinationEndpoints: []string{"/value"},
 						DataType:             "FIELD",
 						IsEventTrigger:       false,

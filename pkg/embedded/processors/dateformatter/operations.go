@@ -24,13 +24,19 @@ func executeFormat(input []byte, params FormatParams) ([]byte, error) {
 	dateStr, ok := inputData["data"].(string)
 	if !ok {
 		// Check if "data" field exists but is not a string
-		if _, exists := inputData["data"]; exists {
+		if dataVal, exists := inputData["data"]; exists {
+			// Handle nil or empty data gracefully
+			if dataVal == nil {
+				return nil, NewInputError("data", "'data' field cannot be null")
+			}
 			return nil, NewInputError("data", fmt.Sprintf("'data' field must be a string value, got: %T", inputData["data"]))
 		}
-		return nil, NewInputError("data", "input must contain a 'data' field with a string value")
+		// No data field - error
+		return nil, NewInputError("", "input must contain a 'data' field with a string value")
 	}
 
 	if dateStr == "" {
+		// Empty date string - error
 		return nil, NewInputError("data", "date string cannot be empty")
 	}
 
@@ -61,7 +67,7 @@ func executeFormat(input []byte, params FormatParams) ([]byte, error) {
 
 	// Build output JSON
 	output := map[string]interface{}{
-		"data": formattedDate,
+		"result": formattedDate,
 	}
 
 	result, err := json.Marshal(output)
@@ -156,7 +162,7 @@ func FormatDateWithTimezone(dateStr, inFormat, inTZ, outFormat, outTZ string) (s
 		return "", fmt.Errorf("failed to unmarshal output: %w", err)
 	}
 
-	formattedDate, ok := result["data"].(string)
+	formattedDate, ok := result["result"].(string)
 	if !ok {
 		return "", fmt.Errorf("unexpected output format")
 	}

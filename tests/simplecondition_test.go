@@ -1023,7 +1023,7 @@ func TestSimpleCondition_PathExtraction(t *testing.T) {
 		},
 		{
 			name:          "array second element",
-			input:         `{"data": {"users": [{"id": 1}, {"id": 2}, {"id": 3}]}}`,
+			input:         `{"result": {"users": [{"id": 1}, {"id": 2}, {"id": 3}]}}`,
 			fieldPath:     "data.users.2.id",
 			operator:      "equals",
 			expectedValue: float64(3),

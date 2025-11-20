@@ -267,10 +267,10 @@ func TestProduceOperation_ValidInput(t *testing.T) {
 		t.Errorf("Expected encoding to be 'base64', got %v", result["encoding"])
 	}
 
-	// Decode base64 data
-	encodedData, ok := result["data"].(string)
+	// Decode base64 result
+	encodedData, ok := result["result"].(string)
 	if !ok {
-		t.Fatal("Expected data field to be string")
+		t.Fatal("Expected result field to be string")
 	}
 
 	decodedBytes, err := base64.StdEncoding.DecodeString(encodedData)
@@ -317,8 +317,8 @@ func TestProduceOperation_WithPretty(t *testing.T) {
 	var result map[string]interface{}
 	json.Unmarshal(output, &result)
 
-	// Decode base64 data
-	encodedData := result["data"].(string)
+	// Decode base64 result
+	encodedData := result["result"].(string)
 	decodedBytes, _ := base64.StdEncoding.DecodeString(encodedData)
 
 	// Check if pretty formatted (contains newlines)
@@ -356,7 +356,7 @@ func TestProduceOperation_StructureData(t *testing.T) {
 	json.Unmarshal(output, &result)
 
 	// Decode and verify
-	encodedData := result["data"].(string)
+	encodedData := result["result"].(string)
 	decodedBytes, _ := base64.StdEncoding.DecodeString(encodedData)
 
 	var decodedData map[string]interface{}

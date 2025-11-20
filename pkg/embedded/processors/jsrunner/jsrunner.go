@@ -4,12 +4,38 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/dop251/goja"
 	"github.com/wehubfusion/Icarus/pkg/embedded"
 )
+
+var returnKeywordRegex = regexp.MustCompile(`\breturn\b`)
+
+// containsReturn checks if the script contains a return statement
+func containsReturn(script string) bool {
+	return returnKeywordRegex.MatchString(script)
+}
+
+// Helper function to get map keys
+func getKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// Helper function to truncate string
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
 
 // Executor implements the NodeExecutor interface for JavaScript execution
 type Executor struct {
@@ -183,6 +209,20 @@ func (e *Executor) executeWithTimeoutOnPool(ctx context.Context, pool *VMPool, c
 		return nil, fmt.Errorf("failed to set input: %w", err)
 	}
 
+	// DEBUG: Log input data structure
+	inputJSON, _ := json.Marshal(input)
+	fmt.Printf("[JSRUNNER DEBUG] Input keys: %v\n", getKeys(input))
+	fmt.Printf("[JSRUNNER DEBUG] Input JSON (first 500 chars): %s\n", truncate(string(inputJSON), 500))
+	if assignmentVal, ok := input["Assignment"]; ok {
+		if arr, isArr := assignmentVal.([]interface{}); isArr {
+			fmt.Printf("[JSRUNNER DEBUG] Assignment array length: %d\n", len(arr))
+		} else {
+			fmt.Printf("[JSRUNNER DEBUG] Assignment is not an array: %T\n", assignmentVal)
+		}
+	} else {
+		fmt.Printf("[JSRUNNER DEBUG] No Assignment key in input\n")
+	}
+
 	// Inject schema or manual inputs into the VM (mutually exclusive)
 	if manualInputs != nil {
 		// Manual inputs take precedence - inject as inputSchema
@@ -196,9 +236,20 @@ func (e *Executor) executeWithTimeoutOnPool(ctx context.Context, pool *VMPool, c
 		}
 	}
 
-	// Wrap script in IIFE to create a new scope and prevent variable conflicts
-	// This ensures const/let declarations don't persist across VM reuses
-	wrappedScript := "(function() {\n" + config.Script + "\n})()"
+	// Wrap script in IIFE for isolated scope. Two patterns:
+	// 1. Scripts with explicit `return` or statements: wrap as-is
+	// 2. Single expression scripts: prepend `return` so they return the value
+	// Strategy: if no return keyword and no semicolons/newlines suggesting statements,
+	// treat as expression and add return; otherwise wrap as-is.
+	var wrappedScript string
+	trimmed := strings.TrimSpace(config.Script)
+	if !containsReturn(trimmed) && !strings.Contains(trimmed, ";") && !strings.Contains(trimmed, "\n") {
+		// Single expression - add explicit return
+		wrappedScript = "(function() { return " + config.Script + "; })()"
+	} else {
+		// Multi-statement or has return - wrap as-is
+		wrappedScript = "(function() {\n" + config.Script + "\n})()"
+	}
 
 	// Execute the script
 	startTime := time.Now()

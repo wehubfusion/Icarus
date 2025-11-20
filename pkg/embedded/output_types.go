@@ -8,7 +8,7 @@ type StandardOutput struct {
 	Meta   MetaData       `json:"_meta"`
 	Events EventEndpoints `json:"_events"`
 	Error  *ErrorInfo     `json:"_error,omitempty"`
-	Data   interface{}    `json:"data"`
+	Result interface{}    `json:"result"`
 }
 
 // MetaData contains metadata about the node execution
@@ -34,4 +34,3 @@ type ErrorInfo struct {
 	Retryable bool                   `json:"retryable"` // Whether the error is transient and retryable
 	Details   map[string]interface{} `json:"details,omitempty"`
 }
-

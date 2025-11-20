@@ -38,7 +38,7 @@ func TestJSONOps_Parse(t *testing.T) {
 		},
 		{
 			name:  "extract nested paths",
-			input: `{"data": {"items": [{"id": 1, "name": "Item 1"}, {"id": 2, "name": "Item 2"}]}}`,
+			input: `{"result": {"items": [{"id": 1, "name": "Item 1"}, {"id": 2, "name": "Item 2"}]}}`,
 			paths: map[string]string{
 				"firstItem": "data.items.0",
 				"firstName": "data.items.0.name",
@@ -62,9 +62,9 @@ func TestJSONOps_Parse(t *testing.T) {
 		},
 		{
 			name:  "support slash notation",
-			input: `{"data": {"user": {"profile": {"email": "alice@example.com"}}}}`,
+			input: `{"result": {"user": {"profile": {"email": "alice@example.com"}}}}`,
 			paths: map[string]string{
-				"email": "/data/user/profile/email",
+				"email": "/result/user/profile/email",
 			},
 			expected: map[string]interface{}{
 				"email": "alice@example.com",

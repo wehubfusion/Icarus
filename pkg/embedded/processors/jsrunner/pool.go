@@ -17,6 +17,7 @@ type VMPool struct {
 	config        *Config
 	minSize       int
 	maxSize       int
+	maxReuseCount int
 	currentSize   int32
 	totalCreated  int64
 	totalAcquired int64
@@ -69,12 +70,13 @@ func NewVMPool(config *Config, poolConfig PoolConfig) (*VMPool, error) {
 	}
 
 	pool := &VMPool{
-		pool:         make(chan *PooledVM, poolConfig.MaxSize),
-		utilRegistry: NewUtilityRegistry(),
-		config:       config,
-		minSize:      poolConfig.MinSize,
-		maxSize:      poolConfig.MaxSize,
-		currentSize:  0,
+		pool:          make(chan *PooledVM, poolConfig.MaxSize),
+		utilRegistry:  NewUtilityRegistry(),
+		config:        config,
+		minSize:       poolConfig.MinSize,
+		maxSize:       poolConfig.MaxSize,
+		maxReuseCount: poolConfig.MaxReuseCount,
+		currentSize:   0,
 	}
 
 	// Pre-create minimum number of VMs
@@ -107,7 +109,28 @@ func (p *VMPool) Acquire(ctx context.Context) (*PooledVM, error) {
 			// Pool was closed
 			return nil, fmt.Errorf("pool is closed")
 		}
-		// Got a VM from pool
+
+		// If VM is nil or has been destroyed, create a new one
+		if vm == nil || vm.vm == nil {
+			newVM, err := p.createVM()
+			if err != nil {
+				return nil, fmt.Errorf("failed to create VM: %w", err)
+			}
+			return newVM, nil
+		}
+
+		// Quick health check: ensure VM is usable
+		if !p.isVMHealthy(vm) {
+			// Destroy the unhealthy VM and replace it
+			p.destroyVM(vm)
+			newVM, err := p.createVM()
+			if err != nil {
+				return nil, fmt.Errorf("failed to recreate VM: %w", err)
+			}
+			return newVM, nil
+		}
+
+		// Got a healthy VM from pool
 		vm.lastUsedAt = time.Now()
 		vm.reuseCount++
 
@@ -144,10 +167,21 @@ func (p *VMPool) Acquire(ctx context.Context) (*PooledVM, error) {
 				// Pool was closed
 				return nil, fmt.Errorf("pool is closed")
 			}
+
+			if vm == nil || vm.vm == nil || !p.isVMHealthy(vm) {
+				if vm != nil {
+					p.destroyVM(vm)
+				}
+				newVM, err := p.createVM()
+				if err != nil {
+					return nil, fmt.Errorf("failed to recreate VM: %w", err)
+				}
+				return newVM, nil
+			}
+
 			vm.lastUsedAt = time.Now()
 			vm.reuseCount++
 
-			// Check if VM needs to be recreated due to reuse count
 			if vm.reuseCount >= vm.maxReuseCount {
 				p.destroyVM(vm)
 				newVM, err := p.createVM()
@@ -178,8 +212,26 @@ func (p *VMPool) Release(vm *PooledVM) error {
 
 	// Reset VM state before returning to pool
 	if err := p.resetVM(vm); err != nil {
-		// If reset fails, destroy the VM
+		// If reset fails, destroy the VM and attempt to replace it to preserve pool capacity
 		p.destroyVM(vm)
+
+		// Try to create a replacement VM and return it to the pool
+		p.mu.Lock()
+		closed := p.closed
+		p.mu.Unlock()
+
+		if !closed {
+			if replacement, createErr := p.createVM(); createErr == nil {
+				// Try to return replacement to pool (best-effort)
+				select {
+				case p.pool <- replacement:
+				default:
+					// Pool full - destroy replacement
+					p.destroyVM(replacement)
+				}
+			}
+		}
+
 		return fmt.Errorf("failed to reset VM: %w", err)
 	}
 
@@ -213,7 +265,7 @@ func (p *VMPool) createVM() (*PooledVM, error) {
 		createdAt:     time.Now(),
 		lastUsedAt:    time.Now(),
 		reuseCount:    0,
-		maxReuseCount: 1000, // Can be made configurable
+		maxReuseCount: p.maxReuseCount,
 	}
 
 	atomic.AddInt32(&p.currentSize, 1)
@@ -253,18 +305,26 @@ func (p *VMPool) resetVM(vm *PooledVM) error {
 		})()
 	`
 
-	// Access VM with read lock (VM might be accessed by interrupt goroutine)
+	// First cleanup utilities to stop timers and background tasks that may reference the VM
 	vm.mu.RLock()
-	_, err := vm.vm.RunString(resetScript)
+	if vm.vm != nil {
+		if err := p.utilRegistry.CleanupEnabled(vm.vm, p.config); err != nil {
+			vm.mu.RUnlock()
+			return fmt.Errorf("failed to cleanup utilities: %w", err)
+		}
+	}
 	vm.mu.RUnlock()
 
-	if err != nil {
-		return fmt.Errorf("failed to run reset script: %w", err)
-	}
-
-	// Cleanup utilities FIRST to stop timers before they can reference the VM
-	if err := p.utilRegistry.CleanupEnabled(vm.vm, p.config); err != nil {
-		return fmt.Errorf("failed to cleanup utilities: %w", err)
+	// Then run a lightweight reset script to clear non-builtins
+	vm.mu.RLock()
+	if vm.vm != nil {
+		_, err := vm.vm.RunString(resetScript)
+		vm.mu.RUnlock()
+		if err != nil {
+			return fmt.Errorf("failed to run reset script: %w", err)
+		}
+	} else {
+		vm.mu.RUnlock()
 	}
 
 	return nil
@@ -278,7 +338,9 @@ func (p *VMPool) destroyVM(vm *PooledVM) {
 
 	// Cleanup utilities with read lock (utilities need the VM)
 	vm.mu.RLock()
-	_ = p.utilRegistry.CleanupEnabled(vm.vm, p.config)
+	if vm.vm != nil {
+		_ = p.utilRegistry.CleanupEnabled(vm.vm, p.config)
+	}
 	vm.mu.RUnlock()
 
 	// Clear the VM reference with write lock
@@ -287,6 +349,22 @@ func (p *VMPool) destroyVM(vm *PooledVM) {
 	vm.mu.Unlock()
 
 	atomic.AddInt32(&p.currentSize, -1)
+}
+
+// isVMHealthy performs a lightweight health check on a VM by evaluating a trivial expression.
+// It returns false if the VM is nil, destroyed or returns an error when executing the check script.
+func (p *VMPool) isVMHealthy(vm *PooledVM) bool {
+	if vm == nil {
+		return false
+	}
+	vm.mu.RLock()
+	if vm.vm == nil {
+		vm.mu.RUnlock()
+		return false
+	}
+	_, err := vm.vm.RunString("1+1")
+	vm.mu.RUnlock()
+	return err == nil
 }
 
 // Close closes the pool and destroys all VMs

@@ -21,15 +21,17 @@ type Processor struct {
 	fieldMapper *FieldMapper
 	concurrent  bool // Enable concurrent execution by depth
 	limiter     *concurrency.Limiter
+	logger      Logger
 }
 
 // NewProcessor creates a new embedded node processor with concurrent execution enabled by default
 func NewProcessor(registry *ExecutorRegistry) *Processor {
 	return &Processor{
 		registry:    registry,
-		fieldMapper: NewFieldMapper(),
+		fieldMapper: NewFieldMapper(nil),
 		concurrent:  true, // Enable concurrent execution by default
 		limiter:     nil,  // No limiter by default
+		logger:      &NoOpLogger{},
 	}
 }
 
@@ -37,9 +39,10 @@ func NewProcessor(registry *ExecutorRegistry) *Processor {
 func NewProcessorWithConfig(registry *ExecutorRegistry, concurrent bool) *Processor {
 	return &Processor{
 		registry:    registry,
-		fieldMapper: NewFieldMapper(),
+		fieldMapper: NewFieldMapper(nil),
 		concurrent:  concurrent,
 		limiter:     nil, // No limiter by default
+		logger:      &NoOpLogger{},
 	}
 }
 
@@ -47,9 +50,24 @@ func NewProcessorWithConfig(registry *ExecutorRegistry, concurrent bool) *Proces
 func NewProcessorWithLimiter(registry *ExecutorRegistry, concurrent bool, limiter *concurrency.Limiter) *Processor {
 	return &Processor{
 		registry:    registry,
-		fieldMapper: NewFieldMapper(),
+		fieldMapper: NewFieldMapper(nil),
 		concurrent:  concurrent,
 		limiter:     limiter,
+		logger:      &NoOpLogger{},
+	}
+}
+
+// NewProcessorWithLogger creates a new embedded node processor with logger support
+func NewProcessorWithLogger(registry *ExecutorRegistry, concurrent bool, limiter *concurrency.Limiter, logger Logger) *Processor {
+	if logger == nil {
+		logger = &NoOpLogger{}
+	}
+	return &Processor{
+		registry:    registry,
+		fieldMapper: NewFieldMapper(logger),
+		concurrent:  concurrent,
+		limiter:     limiter,
+		logger:      logger,
 	}
 }
 
@@ -163,13 +181,13 @@ func (p *Processor) ProcessEmbeddedNodesConcurrent(
 				// If limiter fails to acquire (circuit breaker open or context cancelled)
 				if err != nil {
 					wg.Done() // Balance the Add(1) above
-					
+
 					// Wrap limiter error
 					wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, 0, fmt.Errorf("limiter error: %w", err))
-					
+
 					// Store error output in registry
 					outputRegistry.Set(embNode.NodeID, wrappedOutput)
-					
+
 					result := EmbeddedNodeResult{
 						NodeID:               embNode.NodeID,
 						PluginType:           embNode.PluginType,
@@ -236,10 +254,10 @@ func (p *Processor) processNode(
 	if !shouldExecute {
 		// Event trigger conditions not met - skip this node
 		wrappedOutput := WrapSkipped(embNode.NodeID, embNode.PluginType, skipReason)
-		
+
 		// Store skipped output in registry for downstream nodes to reference
 		outputRegistry.Set(embNode.NodeID, wrappedOutput)
-		
+
 		return EmbeddedNodeResult{
 			NodeID:               embNode.NodeID,
 			PluginType:           embNode.PluginType,
@@ -274,14 +292,14 @@ func (p *Processor) processNode(
 		// Process array items using iteration package
 		itemResults, err := p.processArrayIteration(ctx, embNode, iterateArray, outputRegistry)
 		execTime := time.Since(startTime).Milliseconds()
-		
+
 		if err != nil {
 			// Record iteration failure - wrap error output
 			wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, fmt.Errorf("array iteration failed: %w", err))
-			
+
 			// ALWAYS store in registry (even errors)
 			outputRegistry.Set(embNode.NodeID, wrappedOutput)
-			
+
 			return EmbeddedNodeResult{
 				NodeID:               embNode.NodeID,
 				PluginType:           embNode.PluginType,
@@ -296,10 +314,10 @@ func (p *Processor) processNode(
 		// Aggregate item results into single output and wrap
 		aggregated, _ := json.Marshal(itemResults)
 		wrappedOutput := WrapSuccess(embNode.NodeID, embNode.PluginType, execTime, aggregated)
-		
+
 		// Store wrapped result in registry
 		outputRegistry.Set(embNode.NodeID, wrappedOutput)
-		
+
 		return EmbeddedNodeResult{
 			NodeID:               embNode.NodeID,
 			PluginType:           embNode.PluginType,
@@ -318,10 +336,10 @@ func (p *Processor) processNode(
 		// Field mapping failed - wrap error output
 		execTime := time.Since(startTime).Milliseconds()
 		wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, fmt.Errorf("field mapping failed: %w", err))
-		
+
 		// ALWAYS store in registry (even errors)
 		outputRegistry.Set(embNode.NodeID, wrappedOutput)
-		
+
 		return EmbeddedNodeResult{
 			NodeID:               embNode.NodeID,
 			PluginType:           embNode.PluginType,
@@ -331,6 +349,15 @@ func (p *Processor) processNode(
 			ExecutionOrder:       embNode.ExecutionOrder,
 			ProcessingDurationMs: execTime,
 		}
+	}
+
+	// Debug: Log mapped input for JS runner nodes
+	if embNode.PluginType == "plugin-js" || embNode.PluginType == "plugin-jsrunner" {
+		p.logger.Info("JS Runner input mapped",
+			Field{Key: "node_id", Value: embNode.NodeID},
+			Field{Key: "plugin_type", Value: embNode.PluginType},
+			Field{Key: "mapped_input", Value: string(mappedInput)},
+		)
 	}
 
 	// Create node configuration
@@ -346,11 +373,11 @@ func (p *Processor) processNode(
 	// Execute the node
 	nodeOutput, err := p.registry.Execute(ctx, nodeConfig)
 	execTime := time.Since(startTime).Milliseconds()
-	
+
 	var wrappedOutput []byte
 	status := "success"
 	errorMsg := ""
-	
+
 	if err != nil {
 		// Execution failed - wrap error output
 		wrappedOutput = WrapError(embNode.NodeID, embNode.PluginType, execTime, err)
@@ -360,10 +387,10 @@ func (p *Processor) processNode(
 		// Execution succeeded - wrap success output
 		wrappedOutput = WrapSuccess(embNode.NodeID, embNode.PluginType, execTime, nodeOutput)
 	}
-	
+
 	// ALWAYS store in registry (even errors)
 	outputRegistry.Set(embNode.NodeID, wrappedOutput)
-	
+
 	return EmbeddedNodeResult{
 		NodeID:               embNode.NodeID,
 		PluginType:           embNode.PluginType,

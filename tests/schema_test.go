@@ -1394,7 +1394,7 @@ func TestSchemaByteType(t *testing.T) {
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
-				"data": {
+				"result": {
 					Type:     schema.TypeByte,
 					Required: true,
 				},
@@ -1405,7 +1405,7 @@ func TestSchemaByteType(t *testing.T) {
 
 		// "Hello World" in base64
 		validData := map[string]interface{}{
-			"data": "SGVsbG8gV29ybGQ=",
+			"result": "SGVsbG8gV29ybGQ=",
 		}
 		result := validator.Validate(validData, schemaObj)
 		if !result.Valid {
@@ -1417,7 +1417,7 @@ func TestSchemaByteType(t *testing.T) {
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
-				"data": {
+				"result": {
 					Type:       schema.TypeByte,
 					Validation: &schema.ValidationRules{},
 				},
@@ -1427,7 +1427,7 @@ func TestSchemaByteType(t *testing.T) {
 		validator := schema.NewValidator()
 
 		invalidData := map[string]interface{}{
-			"data": "not-valid-base64!!!",
+			"result": "not-valid-base64!!!",
 		}
 		result := validator.Validate(invalidData, schemaObj)
 		if result.Valid {
@@ -1443,7 +1443,7 @@ func TestSchemaByteType(t *testing.T) {
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
-				"data": {
+				"result": {
 					Type: schema.TypeByte,
 					Validation: &schema.ValidationRules{
 						MinLength: &minLen,
@@ -1456,7 +1456,7 @@ func TestSchemaByteType(t *testing.T) {
 
 		// "Hello World" = 11 bytes - should pass
 		validData := map[string]interface{}{
-			"data": "SGVsbG8gV29ybGQ=",
+			"result": "SGVsbG8gV29ybGQ=",
 		}
 		result := validator.Validate(validData, schemaObj)
 		if !result.Valid {
@@ -1465,7 +1465,7 @@ func TestSchemaByteType(t *testing.T) {
 
 		// "Hi" = 2 bytes - should fail
 		invalidData := map[string]interface{}{
-			"data": "SGk=", // "Hi" in base64
+			"result": "SGk=", // "Hi" in base64
 		}
 		result = validator.Validate(invalidData, schemaObj)
 		if result.Valid {
@@ -1478,7 +1478,7 @@ func TestSchemaByteType(t *testing.T) {
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
-				"data": {
+				"result": {
 					Type: schema.TypeByte,
 					Validation: &schema.ValidationRules{
 						MaxLength: &maxLen,
@@ -1491,7 +1491,7 @@ func TestSchemaByteType(t *testing.T) {
 
 		// "Hi" = 2 bytes - should pass
 		validData := map[string]interface{}{
-			"data": "SGk=",
+			"result": "SGk=",
 		}
 		result := validator.Validate(validData, schemaObj)
 		if !result.Valid {
@@ -1500,7 +1500,7 @@ func TestSchemaByteType(t *testing.T) {
 
 		// "Hello World" = 11 bytes - should fail
 		invalidData := map[string]interface{}{
-			"data": "SGVsbG8gV29ybGQ=",
+			"result": "SGVsbG8gV29ybGQ=",
 		}
 		result = validator.Validate(invalidData, schemaObj)
 		if result.Valid {
@@ -1560,7 +1560,7 @@ func TestSchemaByteType(t *testing.T) {
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
-				"data": {
+				"result": {
 					Type: schema.TypeByte,
 				},
 			},
@@ -1570,7 +1570,7 @@ func TestSchemaByteType(t *testing.T) {
 
 		// URL-safe base64 (uses - and _ instead of + and /)
 		validData := map[string]interface{}{
-			"data": "SGVsbG8gV29ybGQ=", // Standard base64
+			"result": "SGVsbG8gV29ybGQ=", // Standard base64
 		}
 		result := validator.Validate(validData, schemaObj)
 		if !result.Valid {
@@ -1619,7 +1619,7 @@ func TestSchemaByteType(t *testing.T) {
 		schemaJSON := `{
 			"type": "OBJECT",
 			"properties": {
-				"data": {
+				"result": {
 					"type": "BYTE",
 					"validation": {
 						"pattern": "^[a-z]+$"
@@ -1687,7 +1687,7 @@ func TestSchemaByteType(t *testing.T) {
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
-				"data": {
+				"result": {
 					Type: schema.TypeByte,
 				},
 			},
@@ -1697,7 +1697,7 @@ func TestSchemaByteType(t *testing.T) {
 
 		// Byte slice should be valid
 		validData := map[string]interface{}{
-			"data": []byte("Hello World"),
+			"result": []byte("Hello World"),
 		}
 		result := validator.Validate(validData, schemaObj)
 		if !result.Valid {
@@ -1709,7 +1709,7 @@ func TestSchemaByteType(t *testing.T) {
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
-				"data": {
+				"result": {
 					Type: schema.TypeByte,
 				},
 			},
@@ -1718,7 +1718,7 @@ func TestSchemaByteType(t *testing.T) {
 		validator := schema.NewValidator()
 
 		invalidData := map[string]interface{}{
-			"data": 12345, // Number instead of string/bytes
+			"result": 12345, // Number instead of string/bytes
 		}
 		result := validator.Validate(invalidData, schemaObj)
 		if result.Valid {

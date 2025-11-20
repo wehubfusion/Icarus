@@ -3,18 +3,25 @@ package embedded
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
-	"github.com/tidwall/sjson"
 	"github.com/wehubfusion/Icarus/pkg/embedded/pathutil"
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
 // FieldMapper handles data flow between nodes within a unit
-type FieldMapper struct{}
+type FieldMapper struct {
+	logger Logger
+}
 
 // NewFieldMapper creates a new field mapper
-func NewFieldMapper() *FieldMapper {
-	return &FieldMapper{}
+func NewFieldMapper(logger Logger) *FieldMapper {
+	if logger == nil {
+		logger = &NoOpLogger{}
+	}
+	return &FieldMapper{
+		logger: logger,
+	}
 }
 
 // ApplyMappings applies field mappings from multiple source nodes to destination input
@@ -28,12 +35,14 @@ func (fm *FieldMapper) ApplyMappings(
 		return destinationInput, nil
 	}
 
-	// Parse destination input as JSON (or use empty object if invalid)
-	var destJSON string
+	// Parse destination input as JSON map (or use empty map if invalid)
+	var destMap map[string]interface{}
 	if len(destinationInput) > 0 && json.Valid(destinationInput) {
-		destJSON = string(destinationInput)
+		if err := json.Unmarshal(destinationInput, &destMap); err != nil {
+			return nil, fmt.Errorf("failed to parse destination input: %w", err)
+		}
 	} else {
-		destJSON = "{}"
+		destMap = make(map[string]interface{})
 	}
 
 	// Group mappings by source node ID for efficient processing
@@ -60,8 +69,17 @@ func (fm *FieldMapper) ApplyMappings(
 			sourceValue, exists := pathutil.NavigatePath(sourceOutput, mapping.SourceEndpoint)
 			if !exists {
 				// Skip if source field not found (allows for optional fields)
+				fm.logger.Debug("Source field not found",
+					Field{Key: "source_node_id", Value: sourceNodeID},
+					Field{Key: "source_endpoint", Value: mapping.SourceEndpoint},
+				)
 				continue
 			}
+			fm.logger.Info("Extracted value from source",
+				Field{Key: "source_node_id", Value: sourceNodeID},
+				Field{Key: "source_endpoint", Value: mapping.SourceEndpoint},
+				Field{Key: "value", Value: sourceValue},
+			)
 
 			// Handle iterate flag for array processing
 			if mapping.Iterate {
@@ -69,36 +87,165 @@ func (fm *FieldMapper) ApplyMappings(
 				if arr, ok := sourceValue.([]interface{}); ok {
 					// For iterate mode, map the entire array to each destination
 					for _, destEndpoint := range mapping.DestinationEndpoints {
-						var err error
-						destJSON, err = sjson.Set(destJSON, destEndpoint, arr)
-						if err != nil {
-							return nil, fmt.Errorf("failed to set destination field %s: %w", destEndpoint, err)
-						}
+						fm.setFieldAtPath(destMap, destEndpoint, arr)
 					}
 				} else {
 					// Not an array, map as single value
 					for _, destEndpoint := range mapping.DestinationEndpoints {
-						var err error
-						destJSON, err = sjson.Set(destJSON, destEndpoint, sourceValue)
-						if err != nil {
-							return nil, fmt.Errorf("failed to set destination field %s: %w", destEndpoint, err)
-						}
+						fm.setFieldAtPath(destMap, destEndpoint, sourceValue)
 					}
 				}
 			} else {
 				// Map value to each destination endpoint
 				for _, destEndpoint := range mapping.DestinationEndpoints {
-					var err error
-					destJSON, err = sjson.Set(destJSON, destEndpoint, sourceValue)
-					if err != nil {
-						return nil, fmt.Errorf("failed to set destination field %s: %w", destEndpoint, err)
-					}
+					fm.setFieldAtPath(destMap, destEndpoint, sourceValue)
 				}
 			}
 		}
 	}
 
-	return []byte(destJSON), nil
+	// Debug: Log final mapped result
+	finalResult, _ := json.Marshal(destMap)
+	fm.logger.Info("Final mapped result",
+		Field{Key: "result", Value: string(finalResult)},
+	)
+
+	// Marshal back to JSON
+	result, err := json.Marshal(destMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// setFieldAtPath sets a field value in a map using a path with slash notation
+// Supports // notation for collection traversal (applies value to each item in collection)
+func (fm *FieldMapper) setFieldAtPath(data map[string]interface{}, path string, value interface{}) {
+	if path == "" {
+		// Root level - merge if value is map
+		if valueMap, ok := value.(map[string]interface{}); ok {
+			for k, v := range valueMap {
+				data[k] = v
+			}
+		} else {
+			data["data"] = value
+		}
+		return
+	}
+
+	// Normalize path (remove leading slash)
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		// Root level - merge if value is map
+		if valueMap, ok := value.(map[string]interface{}); ok {
+			for k, v := range valueMap {
+				data[k] = v
+			}
+		} else {
+			data["data"] = value
+		}
+		return
+	}
+
+	// Check if path contains // for collection traversal
+	if strings.Contains(path, "//") {
+		fm.setFieldAtPathWithCollectionTraversal(data, path, value)
+		return
+	}
+
+	// Split path and create nested structure
+	parts := strings.Split(path, "/")
+	current := data
+
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+
+		if i == len(parts)-1 {
+			// Last part - set value
+			current[part] = value
+		} else {
+			// Intermediate part - ensure map exists
+			if _, exists := current[part]; !exists {
+				current[part] = make(map[string]interface{})
+			}
+			if nextMap, ok := current[part].(map[string]interface{}); ok {
+				current = nextMap
+			} else {
+				// Can't traverse further - overwrite with new map
+				current[part] = make(map[string]interface{})
+				current = current[part].(map[string]interface{})
+			}
+		}
+	}
+}
+
+// setFieldAtPathWithCollectionTraversal handles paths with // notation
+// Example: /user//city means set "city" field in each item of the "user" array
+func (fm *FieldMapper) setFieldAtPathWithCollectionTraversal(data map[string]interface{}, path string, value interface{}) {
+	// Split on // to get: [collection_path, field_path_in_items]
+	parts := strings.SplitN(path, "//", 2)
+	if len(parts) != 2 {
+		// Malformed path - fall back to regular set
+		fm.setFieldAtPath(data, path, value)
+		return
+	}
+
+	collectionPath := strings.Trim(parts[0], "/")
+	fieldPath := strings.Trim(parts[1], "/")
+
+	if collectionPath == "" || fieldPath == "" {
+		return
+	}
+
+	// Navigate to the collection
+	collectionParts := strings.Split(collectionPath, "/")
+	current := data
+
+	// Process all parts to reach the collection
+	for i, part := range collectionParts {
+		if part == "" {
+			continue
+		}
+
+		isLast := i == len(collectionParts)-1
+
+		if _, exists := current[part]; !exists {
+			// Path doesn't exist - cannot set field in non-existent collection
+			return
+		}
+
+		if isLast {
+			// This is the collection - apply value to each item
+			if collection, ok := current[part].([]interface{}); ok {
+				if len(collection) > 0 {
+					fm.setFieldInEachItem(collection, fieldPath, value)
+				}
+			}
+			return
+		}
+
+		// Not the last part - traverse deeper
+		if nextMap, ok := current[part].(map[string]interface{}); ok {
+			current = nextMap
+		} else {
+			// Can't traverse further (not a map)
+			return
+		}
+	}
+}
+
+// setFieldInEachItem sets a field in each item of a collection
+func (fm *FieldMapper) setFieldInEachItem(collection []interface{}, fieldPath string, value interface{}) {
+	for i, item := range collection {
+		if itemMap, ok := item.(map[string]interface{}); ok {
+			// Apply value to this item
+			fm.setFieldAtPath(itemMap, fieldPath, value)
+			collection[i] = itemMap
+		}
+	}
 }
 
 // groupMappingsBySource groups field mappings by their source node ID
@@ -153,4 +300,3 @@ func (fm *FieldMapper) MergeInputs(inputs ...[]byte) ([]byte, error) {
 
 	return []byte(result), nil
 }
-

@@ -8,6 +8,28 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
+// Logger defines a simple logging interface to avoid external dependencies
+type Logger interface {
+	Debug(msg string, fields ...Field)
+	Info(msg string, fields ...Field)
+	Warn(msg string, fields ...Field)
+	Error(msg string, fields ...Field)
+}
+
+// Field represents a key-value pair for structured logging
+type Field struct {
+	Key   string
+	Value interface{}
+}
+
+// NoOpLogger is a logger that does nothing (used when no logger is provided)
+type NoOpLogger struct{}
+
+func (n *NoOpLogger) Debug(msg string, fields ...Field) {}
+func (n *NoOpLogger) Info(msg string, fields ...Field)  {}
+func (n *NoOpLogger) Warn(msg string, fields ...Field)  {}
+func (n *NoOpLogger) Error(msg string, fields ...Field) {}
+
 // NodeConfig contains configuration for executing a single embedded node
 type NodeConfig struct {
 	NodeID        string
@@ -53,6 +75,12 @@ func NewExecutorRegistry() *ExecutorRegistry {
 // Register registers a node executor for a specific plugin type
 func (r *ExecutorRegistry) Register(executor NodeExecutor) {
 	pluginType := executor.PluginType()
+	r.executors[pluginType] = executor
+}
+
+// RegisterWithName registers a node executor with a specific plugin type name
+// This is useful for backward compatibility when plugin type names change
+func (r *ExecutorRegistry) RegisterWithName(executor NodeExecutor, pluginType string) {
 	r.executors[pluginType] = executor
 }
 
