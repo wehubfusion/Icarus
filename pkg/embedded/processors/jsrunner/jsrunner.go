@@ -2,6 +2,7 @@ package jsrunner
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -140,19 +141,22 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 		return output, fmt.Errorf("%v", jsErr)
 	}
 
-	// Convert result to raw bytes
-	// If result is already bytes, return as-is
-	if bytes, ok := result.([]byte); ok {
-		return bytes, nil
+	// Convert result to JSON bytes first
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
 	}
 
-	// If result is a string, convert to bytes
-	if str, ok := result.(string); ok {
-		return []byte(str), nil
+	// Encode to base64 string
+	encoded := base64.StdEncoding.EncodeToString(resultJSON)
+
+	// Wrap in data envelope following the standard convention
+	// JS runner output format: {"data": <base64 encoded data>}
+	wrappedResult := map[string]interface{}{
+		"data": encoded,
 	}
 
-	// Otherwise, marshal to JSON and return bytes
-	output, err := json.Marshal(result)
+	output, err := json.Marshal(wrappedResult)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal output: %w", err)
 	}

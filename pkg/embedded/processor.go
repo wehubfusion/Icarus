@@ -8,12 +8,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tidwall/gjson"
 	"github.com/wehubfusion/Icarus/pkg/concurrency"
 	"github.com/wehubfusion/Icarus/pkg/embedded/pathutil"
 	"github.com/wehubfusion/Icarus/pkg/iteration"
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
+
+// toPathutilStandardOutput converts embedded.StandardOutput to pathutil.StandardOutput
+// This is needed to avoid circular dependency while keeping types compatible
+func toPathutilStandardOutput(output *StandardOutput) *pathutil.StandardOutput {
+	if output == nil {
+		return nil
+	}
+	return &pathutil.StandardOutput{
+		Meta:   output.Meta,
+		Events: output.Events,
+		Error:  output.Error,
+		Result: output.Result,
+	}
+}
 
 // Processor handles execution of embedded nodes
 type Processor struct {
@@ -76,7 +89,7 @@ func NewProcessorWithLogger(registry *ExecutorRegistry, concurrent bool, limiter
 func (p *Processor) ProcessEmbeddedNodes(
 	ctx context.Context,
 	msg *message.Message,
-	parentOutput []byte,
+	parentOutput *StandardOutput,
 ) ([]EmbeddedNodeResult, error) {
 	if p.concurrent {
 		return p.ProcessEmbeddedNodesConcurrent(ctx, msg, parentOutput)
@@ -89,7 +102,7 @@ func (p *Processor) ProcessEmbeddedNodes(
 func (p *Processor) processEmbeddedNodesSequential(
 	ctx context.Context,
 	msg *message.Message,
-	parentOutput []byte,
+	parentOutput *StandardOutput,
 ) ([]EmbeddedNodeResult, error) {
 	if msg == nil {
 		return nil, fmt.Errorf("message cannot be nil")
@@ -126,7 +139,7 @@ func (p *Processor) processEmbeddedNodesSequential(
 func (p *Processor) ProcessEmbeddedNodesConcurrent(
 	ctx context.Context,
 	msg *message.Message,
-	parentOutput []byte,
+	parentOutput *StandardOutput,
 ) ([]EmbeddedNodeResult, error) {
 	if msg == nil {
 		return nil, fmt.Errorf("message cannot be nil")
@@ -240,6 +253,177 @@ func getMaxDepth(depthGroups map[int][]message.EmbeddedNode) int {
 	return maxDepth
 }
 
+// detectAutoIteration checks if the input is an array that should be auto-iterated
+// Returns (isArray bool, items []interface{}, error)
+// Detects three patterns:
+// 1. Array of data envelopes: [{"data": "<base64>"}, ...]
+// 2. Data field containing array: {"data": [item1, item2, ...]}
+// 3. Root-level array: [item1, item2, ...]
+func (p *Processor) detectAutoIteration(mappedInput []byte) (bool, []interface{}, error) {
+	if len(mappedInput) == 0 {
+		return false, nil, nil
+	}
+
+	// Try to parse as generic map first
+	var inputMap map[string]interface{}
+	if err := json.Unmarshal(mappedInput, &inputMap); err == nil {
+		// Pattern 2: Check if "data" field contains an array
+		if dataField, exists := inputMap["data"]; exists {
+			if dataArray, ok := dataField.([]interface{}); ok {
+				// Found array in data field (even if empty)
+				return true, dataArray, nil
+			}
+		}
+		// Not an array pattern
+		return false, nil, nil
+	}
+
+	// Try to parse as array
+	var inputArray []interface{}
+	if err := json.Unmarshal(mappedInput, &inputArray); err != nil {
+		// Not valid JSON or not an array - no auto-iteration
+		return false, nil, nil
+	}
+
+	// Pattern 1 & 3: We have a root-level array (even if empty)
+	// Check if first item is a data envelope to potentially unwrap
+	if len(inputArray) > 0 {
+		if itemMap, ok := inputArray[0].(map[string]interface{}); ok {
+			if _, hasData := itemMap["data"]; hasData {
+				// Pattern 1: Array of data envelopes [{"data": "..."}, ...]
+				// Return as-is, items will be unwrapped during iteration
+				return true, inputArray, nil
+			}
+		}
+	}
+
+	// Pattern 3: Plain array [item1, item2, ...]
+	return true, inputArray, nil
+}
+
+// processWithAutoIteration handles auto-detected array iteration concurrently
+// Processes each item through the plugin and aggregates results into single StandardOutput
+func (p *Processor) processWithAutoIteration(
+	ctx context.Context,
+	embNode message.EmbeddedNode,
+	arrayItems []interface{},
+	startTime time.Time,
+	outputRegistry *OutputRegistry,
+) EmbeddedNodeResult {
+	// Create iterator with concurrency limiter support
+	var iterator *iteration.Iterator
+	maxConcurrent := 0 // Default to runtime.NumCPU()
+
+	// TODO: Read maxConcurrent from embNode.Configuration if available
+	// For now, use default
+
+	if p.limiter != nil {
+		iterator = iteration.NewIteratorWithLimiter(iteration.Config{
+			MaxConcurrent: maxConcurrent,
+		}, p.limiter)
+	} else {
+		iterator = iteration.NewIterator(iteration.Config{
+			MaxConcurrent: maxConcurrent,
+		})
+	}
+
+	// Process each item through the plugin
+	processFunc := func(ctx context.Context, item interface{}, index int) (interface{}, error) {
+		// Construct input envelope for this item
+		var itemInput map[string]interface{}
+
+		// If item is already a map, use it as base
+		if itemMap, ok := item.(map[string]interface{}); ok {
+			itemInput = itemMap
+		} else {
+			// Wrap primitive or other types in data field
+			itemInput = map[string]interface{}{
+				"data": item,
+			}
+		}
+
+		// Marshal to JSON for plugin execution
+		itemInputBytes, err := json.Marshal(itemInput)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal item %d input: %w", index, err)
+		}
+
+		// Create node configuration for this item
+		nodeConfig := NodeConfig{
+			NodeID:        embNode.NodeID,
+			PluginType:    embNode.PluginType,
+			Configuration: embNode.Configuration,
+			Input:         itemInputBytes,
+			Connection:    embNode.Connection,
+			Schema:        embNode.Schema,
+		}
+
+		// Execute plugin for this item
+		nodeOutput, err := p.registry.Execute(ctx, nodeConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed executing item %d: %w", index, err)
+		}
+
+		// Parse the StandardOutput from plugin
+		var output StandardOutput
+		if err := json.Unmarshal(nodeOutput, &output); err != nil {
+			return nil, fmt.Errorf("failed parsing item %d output: %w", index, err)
+		}
+
+		// Extract the result field
+		return output.Result, nil
+	}
+
+	// Execute iteration concurrently
+	results, err := iterator.Process(ctx, arrayItems, processFunc)
+	execTime := time.Since(startTime).Milliseconds()
+
+	if err != nil {
+		// Iteration failed - wrap error
+		wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, fmt.Errorf("auto-iteration failed: %w", err))
+		outputRegistry.Set(embNode.NodeID, wrappedOutput)
+
+		return EmbeddedNodeResult{
+			NodeID:               embNode.NodeID,
+			PluginType:           embNode.PluginType,
+			Status:               "failed",
+			Output:               wrappedOutput,
+			Error:                fmt.Sprintf("auto-iteration failed: %v", err),
+			ExecutionOrder:       embNode.ExecutionOrder,
+			ProcessingDurationMs: execTime,
+		}
+	}
+
+	// Wrap aggregated results in single StandardOutput
+	// The result field contains the flat array of all item results
+	wrappedOutput := &StandardOutput{
+		Meta: MetaData{
+			Status:          "success",
+			NodeID:          embNode.NodeID,
+			PluginType:      embNode.PluginType,
+			ExecutionTimeMs: execTime,
+			Timestamp:       time.Now(),
+		},
+		Events: EventEndpoints{
+			Success: true,
+			Error:   false,
+		},
+		Result: results, // Flat array: [result1, result2, result3]
+	}
+
+	outputRegistry.Set(embNode.NodeID, wrappedOutput)
+
+	return EmbeddedNodeResult{
+		NodeID:               embNode.NodeID,
+		PluginType:           embNode.PluginType,
+		Status:               "success",
+		Output:               wrappedOutput,
+		Error:                "",
+		ExecutionOrder:       embNode.ExecutionOrder,
+		ProcessingDurationMs: execTime,
+	}
+}
+
 // processNode executes a single embedded node and returns the result
 // This function is extracted to support both sequential and concurrent execution
 func (p *Processor) processNode(
@@ -269,67 +453,6 @@ func (p *Processor) processNode(
 		}
 	}
 
-	// Check if this node has iterate mappings
-	hasIterateMapping := false
-	var iterateArray []interface{}
-
-	for _, mapping := range embNode.FieldMappings {
-		if mapping.Iterate {
-			// Get source output from registry for iterate check
-			sourceOutput, exists := outputRegistry.Get(mapping.SourceNodeID)
-			if exists {
-				sourceValue := gjson.GetBytes(sourceOutput, mapping.SourceEndpoint)
-				if sourceValue.IsArray() {
-					hasIterateMapping = true
-					iterateArray = sourceValue.Value().([]interface{})
-					break
-				}
-			}
-		}
-	}
-
-	if hasIterateMapping {
-		// Process array items using iteration package
-		itemResults, err := p.processArrayIteration(ctx, embNode, iterateArray, outputRegistry)
-		execTime := time.Since(startTime).Milliseconds()
-
-		if err != nil {
-			// Record iteration failure - wrap error output
-			wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, fmt.Errorf("array iteration failed: %w", err))
-
-			// ALWAYS store in registry (even errors)
-			outputRegistry.Set(embNode.NodeID, wrappedOutput)
-
-			return EmbeddedNodeResult{
-				NodeID:               embNode.NodeID,
-				PluginType:           embNode.PluginType,
-				Status:               "failed",
-				Output:               wrappedOutput,
-				Error:                fmt.Sprintf("array iteration failed: %v", err),
-				ExecutionOrder:       embNode.ExecutionOrder,
-				ProcessingDurationMs: execTime,
-			}
-		}
-
-		// Aggregate item results into single output and wrap
-		aggregated, _ := json.Marshal(itemResults)
-		wrappedOutput := WrapSuccess(embNode.NodeID, embNode.PluginType, execTime, aggregated)
-
-		// Store wrapped result in registry
-		outputRegistry.Set(embNode.NodeID, wrappedOutput)
-
-		return EmbeddedNodeResult{
-			NodeID:               embNode.NodeID,
-			PluginType:           embNode.PluginType,
-			Status:               "success",
-			Output:               wrappedOutput,
-			Error:                "",
-			ExecutionOrder:       embNode.ExecutionOrder,
-			ProcessingDurationMs: execTime,
-		}
-	}
-
-	// Normal processing (no iteration)
 	// Apply field mappings to prepare input for this node
 	mappedInput, err := p.fieldMapper.ApplyMappings(outputRegistry, embNode.FieldMappings, []byte("{}"))
 	if err != nil {
@@ -351,7 +474,31 @@ func (p *Processor) processNode(
 		}
 	}
 
-	// Debug: Log mapped input for JS runner nodes
+	// Check if input is an array requiring auto-iteration
+	isArray, arrayItems, err := p.detectAutoIteration(mappedInput)
+	if err != nil {
+		// Detection failed - wrap error output
+		execTime := time.Since(startTime).Milliseconds()
+		wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, fmt.Errorf("auto-iteration detection failed: %w", err))
+		outputRegistry.Set(embNode.NodeID, wrappedOutput)
+
+		return EmbeddedNodeResult{
+			NodeID:               embNode.NodeID,
+			PluginType:           embNode.PluginType,
+			Status:               "failed",
+			Output:               wrappedOutput,
+			Error:                fmt.Sprintf("auto-iteration detection failed: %v", err),
+			ExecutionOrder:       embNode.ExecutionOrder,
+			ProcessingDurationMs: execTime,
+		}
+	}
+
+	if isArray {
+		// Route to auto-iteration handler (even for empty arrays)
+		return p.processWithAutoIteration(ctx, embNode, arrayItems, startTime, outputRegistry)
+	}
+
+	// Single-item processing (normal flow)
 	if embNode.PluginType == "plugin-js" || embNode.PluginType == "plugin-jsrunner" {
 		p.logger.Info("JS Runner input mapped",
 			Field{Key: "node_id", Value: embNode.NodeID},
@@ -374,7 +521,7 @@ func (p *Processor) processNode(
 	nodeOutput, err := p.registry.Execute(ctx, nodeConfig)
 	execTime := time.Since(startTime).Milliseconds()
 
-	var wrappedOutput []byte
+	var wrappedOutput *StandardOutput
 	status := "success"
 	errorMsg := ""
 
@@ -431,7 +578,7 @@ func (p *Processor) checkEventTriggers(
 		}
 
 		// Check if the trigger endpoint has data and is truthy using namespace-aware navigation
-		sourceValue, valueExists := pathutil.NavigatePath(sourceOutput, trigger.SourceEndpoint)
+		sourceValue, valueExists := pathutil.NavigatePath(toPathutilStandardOutput(sourceOutput), trigger.SourceEndpoint)
 
 		// Event is NOT fired if:
 		// - Endpoint doesn't exist
@@ -461,81 +608,4 @@ func (p *Processor) checkEventTriggers(
 
 	// All event triggers satisfied
 	return true, ""
-}
-
-// processArrayIteration processes an array of items for a single embedded node
-// Each item is processed through the node individually, returns array of results
-func (p *Processor) processArrayIteration(
-	ctx context.Context,
-	embNode message.EmbeddedNode,
-	items []interface{},
-	outputRegistry *OutputRegistry,
-) ([]interface{}, error) {
-	// Create iterator with sequential strategy by default
-	// Could be made configurable via embNode.Configuration in the future
-	var iterator *iteration.Iterator
-
-	if p.limiter != nil {
-		iterator = iteration.NewIteratorWithLimiter(iteration.Config{
-			Strategy: iteration.StrategySequential,
-		}, p.limiter)
-	} else {
-		iterator = iteration.NewIterator(iteration.Config{
-			Strategy: iteration.StrategySequential,
-		})
-	}
-
-	// Process each item through the node
-	return iterator.Process(ctx, items, func(ctx context.Context, item interface{}, index int) (interface{}, error) {
-		// Marshal item to JSON
-		itemJSON, err := json.Marshal(item)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal item: %w", err)
-		}
-
-		// Create a local registry for this iteration that includes the item
-		// This allows mappings to reference both the current item and other nodes
-		localRegistry := NewOutputRegistry()
-
-		// Copy all existing outputs from parent registry
-		for nodeID, output := range outputRegistry.GetAll() {
-			localRegistry.Set(nodeID, output)
-		}
-
-		// Add current item as a special source that can be referenced
-		// Using a temporary ID for the iteration item
-		itemNodeID := fmt.Sprintf("%s_item_%d", embNode.NodeID, index)
-		localRegistry.Set(itemNodeID, itemJSON)
-
-		// Apply field mappings with local registry
-		mappedInput, err := p.fieldMapper.ApplyMappings(localRegistry, embNode.FieldMappings, []byte("{}"))
-		if err != nil {
-			return nil, fmt.Errorf("field mapping failed: %w", err)
-		}
-
-		// Create node configuration
-		nodeConfig := NodeConfig{
-			NodeID:        embNode.NodeID,
-			PluginType:    embNode.PluginType,
-			Configuration: embNode.Configuration,
-			Input:         mappedInput,
-			Connection:    embNode.Connection,
-			Schema:        embNode.Schema,
-		}
-
-		// Execute node for this item
-		output, err := p.registry.Execute(ctx, nodeConfig)
-		if err != nil {
-			return nil, err
-		}
-
-		// Parse output back to interface for aggregation
-		var result interface{}
-		if err := json.Unmarshal(output, &result); err != nil {
-			// If unmarshal fails, return raw bytes as string
-			return string(output), nil
-		}
-
-		return result, nil
-	})
 }

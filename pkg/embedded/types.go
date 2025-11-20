@@ -42,13 +42,13 @@ type NodeConfig struct {
 
 // EmbeddedNodeResult represents the result of an embedded node execution
 type EmbeddedNodeResult struct {
-	NodeID               string `json:"node_id"`
-	PluginType           string `json:"plugin_type"`
-	Status               string `json:"status"` // "success", "failed"
-	Output               []byte `json:"output,omitempty"`
-	Error                string `json:"error,omitempty"`
-	ExecutionOrder       int    `json:"execution_order"`
-	ProcessingDurationMs int64  `json:"processing_duration_ms"`
+	NodeID               string          `json:"node_id"`
+	PluginType           string          `json:"plugin_type"`
+	Status               string          `json:"status"` // "success", "failed"
+	Output               *StandardOutput `json:"output,omitempty"`
+	Error                string          `json:"error,omitempty"`
+	ExecutionOrder       int             `json:"execution_order"`
+	ProcessingDurationMs int64           `json:"processing_duration_ms"`
 }
 
 // NodeExecutor defines the interface for executing embedded nodes

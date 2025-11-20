@@ -45,8 +45,38 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 
 // executeParse parses and validates JSON against schema
 func (e *Executor) executeParse(input []byte, config Config) ([]byte, error) {
+	// Unmarshal input envelope
+	var inputEnvelope map[string]interface{}
+	if err := json.Unmarshal(input, &inputEnvelope); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	dataField, hasData := inputEnvelope["data"]
+	if !hasData {
+		return nil, fmt.Errorf("input must contain a 'data' field")
+	}
+
+	var dataToValidate []byte
+
+	// Check if data is a base64-encoded string (from JS runner)
+	if encodedStr, isString := dataField.(string); isString {
+		// Decode base64 string
+		decoded, err := base64.StdEncoding.DecodeString(encodedStr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode base64 data: %w", err)
+		}
+		dataToValidate = decoded
+	} else {
+		// Data is already JSON object/array, marshal it
+		marshaled, err := json.Marshal(dataField)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal data field: %w", err)
+		}
+		dataToValidate = marshaled
+	}
+
 	// Process with schema
-	result, err := processWithSchema(input, config.Schema, config.SchemaID, SchemaOptions{
+	validatedData, err := processWithSchema(dataToValidate, config.Schema, config.SchemaID, SchemaOptions{
 		ApplyDefaults:    config.GetApplyDefaults(),
 		StructureData:    config.GetStructureData(),
 		StrictValidation: config.GetStrictValidation(),
@@ -55,24 +85,31 @@ func (e *Executor) executeParse(input []byte, config Config) ([]byte, error) {
 		return nil, err
 	}
 
-	// If schema processing returns a map that only contains a nested "data" object,
-	// flatten it so downstream nodes can read the parsed payload from the root.
-	// This is a conservative compatibility measure for plans that map payloads
-	// into "/data" before parsing (avoids double-nesting in StandardOutput).
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(result, &parsed); err == nil && len(parsed) == 1 {
-		if inner, hasData := parsed["data"].(map[string]interface{}); hasData {
-			result, _ = json.Marshal(inner)
-		}
+	// Unmarshal the validated data to wrap it
+	var validatedResult interface{}
+	if err := json.Unmarshal(validatedData, &validatedResult); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal validated data: %w", err)
 	}
 
-	return result, nil
+	return json.Marshal(validatedResult)
 }
 
 // executeProduce validates, structures, and encodes JSON to base64
 func (e *Executor) executeProduce(input []byte, config Config) ([]byte, error) {
+	// Extract data from input envelope
+	var inputEnvelope map[string]interface{}
+	if err := json.Unmarshal(input, &inputEnvelope); err != nil {
+		return nil, fmt.Errorf("failed to parse input envelope: %w", err)
+	}
+
+	// Data is regular JSON (not encoded), marshal it to bytes
+	dataToEncode, err := json.Marshal(inputEnvelope)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal data field: %w", err)
+	}
+
 	// Process with schema (no defaults on produce)
-	processedJSON, err := processWithSchema(input, config.Schema, config.SchemaID, SchemaOptions{
+	processedJSON, err := processWithSchema(dataToEncode, config.Schema, config.SchemaID, SchemaOptions{
 		ApplyDefaults:    false, // Never apply defaults on produce
 		StructureData:    config.GetStructureData(),
 		StrictValidation: config.GetStrictValidation(),
@@ -96,13 +133,12 @@ func (e *Executor) executeProduce(input []byte, config Config) ([]byte, error) {
 	// Encode to base64
 	encoded := base64.StdEncoding.EncodeToString(processedJSON)
 
-	// Return as JSON object with base64 data
-	result := map[string]string{
-		"result":   encoded,
-		"encoding": "base64",
+	// Wrap result in data envelope following the standard convention
+	wrappedResult := map[string]interface{}{
+		"data": encoded,
 	}
 
-	return json.Marshal(result)
+	return json.Marshal(wrappedResult)
 }
 
 // PluginType returns the plugin type this executor handles

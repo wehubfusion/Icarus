@@ -16,23 +16,16 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 	processor := embedded.NewProcessor(registry)
 
 	t.Run("Embedded node skips when event not fired (null)", func(t *testing.T) {
-		// Parent output with event NOT fired (wrapped in StandardOutput format)
-		parentOutput := map[string]interface{}{
-			"_meta": map[string]interface{}{
-				"status":  "success",
-				"node_id": "parent-node",
-			},
-			"_events": map[string]interface{}{
-				"success": true,
-				"error":   nil,
-			},
-			"result": map[string]interface{}{
-				"result": false,
-				"true":   nil, // Event NOT fired (null)
-				"false":  true,
-			},
+		// Parent output result data (without StandardOutput wrapper)
+		parentResult := map[string]interface{}{
+			"result": false,
+			"true":   nil, // Event NOT fired (null)
+			"false":  true,
 		}
-		parentOutputBytes, _ := json.Marshal(parentOutput)
+		parentResultBytes, _ := json.Marshal(parentResult)
+
+		// Wrap in StandardOutput format
+		parentOutput := embedded.WrapSuccess("parent-node", "test", 0, parentResultBytes)
 
 		// Embedded node with event trigger on /true
 		embeddedNodes := []message.EmbeddedNode{
@@ -72,7 +65,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputBytes)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput)
 		if err != nil {
 			t.Fatalf("ProcessEmbeddedNodes failed: %v", err)
 		}
@@ -98,7 +91,8 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				"trigger": false, // Boolean false
 			},
 		}
-		parentOutputBytes, _ := json.Marshal(parentOutput)
+		parentResultBytes, _ := json.Marshal(parentOutput)
+		parentOutputWrapped := embedded.WrapSuccess("parent-node", "test", 0, parentResultBytes)
 
 		embeddedNodes := []message.EmbeddedNode{
 			{
@@ -137,7 +131,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputBytes)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped)
 		if err != nil {
 			t.Fatalf("ProcessEmbeddedNodes failed: %v", err)
 		}
@@ -162,7 +156,8 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				"trigger": "", // Empty string
 			},
 		}
-		parentOutputBytes, _ := json.Marshal(parentOutput)
+		parentResultBytes, _ := json.Marshal(parentOutput)
+		parentOutputWrapped := embedded.WrapSuccess("parent-node", "test", 0, parentResultBytes)
 
 		embeddedNodes := []message.EmbeddedNode{
 			{
@@ -201,7 +196,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputBytes)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped)
 		if err != nil {
 			t.Fatalf("ProcessEmbeddedNodes failed: %v", err)
 		}
@@ -226,7 +221,8 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				"other": "data",
 			},
 		}
-		parentOutputBytes, _ := json.Marshal(parentOutput)
+		parentResultBytes, _ := json.Marshal(parentOutput)
+		parentOutputWrapped := embedded.WrapSuccess("parent-node", "test", 0, parentResultBytes)
 
 		embeddedNodes := []message.EmbeddedNode{
 			{
@@ -265,7 +261,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputBytes)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped)
 		if err != nil {
 			t.Fatalf("ProcessEmbeddedNodes failed: %v", err)
 		}
@@ -276,7 +272,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 	})
 
 	t.Run("Embedded node skips when source node not found", func(t *testing.T) {
-		parentOutputBytes := []byte(`{}`)
+		parentOutput := embedded.WrapSuccess("parent-node", "test", 0, []byte(`{}`))
 
 		embeddedNodes := []message.EmbeddedNode{
 			{
@@ -315,7 +311,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputBytes)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput)
 		if err != nil {
 			t.Fatalf("ProcessEmbeddedNodes failed: %v", err)
 		}
@@ -326,22 +322,13 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 	})
 
 	t.Run("Embedded node executes when event is truthy", func(t *testing.T) {
-		// Parent output with truthy event (wrapped in StandardOutput format)
-		parentOutput := map[string]interface{}{
-			"_meta": map[string]interface{}{
-				"status":  "success",
-				"node_id": "parent-node",
-			},
-			"_events": map[string]interface{}{
-				"success": true,
-				"error":   nil,
-			},
-			"result": map[string]interface{}{
-				"trigger": true, // Truthy value
-				"value":   "test",
-			},
+		// Parent output with truthy event
+		parentResult := map[string]interface{}{
+			"trigger": true, // Truthy value
+			"value":   "test",
 		}
-		parentOutputBytes, _ := json.Marshal(parentOutput)
+		parentResultBytes, _ := json.Marshal(parentResult)
+		parentOutputWrapped := embedded.WrapSuccess("parent-node", "test", 0, parentResultBytes)
 
 		embeddedNodes := []message.EmbeddedNode{
 			{
@@ -387,7 +374,7 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputBytes)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped)
 		if err != nil {
 			t.Fatalf("ProcessEmbeddedNodes failed: %v", err)
 		}

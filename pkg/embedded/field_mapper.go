@@ -50,7 +50,7 @@ func (fm *FieldMapper) ApplyMappings(
 
 	// Apply mappings from each source node
 	for sourceNodeID, sourceMappings := range mappingsBySource {
-		// Get source output from registry
+		// Get source output from registry (now returns *StandardOutput)
 		sourceOutput, exists := outputRegistry.Get(sourceNodeID)
 		if !exists {
 			// Source node hasn't executed yet or doesn't exist
@@ -58,15 +58,16 @@ func (fm *FieldMapper) ApplyMappings(
 			continue
 		}
 
-		// Validate source output is JSON
-		if !json.Valid(sourceOutput) {
-			return nil, fmt.Errorf("source output from node %s is not valid JSON", sourceNodeID)
+		// Validate source output is not nil
+		if sourceOutput == nil {
+			return nil, fmt.Errorf("source output from node %s is nil", sourceNodeID)
 		}
 
 		// Apply each mapping from this source
 		for _, mapping := range sourceMappings {
 			// Extract value from source using namespace-aware path navigation
-			sourceValue, exists := pathutil.NavigatePath(sourceOutput, mapping.SourceEndpoint)
+			// Convert to pathutil.StandardOutput to avoid circular dependency
+			sourceValue, exists := pathutil.NavigatePath(toPathutilStandardOutput(sourceOutput), mapping.SourceEndpoint)
 			if !exists {
 				// Skip if source field not found (allows for optional fields)
 				fm.logger.Debug("Source field not found",
@@ -81,25 +82,9 @@ func (fm *FieldMapper) ApplyMappings(
 				Field{Key: "value", Value: sourceValue},
 			)
 
-			// Handle iterate flag for array processing
-			if mapping.Iterate {
-				// Check if value is an array
-				if arr, ok := sourceValue.([]interface{}); ok {
-					// For iterate mode, map the entire array to each destination
-					for _, destEndpoint := range mapping.DestinationEndpoints {
-						fm.setFieldAtPath(destMap, destEndpoint, arr)
-					}
-				} else {
-					// Not an array, map as single value
-					for _, destEndpoint := range mapping.DestinationEndpoints {
-						fm.setFieldAtPath(destMap, destEndpoint, sourceValue)
-					}
-				}
-			} else {
-				// Map value to each destination endpoint
-				for _, destEndpoint := range mapping.DestinationEndpoints {
-					fm.setFieldAtPath(destMap, destEndpoint, sourceValue)
-				}
+			// Map value to each destination endpoint
+			for _, destEndpoint := range mapping.DestinationEndpoints {
+				fm.setFieldAtPath(destMap, destEndpoint, sourceValue)
 			}
 		}
 	}
@@ -128,8 +113,6 @@ func (fm *FieldMapper) setFieldAtPath(data map[string]interface{}, path string, 
 			for k, v := range valueMap {
 				data[k] = v
 			}
-		} else {
-			data["data"] = value
 		}
 		return
 	}
@@ -137,13 +120,11 @@ func (fm *FieldMapper) setFieldAtPath(data map[string]interface{}, path string, 
 	// Normalize path (remove leading slash)
 	path = strings.TrimPrefix(path, "/")
 	if path == "" {
-		// Root level - merge if value is map
+		// Root level after normalization
 		if valueMap, ok := value.(map[string]interface{}); ok {
 			for k, v := range valueMap {
 				data[k] = v
 			}
-		} else {
-			data["data"] = value
 		}
 		return
 	}

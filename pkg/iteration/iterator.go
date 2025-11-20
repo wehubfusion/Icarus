@@ -37,32 +37,14 @@ func NewIteratorWithLimiter(config Config, limiter *concurrency.Limiter) *Iterat
 	}
 }
 
-// Process iterates over array items and processes each with the given function
+// Process iterates over array items and processes each with the given function concurrently
 // Returns array of results or error (fail-fast on first error)
 func (it *Iterator) Process(ctx context.Context, items []interface{}, processFn ProcessFunc) ([]interface{}, error) {
 	if len(items) == 0 {
 		return []interface{}{}, nil
 	}
 
-	if it.config.Strategy == StrategySequential {
-		return it.processSequential(ctx, items, processFn)
-	}
 	return it.processParallel(ctx, items, processFn)
-}
-
-// processSequential processes items one by one (fail-fast)
-func (it *Iterator) processSequential(ctx context.Context, items []interface{}, processFn ProcessFunc) ([]interface{}, error) {
-	results := make([]interface{}, len(items))
-
-	for i, item := range items {
-		output, err := processFn(ctx, item, i)
-		if err != nil {
-			return nil, fmt.Errorf("failed processing item %d: %w", i, err)
-		}
-		results[i] = output
-	}
-
-	return results, nil
 }
 
 // processParallel processes items concurrently with worker pool (fail-fast)

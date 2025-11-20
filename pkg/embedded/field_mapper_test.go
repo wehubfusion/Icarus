@@ -79,15 +79,13 @@ func TestFieldMapper_ApplyMappings_SimplePath(t *testing.T) {
 	registry := NewOutputRegistry()
 
 	// Create a source output with StandardOutput format
-	sourceOutput := `{
-		"_meta": {"status": "success"},
-		"_events": {"success": true},
-		"result": {
-			"name": "John Doe",
-			"age": 30
-		}
-	}`
-	registry.Set("source-node-1", []byte(sourceOutput))
+	sourceData := map[string]interface{}{
+		"name": "John Doe",
+		"age":  30,
+	}
+	sourceJSON, _ := json.Marshal(sourceData)
+	sourceOutput := WrapSuccess("source-node-1", "test", 0, sourceJSON)
+	registry.Set("source-node-1", sourceOutput)
 
 	// Create field mapping: /name from source -> /name to destination
 	mappings := []message.FieldMapping{
@@ -118,15 +116,14 @@ func TestFieldMapper_ApplyMappings_NestedPath(t *testing.T) {
 	registry := NewOutputRegistry()
 
 	// Create a source output
-	sourceOutput := `{
-		"_meta": {"status": "success"},
-		"result": {
-			"user": {
-				"email": "john@example.com"
-			}
-		}
-	}`
-	registry.Set("source-node-1", []byte(sourceOutput))
+	sourceData := map[string]interface{}{
+		"user": map[string]interface{}{
+			"email": "john@example.com",
+		},
+	}
+	sourceJSON, _ := json.Marshal(sourceData)
+	sourceOutput := WrapSuccess("source-node-1", "test", 0, sourceJSON)
+	registry.Set("source-node-1", sourceOutput)
 
 	// Create field mapping: /user/email from source -> /user/email to destination
 	mappings := []message.FieldMapping{
@@ -158,17 +155,15 @@ func TestFieldMapper_ApplyMappings_EmptyEndpoints_RootLevelMerge(t *testing.T) {
 	registry := NewOutputRegistry()
 
 	// Create a source output with StandardOutput format containing ESR-like data
-	sourceOutput := `{
-		"_meta": {"status": "success", "node_id": "source-node-1"},
-		"_events": {"success": true},
-		"result": {
-			"Assignment": [{"id": 1, "category": "Bank"}, {"id": 2, "category": "Permanent"}],
-			"Person": [{"name": "John", "email": "john@example.com"}],
-			"Location": [{"id": 100, "name": "Hospital"}],
-			"Position": [{"id": 200, "title": "Nurse"}]
-		}
-	}`
-	registry.Set("source-node-1", []byte(sourceOutput))
+	sourceData := map[string]interface{}{
+		"Assignment": []interface{}{map[string]interface{}{"id": 1, "category": "Bank"}, map[string]interface{}{"id": 2, "category": "Permanent"}},
+		"Person":     []interface{}{map[string]interface{}{"name": "John", "email": "john@example.com"}},
+		"Location":   []interface{}{map[string]interface{}{"id": 100, "name": "Hospital"}},
+		"Position":   []interface{}{map[string]interface{}{"id": 200, "title": "Nurse"}},
+	}
+	sourceJSON, _ := json.Marshal(sourceData)
+	sourceOutput := WrapSuccess("source-node-1", "test", 0, sourceJSON)
+	registry.Set("source-node-1", sourceOutput)
 
 	// Create field mapping: empty sourceEndpoint and empty destinationEndpoint
 	// This should extract entire data field and merge at root level

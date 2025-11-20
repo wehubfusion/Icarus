@@ -15,11 +15,11 @@ import (
 
 func TestIterator_ProcessSequential_Success(t *testing.T) {
 	iterator := NewIterator(Config{
-		Strategy: StrategySequential,
+		MaxConcurrent: 1, // Sequential behavior with single worker
 	})
 
 	items := []interface{}{1, 2, 3}
-	
+
 	results, err := iterator.Process(context.Background(), items, func(ctx context.Context, item interface{}, index int) (interface{}, error) {
 		num := item.(int)
 		return num * 2, nil
@@ -31,12 +31,12 @@ func TestIterator_ProcessSequential_Success(t *testing.T) {
 
 func TestIterator_ProcessSequential_FailFast(t *testing.T) {
 	iterator := NewIterator(Config{
-		Strategy: StrategySequential,
+		MaxConcurrent: 1, // Sequential behavior with single worker
 	})
 
 	items := []interface{}{1, 2, 3, 4, 5}
 	processCount := 0
-	
+
 	results, err := iterator.Process(context.Background(), items, func(ctx context.Context, item interface{}, index int) (interface{}, error) {
 		processCount++
 		if index == 2 {
@@ -53,7 +53,7 @@ func TestIterator_ProcessSequential_FailFast(t *testing.T) {
 
 func TestIterator_ProcessSequential_EmptyArray(t *testing.T) {
 	iterator := NewIterator(Config{
-		Strategy: StrategySequential,
+		MaxConcurrent: 1,
 	})
 
 	results, err := iterator.Process(context.Background(), []interface{}{}, func(ctx context.Context, item interface{}, index int) (interface{}, error) {
@@ -67,7 +67,6 @@ func TestIterator_ProcessSequential_EmptyArray(t *testing.T) {
 
 func TestIterator_ProcessParallel_Success(t *testing.T) {
 	iterator := NewIterator(Config{
-		Strategy:      StrategyParallel,
 		MaxConcurrent: 3,
 	})
 
@@ -75,7 +74,7 @@ func TestIterator_ProcessParallel_Success(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		items[i] = i
 	}
-	
+
 	results, err := iterator.Process(context.Background(), items, func(ctx context.Context, item interface{}, index int) (interface{}, error) {
 		time.Sleep(10 * time.Millisecond) // Simulate work
 		num := item.(int)
@@ -84,7 +83,7 @@ func TestIterator_ProcessParallel_Success(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Len(t, results, 10)
-	
+
 	// Verify all results are correct (order preserved)
 	for i := 0; i < 10; i++ {
 		assert.Equal(t, i*2, results[i])
@@ -93,7 +92,6 @@ func TestIterator_ProcessParallel_Success(t *testing.T) {
 
 func TestIterator_ProcessParallel_FailFast(t *testing.T) {
 	iterator := NewIterator(Config{
-		Strategy:      StrategyParallel,
 		MaxConcurrent: 5,
 	})
 
@@ -101,18 +99,18 @@ func TestIterator_ProcessParallel_FailFast(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		items[i] = i
 	}
-	
+
 	processedItems := &sync.Map{}
-	
+
 	results, err := iterator.Process(context.Background(), items, func(ctx context.Context, item interface{}, index int) (interface{}, error) {
 		processedItems.Store(index, true)
-		
+
 		// Item 5 fails
 		if index == 5 {
 			time.Sleep(20 * time.Millisecond) // Give time for others to start
 			return nil, fmt.Errorf("item %d failed", index)
 		}
-		
+
 		// Check if context was cancelled (fail-fast)
 		select {
 		case <-ctx.Done():
@@ -126,21 +124,20 @@ func TestIterator_ProcessParallel_FailFast(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed processing item 5")
 	assert.Nil(t, results)
-	
+
 	// Count how many items were processed before cancellation
 	count := 0
 	processedItems.Range(func(key, value interface{}) bool {
 		count++
 		return true
 	})
-	
+
 	// Should be less than total (some workers stopped early due to fail-fast)
 	assert.Less(t, count, 20, "Fail-fast should prevent processing all items")
 }
 
 func TestIterator_ProcessParallel_EmptyArray(t *testing.T) {
 	iterator := NewIterator(Config{
-		Strategy:      StrategyParallel,
 		MaxConcurrent: 4,
 	})
 
@@ -155,7 +152,6 @@ func TestIterator_ProcessParallel_EmptyArray(t *testing.T) {
 
 func TestIterator_NewIterator_DefaultMaxConcurrent(t *testing.T) {
 	iterator := NewIterator(Config{
-		Strategy:      StrategyParallel,
 		MaxConcurrent: 0, // Should default to runtime.NumCPU()
 	})
 
@@ -164,11 +160,11 @@ func TestIterator_NewIterator_DefaultMaxConcurrent(t *testing.T) {
 
 func TestIterator_ProcessSequential_PreservesOrder(t *testing.T) {
 	iterator := NewIterator(Config{
-		Strategy: StrategySequential,
+		MaxConcurrent: 1,
 	})
 
 	items := []interface{}{"a", "b", "c", "d"}
-	
+
 	results, err := iterator.Process(context.Background(), items, func(ctx context.Context, item interface{}, index int) (interface{}, error) {
 		return fmt.Sprintf("%s-%d", item.(string), index), nil
 	})
@@ -179,12 +175,11 @@ func TestIterator_ProcessSequential_PreservesOrder(t *testing.T) {
 
 func TestIterator_ProcessParallel_PreservesOrder(t *testing.T) {
 	iterator := NewIterator(Config{
-		Strategy:      StrategyParallel,
 		MaxConcurrent: 4,
 	})
 
 	items := []interface{}{5, 4, 3, 2, 1, 0}
-	
+
 	results, err := iterator.Process(context.Background(), items, func(ctx context.Context, item interface{}, index int) (interface{}, error) {
 		// Sleep different amounts to test order preservation
 		time.Sleep(time.Duration(item.(int)) * time.Millisecond)
@@ -195,4 +190,3 @@ func TestIterator_ProcessParallel_PreservesOrder(t *testing.T) {
 	// Results should be in original order despite variable processing times
 	assert.Equal(t, []interface{}{0, 10, 20, 30, 40, 50}, results)
 }
-

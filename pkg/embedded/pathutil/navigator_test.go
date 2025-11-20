@@ -1,85 +1,29 @@
 package pathutil
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestExtractResultFromOutput(t *testing.T) {
-	tests := []struct {
-		name             string
-		input            string
-		expectedOutput   string
-		isStandardOutput bool
-	}{
-		{
-			name: "extract data from StandardOutput",
-			input: `{
-				"_meta": {"status": "success"},
-				"_events": {"success": true},
-				"result": {"name": "John", "age": 30}
-			}`,
-			expectedOutput:   `{"name": "John", "age": 30}`,
-			isStandardOutput: true,
-		},
-		{
-			name: "extract null data returns empty object",
-			input: `{
-				"_meta": {"status": "failed"},
-				"_events": {"error": true},
-				"result": null
-			}`,
-			expectedOutput:   `{}`,
-			isStandardOutput: true,
-		},
-		{
-			name:             "non-StandardOutput returns as-is",
-			input:            `{"name": "John", "age": 30}`,
-			expectedOutput:   `{"name": "John", "age": 30}`,
-			isStandardOutput: false,
-		},
-		{
-			name: "extract array data",
-			input: `{
-				"_meta": {"status": "success"},
-				"result": [{"name": "John"}, {"name": "Jane"}]
-			}`,
-			expectedOutput:   `[{"name": "John"}, {"name": "Jane"}]`,
-			isStandardOutput: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, isStandardOutput := extractResultFromOutput([]byte(tt.input))
-
-			assert.Equal(t, tt.isStandardOutput, isStandardOutput)
-
-			// Compare JSON structure (order may differ)
-			var resultData, expectedData interface{}
-			require.NoError(t, json.Unmarshal(result, &resultData))
-			require.NoError(t, json.Unmarshal([]byte(tt.expectedOutput), &expectedData))
-
-			assert.Equal(t, expectedData, resultData)
-		})
-	}
-}
-
 func TestNavigatePath_ExtractDataFirst(t *testing.T) {
-	standardOutput := `{
-		"_meta": {"status": "success", "node_id": "test-node"},
-		"_events": {"success": true},
-		"result": {
+	// Create StandardOutput with result data
+	standardOutput := &StandardOutput{
+		Meta: map[string]interface{}{
+			"status":  "success",
+			"node_id": "test-node",
+		},
+		Events: map[string]interface{}{
+			"success": true,
+		},
+		Result: map[string]interface{}{
 			"name": "John",
-			"age": 30,
-			"user": {
-				"email": "john@example.com"
-			}
-		}
-	}`
+			"age":  float64(30),
+			"user": map[string]interface{}{
+				"email": "john@example.com",
+			},
+		},
+	}
 
 	tests := []struct {
 		name     string
@@ -117,7 +61,7 @@ func TestNavigatePath_ExtractDataFirst(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			value, exists := NavigatePath([]byte(standardOutput), tt.path)
+			value, exists := NavigatePath(standardOutput, tt.path)
 
 			assert.Equal(t, tt.exists, exists)
 			if exists {
@@ -128,11 +72,18 @@ func TestNavigatePath_ExtractDataFirst(t *testing.T) {
 }
 
 func TestNavigatePath_EventTriggers(t *testing.T) {
-	standardOutput := `{
-		"_meta": {"status": "success"},
-		"_events": {"success": true, "error": null},
-		"result": {"name": "John"}
-	}`
+	standardOutput := &StandardOutput{
+		Meta: map[string]interface{}{
+			"status": "success",
+		},
+		Events: map[string]interface{}{
+			"success": true,
+			"error":   nil,
+		},
+		Result: map[string]interface{}{
+			"name": "John",
+		},
+	}
 
 	tests := []struct {
 		name     string
@@ -162,7 +113,7 @@ func TestNavigatePath_EventTriggers(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			value, exists := NavigatePath([]byte(standardOutput), tt.path)
+			value, exists := NavigatePath(standardOutput, tt.path)
 
 			assert.Equal(t, tt.exists, exists)
 			if exists {
@@ -173,13 +124,15 @@ func TestNavigatePath_EventTriggers(t *testing.T) {
 }
 
 func TestNavigatePath_ArrayIteration(t *testing.T) {
-	standardOutput := `{
-		"_meta": {"status": "success"},
-		"result": [
-			{"name": "John", "age": 30},
-			{"name": "Jane", "age": 25}
-		]
-	}`
+	standardOutput := &StandardOutput{
+		Meta: map[string]interface{}{
+			"status": "success",
+		},
+		Result: []interface{}{
+			map[string]interface{}{"name": "John", "age": float64(30)},
+			map[string]interface{}{"name": "Jane", "age": float64(25)},
+		},
+	}
 
 	tests := []struct {
 		name     string
@@ -199,7 +152,7 @@ func TestNavigatePath_ArrayIteration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			value, exists := NavigatePath([]byte(standardOutput), tt.path)
+			value, exists := NavigatePath(standardOutput, tt.path)
 
 			assert.Equal(t, tt.exists, exists)
 			if exists {
@@ -210,8 +163,10 @@ func TestNavigatePath_ArrayIteration(t *testing.T) {
 }
 
 func TestNavigatePath_BackwardCompatibility(t *testing.T) {
-	// Non-StandardOutput format should still work
-	nonStandardOutput := `{"name": "John", "age": 30}`
+	// Test with plain result data (no StandardOutput wrapping)
+	nonStandardOutput := &StandardOutput{
+		Result: map[string]interface{}{"name": "John", "age": float64(30)},
+	}
 
 	tests := []struct {
 		name     string
@@ -235,7 +190,7 @@ func TestNavigatePath_BackwardCompatibility(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			value, exists := NavigatePath([]byte(nonStandardOutput), tt.path)
+			value, exists := NavigatePath(nonStandardOutput, tt.path)
 
 			assert.Equal(t, tt.exists, exists)
 			if exists {
@@ -246,23 +201,39 @@ func TestNavigatePath_BackwardCompatibility(t *testing.T) {
 }
 
 func TestNavigatePath_EmptyPath(t *testing.T) {
-	standardOutput := `{
-		"_meta": {"status": "success"},
-		"_events": {"success": true},
-		"result": {
-			"Assignment": [{"id": 1}, {"id": 2}],
-			"Person": [{"name": "John"}]
-		}
-	}`
+	standardOutput := &StandardOutput{
+		Meta: map[string]interface{}{
+			"status": "success",
+		},
+		Events: map[string]interface{}{
+			"success": true,
+		},
+		Result: map[string]interface{}{
+			"Assignment": []interface{}{
+				map[string]interface{}{"id": float64(1)},
+				map[string]interface{}{"id": float64(2)},
+			},
+			"Person": []interface{}{
+				map[string]interface{}{"name": "John"},
+			},
+		},
+	}
 
-	nonStandardOutput := `{
-		"Assignment": [{"id": 1}, {"id": 2}],
-		"Person": [{"name": "John"}]
-	}`
+	nonStandardOutput := &StandardOutput{
+		Result: map[string]interface{}{
+			"Assignment": []interface{}{
+				map[string]interface{}{"id": float64(1)},
+				map[string]interface{}{"id": float64(2)},
+			},
+			"Person": []interface{}{
+				map[string]interface{}{"name": "John"},
+			},
+		},
+	}
 
 	tests := []struct {
 		name     string
-		input    string
+		input    *StandardOutput
 		path     string
 		expected interface{}
 		exists   bool
@@ -331,7 +302,7 @@ func TestNavigatePath_EmptyPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			value, exists := NavigatePath([]byte(tt.input), tt.path)
+			value, exists := NavigatePath(tt.input, tt.path)
 
 			assert.Equal(t, tt.exists, exists)
 			if exists {

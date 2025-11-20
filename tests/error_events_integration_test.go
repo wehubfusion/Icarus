@@ -38,6 +38,7 @@ func TestErrorEventIntegration(t *testing.T) {
 			"result": nil,
 		}
 		parentOutputBytes, _ := json.Marshal(failedParentOutput)
+		parentOutput := embedded.WrapSuccess("http-node", "test", 0, parentOutputBytes)
 
 		// Embedded nodes:
 		// 1. Normal downstream node - triggers on success (should skip)
@@ -84,7 +85,7 @@ func TestErrorEventIntegration(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputBytes)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput)
 		require.NoError(t, err, "ProcessEmbeddedNodes should not error")
 		require.Len(t, results, 2, "Should have 2 results")
 
@@ -126,6 +127,7 @@ func TestErrorEventIntegration(t *testing.T) {
 			},
 		}
 		parentOutputBytes, _ := json.Marshal(successParentOutput)
+		parentOutput := embedded.WrapSuccess("http-node", "test", 0, parentOutputBytes)
 
 		embeddedNodes := []message.EmbeddedNode{
 			{
@@ -169,7 +171,7 @@ func TestErrorEventIntegration(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputBytes)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput)
 		require.NoError(t, err)
 		require.Len(t, results, 2)
 
@@ -213,6 +215,7 @@ func TestErrorEventIntegration(t *testing.T) {
 			"result": nil,
 		}
 		parentOutputBytes, _ := json.Marshal(failedParentOutput)
+		parentOutput := embedded.WrapSuccess("http-node", "test", 0, parentOutputBytes)
 
 		// Error handler that reads error message
 		embeddedNodes := []message.EmbeddedNode{
@@ -248,7 +251,7 @@ func TestErrorEventIntegration(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputBytes)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput)
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 
@@ -259,7 +262,8 @@ func TestErrorEventIntegration(t *testing.T) {
 		// Verify error handler received error message and executed successfully
 		// The simplecondition processor wraps its output, so we check for success
 		var output map[string]interface{}
-		err = json.Unmarshal(results[0].Output, &output)
+		outputBytes, _ := json.Marshal(results[0].Output)
+		err = json.Unmarshal(outputBytes, &output)
 		require.NoError(t, err)
 
 		// Verify wrapped structure - error handler executed successfully
@@ -299,6 +303,7 @@ func TestChainedErrorHandling(t *testing.T) {
 			"result": nil,
 		}
 		parentOutputBytes, _ := json.Marshal(failedOutput)
+		parentOutput := embedded.WrapSuccess("http-node", "test", 0, parentOutputBytes)
 
 		// Node 2 is an error handler triggered by node-1 error
 		embeddedNodes := []message.EmbeddedNode{
@@ -334,7 +339,7 @@ func TestChainedErrorHandling(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputBytes)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput)
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 
@@ -344,7 +349,8 @@ func TestChainedErrorHandling(t *testing.T) {
 
 		// Verify error logger has success metadata
 		var output map[string]interface{}
-		err = json.Unmarshal(results[0].Output, &output)
+		outputBytes, _ := json.Marshal(results[0].Output)
+		err = json.Unmarshal(outputBytes, &output)
 		require.NoError(t, err)
 
 		if meta, ok := output["_meta"].(map[string]interface{}); ok {
@@ -386,6 +392,7 @@ func TestErrorMetadataAvailability(t *testing.T) {
 			"result": nil,
 		}
 		parentOutputBytes, _ := json.Marshal(failedOutput)
+		parentOutput := embedded.WrapSuccess("http-node", "test", 0, parentOutputBytes)
 
 		embeddedNodes := []message.EmbeddedNode{
 			{
@@ -426,7 +433,7 @@ func TestErrorMetadataAvailability(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputBytes)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput)
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 
@@ -436,7 +443,8 @@ func TestErrorMetadataAvailability(t *testing.T) {
 
 		// Parse output to verify error metadata was passed
 		var output map[string]interface{}
-		err = json.Unmarshal(results[0].Output, &output)
+		outputBytes, _ := json.Marshal(results[0].Output)
+		err = json.Unmarshal(outputBytes, &output)
 		require.NoError(t, err)
 
 		// The condition should have evaluated the retryable field

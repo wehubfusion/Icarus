@@ -8,53 +8,16 @@ import (
 )
 
 // StandardOutput represents the standardized output structure for all nodes
-// This is a copy of the type from embedded package to avoid circular dependency
-type standardOutput struct {
+// This is a local copy to avoid circular dependency with embedded package
+// Must match the structure in embedded.StandardOutput
+type StandardOutput struct {
 	Meta   interface{} `json:"_meta"`
 	Events interface{} `json:"_events"`
 	Error  interface{} `json:"_error,omitempty"`
 	Result interface{} `json:"result"`
 }
 
-// extractResultFromOutput extracts the result field from StandardOutput format
-// Returns: (extractedResult, isStandardOutput)
-// If not StandardOutput format, returns original output with isStandardOutput=false
-func extractResultFromOutput(output []byte) ([]byte, bool) {
-	var standardOutput standardOutput
-	if err := json.Unmarshal(output, &standardOutput); err != nil {
-		// Not StandardOutput format - return as-is (backward compatibility)
-		return output, false
-	}
-
-	// Check if this is actually StandardOutput format by checking for _meta or _events
-	// If neither exists, it's likely not StandardOutput
-	var checkMap map[string]interface{}
-	if err := json.Unmarshal(output, &checkMap); err == nil {
-		_, hasMeta := checkMap["_meta"]
-		_, hasEvents := checkMap["_events"]
-		if !hasMeta && !hasEvents {
-			// Doesn't look like StandardOutput - return as-is
-			return output, false
-		}
-	}
-
-	// Extract result field
-	if standardOutput.Result == nil {
-		// Result is null (e.g., error case) - return empty object
-		return []byte("{}"), true
-	}
-
-	// Marshal result field to JSON
-	resultBytes, err := json.Marshal(standardOutput.Result)
-	if err != nil {
-		// Fallback to original output if marshaling fails
-		return output, false
-	}
-
-	return resultBytes, true
-}
-
-// NavigatePath extracts a value from StandardOutput JSON with namespace awareness
+// NavigatePath extracts a value from StandardOutput struct with namespace awareness
 // For field mappings: Extracts result field first, then navigates paths in extracted result
 // For event triggers: Uses full StandardOutput to access _events/ namespace
 // Supports:
@@ -62,8 +25,8 @@ func extractResultFromOutput(output []byte) ([]byte, bool) {
 // - Field paths: /result, /name, /field, etc. (extracts result first, then navigates as-is)
 // - Array iteration: //field (extracts from each array element)
 // Note: Converts slash notation to dot notation for gjson compatibility
-func NavigatePath(output []byte, path string) (interface{}, bool) {
-	if len(output) == 0 {
+func NavigatePath(output *StandardOutput, path string) (interface{}, bool) {
+	if output == nil {
 		return nil, false
 	}
 
@@ -74,14 +37,27 @@ func NavigatePath(output []byte, path string) (interface{}, bool) {
 	if strings.HasPrefix(pathNormalized, "_meta") ||
 		strings.HasPrefix(pathNormalized, "_events") ||
 		strings.HasPrefix(pathNormalized, "_error") {
-		// Direct access to reserved namespace in full StandardOutput
+		// Marshal StandardOutput to JSON for gjson navigation of reserved namespaces
+		outputBytes, err := json.Marshal(output)
+		if err != nil {
+			return nil, false
+		}
 		gjsonPath := strings.ReplaceAll(pathNormalized, "/", ".")
-		result := gjson.GetBytes(output, gjsonPath)
+		result := gjson.GetBytes(outputBytes, gjsonPath)
 		return result.Value(), result.Exists()
 	}
 
 	// Extract result from StandardOutput FIRST
-	resultOutput, _ := extractResultFromOutput(output)
+	if output.Result == nil {
+		// Result is null (e.g., error case)
+		return nil, false
+	}
+
+	// Marshal result field for gjson navigation
+	resultBytes, err := json.Marshal(output.Result)
+	if err != nil {
+		return nil, false
+	}
 
 	// Navigate paths as-is in extracted result
 	// No special handling - all paths navigate directly into the extracted result
@@ -104,11 +80,7 @@ func NavigatePath(output []byte, path string) (interface{}, bool) {
 
 	if adjustedPathNormalized == "" || adjustedPathNormalized == "/" {
 		// Return entire extracted result
-		var result interface{}
-		if err := json.Unmarshal(resultOutput, &result); err == nil {
-			return result, true
-		}
-		return nil, false
+		return output.Result, true
 	}
 
 	// Handle // notation for array iteration
@@ -122,8 +94,8 @@ func NavigatePath(output []byte, path string) (interface{}, bool) {
 			// If collection path is empty or just "/", check if root is an array
 			var collection gjson.Result
 			if collectionPath == "" || collectionPath == "/" {
-				// Root level - check if resultOutput itself is an array
-				parsed := gjson.ParseBytes(resultOutput)
+				// Root level - check if resultBytes itself is an array
+				parsed := gjson.ParseBytes(resultBytes)
 				if parsed.IsArray() {
 					collection = parsed
 				} else {
@@ -133,7 +105,7 @@ func NavigatePath(output []byte, path string) (interface{}, bool) {
 				// Navigate to collection
 				collectionPathClean := strings.TrimPrefix(collectionPath, "/")
 				collectionGjsonPath := strings.ReplaceAll(collectionPathClean, "/", ".")
-				collection = gjson.GetBytes(resultOutput, collectionGjsonPath)
+				collection = gjson.GetBytes(resultBytes, collectionGjsonPath)
 			}
 
 			if !collection.Exists() {
@@ -163,7 +135,7 @@ func NavigatePath(output []byte, path string) (interface{}, bool) {
 				fieldPathClean := strings.TrimPrefix(fieldPath, "/")
 				fullPath := collectionPathClean + "/" + fieldPathClean
 				fullGjsonPath := strings.ReplaceAll(fullPath, "/", ".")
-				result := gjson.GetBytes(resultOutput, fullGjsonPath)
+				result := gjson.GetBytes(resultBytes, fullGjsonPath)
 				return result.Value(), result.Exists()
 			}
 			return nil, false
@@ -172,12 +144,12 @@ func NavigatePath(output []byte, path string) (interface{}, bool) {
 
 	// Regular path navigation in extracted result
 	gjsonPath := strings.ReplaceAll(adjustedPathNormalized, "/", ".")
-	result := gjson.GetBytes(resultOutput, gjsonPath)
+	result := gjson.GetBytes(resultBytes, gjsonPath)
 	return result.Value(), result.Exists()
 }
 
 // NavigatePathString is a convenience wrapper that returns the string value
-func NavigatePathString(output []byte, path string) string {
+func NavigatePathString(output *StandardOutput, path string) string {
 	value, exists := NavigatePath(output, path)
 	if !exists {
 		return ""
@@ -189,7 +161,7 @@ func NavigatePathString(output []byte, path string) string {
 }
 
 // NavigatePathInt is a convenience wrapper that returns the int value
-func NavigatePathInt(output []byte, path string) int {
+func NavigatePathInt(output *StandardOutput, path string) int {
 	value, exists := NavigatePath(output, path)
 	if !exists {
 		return 0
@@ -201,7 +173,7 @@ func NavigatePathInt(output []byte, path string) int {
 }
 
 // NavigatePathBool is a convenience wrapper that returns the bool value
-func NavigatePathBool(output []byte, path string) bool {
+func NavigatePathBool(output *StandardOutput, path string) bool {
 	value, exists := NavigatePath(output, path)
 	if !exists {
 		return false

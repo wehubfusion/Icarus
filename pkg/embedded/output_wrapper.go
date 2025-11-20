@@ -6,14 +6,14 @@ import (
 )
 
 // WrapSuccess wraps a successful node execution output in the StandardOutput format
-func WrapSuccess(nodeID, pluginType string, execTime int64, output []byte) []byte {
+func WrapSuccess(nodeID, pluginType string, execTime int64, output []byte) *StandardOutput {
 	var data interface{}
 	if err := json.Unmarshal(output, &data); err != nil {
 		// If unmarshaling fails, store as raw string
 		data = string(output)
 	}
 
-	wrapped := StandardOutput{
+	wrapped := &StandardOutput{
 		Meta: MetaData{
 			Status:          "success",
 			NodeID:          nodeID,
@@ -29,13 +29,12 @@ func WrapSuccess(nodeID, pluginType string, execTime int64, output []byte) []byt
 		Result: data,
 	}
 
-	result, _ := json.Marshal(wrapped)
-	return result
+	return wrapped
 }
 
 // WrapError wraps a failed node execution in the StandardOutput format
-func WrapError(nodeID, pluginType string, execTime int64, err error) []byte {
-	wrapped := StandardOutput{
+func WrapError(nodeID, pluginType string, execTime int64, err error) *StandardOutput {
+	wrapped := &StandardOutput{
 		Meta: MetaData{
 			Status:          "failed",
 			NodeID:          nodeID,
@@ -56,13 +55,12 @@ func WrapError(nodeID, pluginType string, execTime int64, err error) []byte {
 		Result: nil,
 	}
 
-	result, _ := json.Marshal(wrapped)
-	return result
+	return wrapped
 }
 
 // WrapSkipped wraps a skipped node execution in the StandardOutput format
-func WrapSkipped(nodeID, pluginType string, reason string) []byte {
-	wrapped := StandardOutput{
+func WrapSkipped(nodeID, pluginType string, reason string) *StandardOutput {
+	wrapped := &StandardOutput{
 		Meta: MetaData{
 			Status:          "skipped",
 			NodeID:          nodeID,
@@ -82,6 +80,5 @@ func WrapSkipped(nodeID, pluginType string, reason string) []byte {
 		Result: nil,
 	}
 
-	result, _ := json.Marshal(wrapped)
-	return result
+	return wrapped
 }
