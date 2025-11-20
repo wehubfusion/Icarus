@@ -264,7 +264,7 @@ func TestErrorEventIntegration(t *testing.T) {
 
 		// Verify wrapped structure - error handler executed successfully
 		assert.Equal(t, "success", output["_meta"].(map[string]interface{})["status"])
-		
+
 		// Verify the error handler received the error event
 		assert.Equal(t, true, output["_events"].(map[string]interface{})["success"], "Error handler should succeed")
 
@@ -449,4 +449,3 @@ func TestErrorMetadataAvailability(t *testing.T) {
 		}
 	})
 }
-

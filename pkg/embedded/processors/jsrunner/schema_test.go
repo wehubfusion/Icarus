@@ -425,4 +425,3 @@ func TestExecutor_SchemaEnrichment_Integration(t *testing.T) {
 		assert.True(t, found, "Expected age validation error")
 	})
 }
-

@@ -371,7 +371,7 @@ func TestProduceOperation_StructureData(t *testing.T) {
 // TestProduceOperation_StrictValidation tests produce fails with invalid data in strict mode
 func TestProduceOperation_StrictValidation(t *testing.T) {
 	executor := createTestExecutor()
-	
+
 	// Schema requiring valid email
 	schema := map[string]interface{}{
 		"type": "OBJECT",
