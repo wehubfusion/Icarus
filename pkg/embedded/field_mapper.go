@@ -25,11 +25,13 @@ func NewFieldMapper(logger Logger) *FieldMapper {
 }
 
 // ApplyMappings applies field mappings from multiple source nodes to destination input
-// It uses the OutputRegistry to look up source outputs by sourceNodeId
+// It uses the SmartStorage to look up source outputs by sourceNodeId
+// currentIterationIndex: when >= 0, extract array items at this specific index from array sources
 func (fm *FieldMapper) ApplyMappings(
-	outputRegistry *OutputRegistry,
+	storage *SmartStorage,
 	mappings []message.FieldMapping,
 	destinationInput []byte,
+	currentIterationIndex int,
 ) ([]byte, error) {
 	if len(mappings) == 0 {
 		return destinationInput, nil
@@ -50,12 +52,63 @@ func (fm *FieldMapper) ApplyMappings(
 
 	// Apply mappings from each source node
 	for sourceNodeID, sourceMappings := range mappingsBySource {
-		// Get source output from registry (now returns *StandardOutput)
-		sourceOutput, exists := outputRegistry.Get(sourceNodeID)
-		if !exists {
-			// Source node hasn't executed yet or doesn't exist
-			// Skip these mappings (allows for optional dependencies)
-			continue
+		// Check if source has iteration context (array output)
+		iterationCtx, _ := storage.GetIterationContext(sourceNodeID)
+		
+		// Check if ANY mapping from this source has iterate flag
+		hasIterateFlag := false
+		for _, m := range sourceMappings {
+			if m.Iterate {
+				hasIterateFlag = true
+				break
+			}
+		}
+		
+		var sourceOutput *StandardOutput
+		var err error
+		
+		// Extract array items ONLY if: source is array AND has iterate flag AND valid iteration index
+		if iterationCtx != nil && iterationCtx.IsArray && hasIterateFlag && currentIterationIndex >= 0 {
+			// Validate iteration index and get array result
+			_, err := storage.GetWithIterationIndex(sourceNodeID, currentIterationIndex)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get source %s at iteration index %d: %w", 
+					sourceNodeID, currentIterationIndex, err)
+			}
+			
+			// Get the full source output
+			sourceOutput, err = storage.GetResultAsStandardOutput(sourceNodeID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get source output for %s after index validation: %w", sourceNodeID, err)
+			}
+			
+			// Extract the specific array item from result
+			if arrayResult, ok := sourceOutput.Result.([]interface{}); ok {
+				if currentIterationIndex < len(arrayResult) {
+					// Create new StandardOutput with single item instead of array
+					sourceOutput = &StandardOutput{
+						Meta:   sourceOutput.Meta,
+						Events: sourceOutput.Events,
+						Error:  sourceOutput.Error,
+						Result: arrayResult[currentIterationIndex],
+					}
+					fm.logger.Debug("Extracted array item from source",
+						Field{Key: "source_node_id", Value: sourceNodeID},
+						Field{Key: "iteration_index", Value: currentIterationIndex},
+						Field{Key: "array_length", Value: len(arrayResult)})
+				}
+			}
+		} else {
+			// Normal case: get source output as-is
+			// This includes: non-array sources, array sources without iterate flag, or no iteration index
+			sourceOutput, err = storage.GetResultAsStandardOutput(sourceNodeID)
+			if err != nil {
+				// Source node hasn't executed yet or doesn't exist
+				// Skip these mappings (allows for optional dependencies)
+				fm.logger.Debug("Source node not available (optional dependency)",
+					Field{Key: "source_node_id", Value: sourceNodeID})
+				continue
+			}
 		}
 
 		// Validate source output is not nil

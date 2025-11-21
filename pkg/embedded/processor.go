@@ -86,15 +86,17 @@ func NewProcessorWithLogger(registry *ExecutorRegistry, concurrent bool, limiter
 
 // ProcessEmbeddedNodes processes embedded nodes either concurrently or sequentially
 // based on the processor configuration. Dispatches to the appropriate implementation.
+// consumerGraph tracks which downstream nodes consume each source node's output for auto-cleanup.
 func (p *Processor) ProcessEmbeddedNodes(
 	ctx context.Context,
 	msg *message.Message,
 	parentOutput *StandardOutput,
+	consumerGraph map[string][]string,
 ) ([]EmbeddedNodeResult, error) {
 	if p.concurrent {
-		return p.ProcessEmbeddedNodesConcurrent(ctx, msg, parentOutput)
+		return p.ProcessEmbeddedNodesConcurrent(ctx, msg, parentOutput, consumerGraph)
 	}
-	return p.processEmbeddedNodesSequential(ctx, msg, parentOutput)
+	return p.processEmbeddedNodesSequential(ctx, msg, parentOutput, consumerGraph)
 }
 
 // processEmbeddedNodesSequential processes all embedded nodes in a message sequentially
@@ -103,6 +105,7 @@ func (p *Processor) processEmbeddedNodesSequential(
 	ctx context.Context,
 	msg *message.Message,
 	parentOutput *StandardOutput,
+	consumerGraph map[string][]string,
 ) ([]EmbeddedNodeResult, error) {
 	if msg == nil {
 		return nil, fmt.Errorf("message cannot be nil")
@@ -119,15 +122,47 @@ func (p *Processor) processEmbeddedNodesSequential(
 		return nodes[i].ExecutionOrder < nodes[j].ExecutionOrder
 	})
 
-	// Create output registry and store parent output
-	outputRegistry := NewOutputRegistry()
-	outputRegistry.Set(msg.Node.NodeID, parentOutput)
+	// Consumer graph is REQUIRED for array coordination - no backward compatibility
+	if len(consumerGraph) == 0 {
+		return nil, fmt.Errorf("consumer graph is required for embedded node execution (ensure Zeus computed it)")
+	}
+
+	storage := NewSmartStorageWithConsumers(consumerGraph, p.logger)
+	p.logger.Debug("Initialized SmartStorage with consumer graph",
+		Field{Key: "source_count", Value: len(consumerGraph)})
+	
+	// Store parent output in storage with array detection
+	parentResult := map[string]interface{}{
+		"_meta":   parentOutput.Meta,
+		"_events": parentOutput.Events,
+		"_error":  parentOutput.Error,
+		"result":  parentOutput.Result,
+	}
+
+	// Detect if parent output is an array result
+	var iterationCtx *IterationContext
+	if parentOutput.Result != nil {
+		if arrayResult, isArray := parentOutput.Result.([]interface{}); isArray {
+			iterationCtx = &IterationContext{
+				IsArray:     true,
+				ArrayPath:   "/result",
+				ArrayLength: len(arrayResult),
+			}
+			p.logger.Debug("Parent output is array",
+				Field{Key: "node_id", Value: msg.Node.NodeID},
+				Field{Key: "array_length", Value: len(arrayResult)})
+		}
+	}
+
+	if err := storage.Set(msg.Node.NodeID, parentResult, iterationCtx); err != nil {
+		return nil, fmt.Errorf("failed to store parent output: %w", err)
+	}
 
 	// Process each node sequentially
 	results := make([]EmbeddedNodeResult, 0, len(nodes))
 
 	for _, embNode := range nodes {
-		result := p.processNode(ctx, embNode, outputRegistry)
+		result := p.processNode(ctx, embNode, storage)
 		results = append(results, result)
 	}
 
@@ -140,6 +175,7 @@ func (p *Processor) ProcessEmbeddedNodesConcurrent(
 	ctx context.Context,
 	msg *message.Message,
 	parentOutput *StandardOutput,
+	consumerGraph map[string][]string,
 ) ([]EmbeddedNodeResult, error) {
 	if msg == nil {
 		return nil, fmt.Errorf("message cannot be nil")
@@ -153,9 +189,42 @@ func (p *Processor) ProcessEmbeddedNodesConcurrent(
 	depthGroups := groupNodesByDepth(msg.EmbeddedNodes)
 	maxDepth := getMaxDepth(depthGroups)
 
-	// Create thread-safe output registry
-	outputRegistry := NewOutputRegistry()
-	outputRegistry.Set(msg.Node.NodeID, parentOutput)
+	// Consumer graph is REQUIRED for array coordination - no backward compatibility
+	if len(consumerGraph) == 0 {
+		return nil, fmt.Errorf("consumer graph is required for embedded node execution (ensure Zeus computed it)")
+	}
+
+	storage := NewSmartStorageWithConsumers(consumerGraph, p.logger)
+	p.logger.Debug("Initialized SmartStorage with consumer graph",
+		Field{Key: "source_count", Value: len(consumerGraph)})
+	
+	// Store parent output in storage with array detection
+	parentResult := map[string]interface{}{
+		"_meta":   parentOutput.Meta,
+		"_events": parentOutput.Events,
+		"_error":  parentOutput.Error,
+		"result":  parentOutput.Result,
+	}
+
+	// Detect if parent output is an array result
+	var iterationCtx *IterationContext
+	if parentOutput.Result != nil {
+		if arrayResult, isArray := parentOutput.Result.([]interface{}); isArray {
+			iterationCtx = &IterationContext{
+				IsArray:     true,
+				ArrayPath:   "/result",
+				ArrayLength: len(arrayResult),
+			}
+			p.logger.Debug("Parent output is array",
+				Field{Key: "node_id", Value: msg.Node.NodeID},
+				Field{Key: "array_length", Value: len(arrayResult)})
+		}
+	}
+
+	if err := storage.Set(msg.Node.NodeID, parentResult, iterationCtx); err != nil {
+		return nil, fmt.Errorf("failed to store parent output: %w", err)
+	}
+	
 
 	// Process each depth level sequentially
 	// Within each level, process nodes concurrently
@@ -178,7 +247,7 @@ func (p *Processor) ProcessEmbeddedNodesConcurrent(
 				embNode := node
 				err := p.limiter.Go(ctx, func() error {
 					defer wg.Done()
-					result := p.processNode(ctx, embNode, outputRegistry)
+					result := p.processNode(ctx, embNode, storage)
 
 					resultsMu.Lock()
 					allResults = append(allResults, result)
@@ -198,8 +267,14 @@ func (p *Processor) ProcessEmbeddedNodesConcurrent(
 					// Wrap limiter error
 					wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, 0, fmt.Errorf("limiter error: %w", err))
 
-					// Store error output in registry
-					outputRegistry.Set(embNode.NodeID, wrappedOutput)
+					// Store error output in storage
+					errorResult := map[string]interface{}{
+						"_meta":   wrappedOutput.Meta,
+						"_events": wrappedOutput.Events,
+						"_error":  wrappedOutput.Error,
+						"result":  wrappedOutput.Result,
+					}
+					storage.Set(embNode.NodeID, errorResult, nil)
 
 					result := EmbeddedNodeResult{
 						NodeID:               embNode.NodeID,
@@ -218,7 +293,7 @@ func (p *Processor) ProcessEmbeddedNodesConcurrent(
 				// No limiter, spawn goroutine directly
 				go func(embNode message.EmbeddedNode) {
 					defer wg.Done()
-					result := p.processNode(ctx, embNode, outputRegistry)
+					result := p.processNode(ctx, embNode, storage)
 
 					resultsMu.Lock()
 					allResults = append(allResults, result)
@@ -301,6 +376,231 @@ func (p *Processor) detectAutoIteration(mappedInput []byte) (bool, []interface{}
 	return true, inputArray, nil
 }
 
+// checkCoordinatedIteration checks if this node needs coordinated array iteration
+// Returns true if ANY field mapping has iterate:true and references an array source
+// Also returns the maximum array length across all array sources for validation
+func (p *Processor) checkCoordinatedIteration(embNode message.EmbeddedNode, storage *SmartStorage) (bool, int) {
+	maxArrayLength := 0
+	needsIteration := false
+
+	for _, mapping := range embNode.FieldMappings {
+		// Skip event triggers
+		if mapping.IsEventTrigger {
+			continue
+		}
+
+		// Check if this mapping has iterate flag
+		if mapping.Iterate {
+			// Check if the source is an array
+			iterCtx, err := storage.GetIterationContext(mapping.SourceNodeID)
+			if err == nil && iterCtx != nil && iterCtx.IsArray {
+				needsIteration = true
+				if iterCtx.ArrayLength > maxArrayLength {
+					maxArrayLength = iterCtx.ArrayLength
+				}
+				p.logger.Debug("Found array source with iterate flag",
+					Field{Key: "node_id", Value: embNode.NodeID},
+					Field{Key: "source_node_id", Value: mapping.SourceNodeID},
+					Field{Key: "array_length", Value: iterCtx.ArrayLength})
+			}
+		}
+	}
+
+	return needsIteration, maxArrayLength
+}
+
+// processWithCoordinatedIteration handles coordinated iteration across multiple array sources
+// Each iteration index applies field mappings at that index, then executes the plugin
+func (p *Processor) processWithCoordinatedIteration(
+	ctx context.Context,
+	embNode message.EmbeddedNode,
+	arrayLength int,
+	startTime time.Time,
+	storage *SmartStorage,
+) EmbeddedNodeResult {
+	if arrayLength == 0 {
+		// Empty array - return empty result
+		execTime := time.Since(startTime).Milliseconds()
+		wrappedOutput := &StandardOutput{
+			Meta: MetaData{
+				Status:          "success",
+				NodeID:          embNode.NodeID,
+				PluginType:      embNode.PluginType,
+				ExecutionTimeMs: execTime,
+				Timestamp:       time.Now(),
+			},
+			Events: EventEndpoints{
+				Success: true,
+				Error:   false,
+			},
+			Result: []interface{}{},
+		}
+
+		successResult := map[string]interface{}{
+			"_meta":   wrappedOutput.Meta,
+			"_events": wrappedOutput.Events,
+			"result":  wrappedOutput.Result,
+		}
+		iterationCtx := &IterationContext{
+			IsArray:     true,
+			ArrayPath:   "/result",
+			ArrayLength: 0,
+		}
+		storage.Set(embNode.NodeID, successResult, iterationCtx)
+
+		return EmbeddedNodeResult{
+			NodeID:               embNode.NodeID,
+			PluginType:           embNode.PluginType,
+			Status:               "success",
+			Output:               wrappedOutput,
+			Error:                "",
+			ExecutionOrder:       embNode.ExecutionOrder,
+			ProcessingDurationMs: execTime,
+		}
+	}
+
+	// Process each array index
+	results := make([]interface{}, arrayLength)
+	
+	for i := 0; i < arrayLength; i++ {
+		// Apply field mappings at this specific iteration index
+		mappedInput, err := p.fieldMapper.ApplyMappings(storage, embNode.FieldMappings, []byte("{}"), i)
+		if err != nil {
+			execTime := time.Since(startTime).Milliseconds()
+			wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, 
+				fmt.Errorf("field mapping failed at iteration %d: %w", i, err))
+
+			errorResult := map[string]interface{}{
+				"_meta":   wrappedOutput.Meta,
+				"_events": wrappedOutput.Events,
+				"_error":  wrappedOutput.Error,
+				"result":  wrappedOutput.Result,
+			}
+			storage.Set(embNode.NodeID, errorResult, nil)
+
+			return EmbeddedNodeResult{
+				NodeID:               embNode.NodeID,
+				PluginType:           embNode.PluginType,
+				Status:               "failed",
+				Output:               wrappedOutput,
+				Error:                fmt.Sprintf("field mapping failed at iteration %d: %v", i, err),
+				ExecutionOrder:       embNode.ExecutionOrder,
+				ProcessingDurationMs: execTime,
+			}
+		}
+
+		// Execute plugin with mapped input for this iteration
+		nodeConfig := NodeConfig{
+			NodeID:        embNode.NodeID,
+			PluginType:    embNode.PluginType,
+			Configuration: embNode.Configuration,
+			Input:         mappedInput,
+			Connection:    embNode.Connection,
+			Schema:        embNode.Schema,
+		}
+
+		nodeOutput, err := p.registry.Execute(ctx, nodeConfig)
+		if err != nil {
+			execTime := time.Since(startTime).Milliseconds()
+			wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime,
+				fmt.Errorf("execution failed at iteration %d: %w", i, err))
+
+			errorResult := map[string]interface{}{
+				"_meta":   wrappedOutput.Meta,
+				"_events": wrappedOutput.Events,
+				"_error":  wrappedOutput.Error,
+				"result":  wrappedOutput.Result,
+			}
+			storage.Set(embNode.NodeID, errorResult, nil)
+
+			return EmbeddedNodeResult{
+				NodeID:               embNode.NodeID,
+				PluginType:           embNode.PluginType,
+				Status:               "failed",
+				Output:               wrappedOutput,
+				Error:                fmt.Sprintf("execution failed at iteration %d: %v", i, err),
+				ExecutionOrder:       embNode.ExecutionOrder,
+				ProcessingDurationMs: execTime,
+			}
+		}
+
+		// Parse output and extract result
+		var output StandardOutput
+		if err := json.Unmarshal(nodeOutput, &output); err != nil {
+			execTime := time.Since(startTime).Milliseconds()
+			wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime,
+				fmt.Errorf("failed parsing output at iteration %d: %w", i, err))
+
+			errorResult := map[string]interface{}{
+				"_meta":   wrappedOutput.Meta,
+				"_events": wrappedOutput.Events,
+				"_error":  wrappedOutput.Error,
+				"result":  wrappedOutput.Result,
+			}
+			storage.Set(embNode.NodeID, errorResult, nil)
+
+			return EmbeddedNodeResult{
+				NodeID:               embNode.NodeID,
+				PluginType:           embNode.PluginType,
+				Status:               "failed",
+				Output:               wrappedOutput,
+				Error:                fmt.Sprintf("failed parsing output at iteration %d: %v", i, err),
+				ExecutionOrder:       embNode.ExecutionOrder,
+				ProcessingDurationMs: execTime,
+			}
+		}
+
+		results[i] = output.Result
+	}
+
+	// Mark all sources as consumed after successful coordinated iteration
+	for _, mapping := range embNode.FieldMappings {
+		if !mapping.IsEventTrigger {
+			storage.MarkConsumed(mapping.SourceNodeID, embNode.NodeID)
+		}
+	}
+
+	// Wrap results in StandardOutput with array
+	execTime := time.Since(startTime).Milliseconds()
+	wrappedOutput := &StandardOutput{
+		Meta: MetaData{
+			Status:          "success",
+			NodeID:          embNode.NodeID,
+			PluginType:      embNode.PluginType,
+			ExecutionTimeMs: execTime,
+			Timestamp:       time.Now(),
+		},
+		Events: EventEndpoints{
+			Success: true,
+			Error:   false,
+		},
+		Result: results,
+	}
+
+	// Store with iteration context
+	successResult := map[string]interface{}{
+		"_meta":   wrappedOutput.Meta,
+		"_events": wrappedOutput.Events,
+		"result":  wrappedOutput.Result,
+	}
+	iterationCtx := &IterationContext{
+		IsArray:     true,
+		ArrayPath:   "/result",
+		ArrayLength: arrayLength,
+	}
+	storage.Set(embNode.NodeID, successResult, iterationCtx)
+
+	return EmbeddedNodeResult{
+		NodeID:               embNode.NodeID,
+		PluginType:           embNode.PluginType,
+		Status:               "success",
+		Output:               wrappedOutput,
+		Error:                "",
+		ExecutionOrder:       embNode.ExecutionOrder,
+		ProcessingDurationMs: execTime,
+	}
+}
+
 // processWithAutoIteration handles auto-detected array iteration concurrently
 // Processes each item through the plugin and aggregates results into single StandardOutput
 func (p *Processor) processWithAutoIteration(
@@ -308,7 +608,7 @@ func (p *Processor) processWithAutoIteration(
 	embNode message.EmbeddedNode,
 	arrayItems []interface{},
 	startTime time.Time,
-	outputRegistry *OutputRegistry,
+	storage *SmartStorage,
 ) EmbeddedNodeResult {
 	// Create iterator with concurrency limiter support
 	var iterator *iteration.Iterator
@@ -381,7 +681,15 @@ func (p *Processor) processWithAutoIteration(
 	if err != nil {
 		// Iteration failed - wrap error
 		wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, fmt.Errorf("auto-iteration failed: %w", err))
-		outputRegistry.Set(embNode.NodeID, wrappedOutput)
+		
+		// Store error in storage
+		errorResult := map[string]interface{}{
+			"_meta":   wrappedOutput.Meta,
+			"_events": wrappedOutput.Events,
+			"_error":  wrappedOutput.Error,
+			"result":  wrappedOutput.Result,
+		}
+		storage.Set(embNode.NodeID, errorResult, nil)
 
 		return EmbeddedNodeResult{
 			NodeID:               embNode.NodeID,
@@ -411,7 +719,20 @@ func (p *Processor) processWithAutoIteration(
 		Result: results, // Flat array: [result1, result2, result3]
 	}
 
-	outputRegistry.Set(embNode.NodeID, wrappedOutput)
+	// Create iteration context for array output
+	iterationContext := &IterationContext{
+		IsArray:     true,
+		ArrayPath:   "/result",
+		ArrayLength: len(arrayItems),
+	}
+	
+	// Store in storage with iteration context
+	successResult := map[string]interface{}{
+		"_meta":   wrappedOutput.Meta,
+		"_events": wrappedOutput.Events,
+		"result":  wrappedOutput.Result,
+	}
+	storage.Set(embNode.NodeID, successResult, iterationContext)
 
 	return EmbeddedNodeResult{
 		NodeID:               embNode.NodeID,
@@ -429,18 +750,23 @@ func (p *Processor) processWithAutoIteration(
 func (p *Processor) processNode(
 	ctx context.Context,
 	embNode message.EmbeddedNode,
-	outputRegistry *OutputRegistry,
+	storage *SmartStorage,
 ) EmbeddedNodeResult {
 	startTime := time.Now()
 
 	// Check event trigger conditions before executing
-	shouldExecute, skipReason := p.checkEventTriggers(embNode, outputRegistry)
+	shouldExecute, skipReason := p.checkEventTriggers(embNode, storage)
 	if !shouldExecute {
 		// Event trigger conditions not met - skip this node
 		wrappedOutput := WrapSkipped(embNode.NodeID, embNode.PluginType, skipReason)
 
-		// Store skipped output in registry for downstream nodes to reference
-		outputRegistry.Set(embNode.NodeID, wrappedOutput)
+		// Store skipped output in storage for downstream nodes to reference
+		skippedResult := map[string]interface{}{
+			"_meta":   wrappedOutput.Meta,
+			"_events": wrappedOutput.Events,
+			"result":  wrappedOutput.Result,
+		}
+		storage.Set(embNode.NodeID, skippedResult, nil)
 
 		return EmbeddedNodeResult{
 			NodeID:               embNode.NodeID,
@@ -453,15 +779,41 @@ func (p *Processor) processNode(
 		}
 	}
 
-	// Apply field mappings to prepare input for this node
-	mappedInput, err := p.fieldMapper.ApplyMappings(outputRegistry, embNode.FieldMappings, []byte("{}"))
+	// ARRAY HANDLING: Three possible paths (checked in priority order):
+	// 1. COORDINATED ITERATION: Field mappings have iterate:true from array sources
+	//    → Process N times (once per array index), extracting item[i] from each source
+	// 2. AUTO-ITERATION: Mapped input result is an array (detected via patterns)
+	//    → Process N times (once per array item) through the plugin
+	// 3. NORMAL: Single item processing (no arrays involved)
+
+	// Path 1: Check for coordinated iteration (takes precedence)
+	needsCoordinatedIteration, maxArrayLength := p.checkCoordinatedIteration(embNode, storage)
+	
+	if needsCoordinatedIteration {
+		p.logger.Debug("Using COORDINATED ITERATION path",
+			Field{Key: "node_id", Value: embNode.NodeID},
+			Field{Key: "array_length", Value: maxArrayLength})
+		// Process this node for each array index with coordinated field mapping
+		// This path handles MarkConsumed internally and returns immediately
+		return p.processWithCoordinatedIteration(ctx, embNode, maxArrayLength, startTime, storage)
+	}
+
+	// Path 2 & 3: Apply field mappings (will determine if auto-iteration is needed)
+	// Use iteration index -1 (no coordinated iteration)
+	mappedInput, err := p.fieldMapper.ApplyMappings(storage, embNode.FieldMappings, []byte("{}"), -1)
 	if err != nil {
 		// Field mapping failed - wrap error output
 		execTime := time.Since(startTime).Milliseconds()
 		wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, fmt.Errorf("field mapping failed: %w", err))
 
-		// ALWAYS store in registry (even errors)
-		outputRegistry.Set(embNode.NodeID, wrappedOutput)
+		// Store error in storage
+		errorResult := map[string]interface{}{
+			"_meta":   wrappedOutput.Meta,
+			"_events": wrappedOutput.Events,
+			"_error":  wrappedOutput.Error,
+			"result":  wrappedOutput.Result,
+		}
+		storage.Set(embNode.NodeID, errorResult, nil)
 
 		return EmbeddedNodeResult{
 			NodeID:               embNode.NodeID,
@@ -474,13 +826,20 @@ func (p *Processor) processNode(
 		}
 	}
 
-	// Check if input is an array requiring auto-iteration
+	// Path 2: Check if mapped input is an array requiring auto-iteration
 	isArray, arrayItems, err := p.detectAutoIteration(mappedInput)
 	if err != nil {
 		// Detection failed - wrap error output
 		execTime := time.Since(startTime).Milliseconds()
 		wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, fmt.Errorf("auto-iteration detection failed: %w", err))
-		outputRegistry.Set(embNode.NodeID, wrappedOutput)
+		
+		errorResult := map[string]interface{}{
+			"_meta":   wrappedOutput.Meta,
+			"_events": wrappedOutput.Events,
+			"_error":  wrappedOutput.Error,
+			"result":  wrappedOutput.Result,
+		}
+		storage.Set(embNode.NodeID, errorResult, nil)
 
 		return EmbeddedNodeResult{
 			NodeID:               embNode.NodeID,
@@ -494,11 +853,26 @@ func (p *Processor) processNode(
 	}
 
 	if isArray {
+		p.logger.Debug("Using AUTO-ITERATION path",
+			Field{Key: "node_id", Value: embNode.NodeID},
+			Field{Key: "array_items", Value: len(arrayItems)})
 		// Route to auto-iteration handler (even for empty arrays)
-		return p.processWithAutoIteration(ctx, embNode, arrayItems, startTime, outputRegistry)
+		result := p.processWithAutoIteration(ctx, embNode, arrayItems, startTime, storage)
+		
+		// Mark sources consumed after successful auto-iteration
+		if result.Status == "success" {
+			for _, mapping := range embNode.FieldMappings {
+				if !mapping.IsEventTrigger {
+					storage.MarkConsumed(mapping.SourceNodeID, embNode.NodeID)
+				}
+			}
+		}
+		return result
 	}
 
-	// Single-item processing (normal flow)
+	// Path 3: Single-item processing (normal flow)
+	p.logger.Debug("Using NORMAL processing path",
+		Field{Key: "node_id", Value: embNode.NodeID})
 	if embNode.PluginType == "plugin-js" || embNode.PluginType == "plugin-jsrunner" {
 		p.logger.Info("JS Runner input mapped",
 			Field{Key: "node_id", Value: embNode.NodeID},
@@ -535,8 +909,25 @@ func (p *Processor) processNode(
 		wrappedOutput = WrapSuccess(embNode.NodeID, embNode.PluginType, execTime, nodeOutput)
 	}
 
-	// ALWAYS store in registry (even errors)
-	outputRegistry.Set(embNode.NodeID, wrappedOutput)
+	// Store in storage (even errors)
+	finalResult := map[string]interface{}{
+		"_meta":   wrappedOutput.Meta,
+		"_events": wrappedOutput.Events,
+		"result":  wrappedOutput.Result,
+	}
+	if wrappedOutput.Error != nil {
+		finalResult["_error"] = wrappedOutput.Error
+	}
+	storage.Set(embNode.NodeID, finalResult, nil)
+
+	// Mark sources consumed after successful storage
+	if status == "success" {
+		for _, mapping := range embNode.FieldMappings {
+			if !mapping.IsEventTrigger {
+				storage.MarkConsumed(mapping.SourceNodeID, embNode.NodeID)
+			}
+		}
+	}
 
 	return EmbeddedNodeResult{
 		NodeID:               embNode.NodeID,
@@ -553,7 +944,7 @@ func (p *Processor) processNode(
 // Returns (shouldExecute bool, skipReason string)
 func (p *Processor) checkEventTriggers(
 	embNode message.EmbeddedNode,
-	outputRegistry *OutputRegistry,
+	storage *SmartStorage,
 ) (bool, string) {
 	// Find all event trigger field mappings
 	eventTriggers := []message.FieldMapping{}
@@ -570,9 +961,9 @@ func (p *Processor) checkEventTriggers(
 
 	// Check each event trigger - ALL must be satisfied for node to execute
 	for _, trigger := range eventTriggers {
-		// Get source output from registry
-		sourceOutput, exists := outputRegistry.Get(trigger.SourceNodeID)
-		if !exists {
+		// Get source output from storage
+		sourceOutput, err := storage.GetResultAsStandardOutput(trigger.SourceNodeID)
+		if err != nil {
 			// Source node hasn't executed yet or failed
 			return false, fmt.Sprintf("event trigger source node '%s' not found", trigger.SourceNodeID)
 		}

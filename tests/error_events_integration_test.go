@@ -85,7 +85,7 @@ func TestErrorEventIntegration(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput, map[string][]string{})
 		require.NoError(t, err, "ProcessEmbeddedNodes should not error")
 		require.Len(t, results, 2, "Should have 2 results")
 
@@ -171,7 +171,7 @@ func TestErrorEventIntegration(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput, map[string][]string{})
 		require.NoError(t, err)
 		require.Len(t, results, 2)
 
@@ -251,7 +251,7 @@ func TestErrorEventIntegration(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput, map[string][]string{})
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 
@@ -336,14 +336,12 @@ func TestChainedErrorHandling(t *testing.T) {
 				WorkflowID: "chained-error-test",
 				RunID:      "chained-error-run",
 			},
-			EmbeddedNodes: embeddedNodes,
-		}
+		EmbeddedNodes: embeddedNodes,
+	}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput)
-		require.NoError(t, err)
-		require.Len(t, results, 1)
-
-		// Error logger executed (triggered by node-1 error)
+	results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput, map[string][]string{})
+	require.NoError(t, err)
+	require.Len(t, results, 1)		// Error logger executed (triggered by node-1 error)
 		assert.Equal(t, "error-logger", results[0].NodeID)
 		assert.Equal(t, "success", results[0].Status, "Error logger should execute successfully")
 
@@ -433,7 +431,7 @@ func TestErrorMetadataAvailability(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput, map[string][]string{})
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 

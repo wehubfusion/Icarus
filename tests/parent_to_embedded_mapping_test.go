@@ -68,7 +68,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			},
 			EmbeddedNodes: embeddedNodes,
 		}
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped, map[string][]string{})
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 		// Verify embedded node executed successfully (not skipped)
@@ -124,7 +124,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, map[string][]string{})
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 		assert.Equal(t, "success", results[0].Status)
@@ -189,7 +189,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, map[string][]string{})
 		require.Len(t, results, 2)
 		// Both nodes should execute successfully - this is the key test!
 		// If field mapping from parent works, both nodes will have "success" status
@@ -239,7 +239,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, map[string][]string{})
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 		// Verify embedded node executed (triggered by parent success)
@@ -279,7 +279,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, map[string][]string{})
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 		// Verify error handler executed (triggered by parent error)
@@ -333,7 +333,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, map[string][]string{})
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 		// Verify ESR Parser executed successfully

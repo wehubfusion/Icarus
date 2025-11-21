@@ -76,7 +76,7 @@ func TestFieldMapper_SetFieldAtPath(t *testing.T) {
 
 func TestFieldMapper_ApplyMappings_SimplePath(t *testing.T) {
 	fm := NewFieldMapper(nil)
-	registry := NewOutputRegistry()
+	storage := NewSmartStorage(nil)
 
 	// Create a source output with StandardOutput format
 	sourceData := map[string]interface{}{
@@ -85,7 +85,14 @@ func TestFieldMapper_ApplyMappings_SimplePath(t *testing.T) {
 	}
 	sourceJSON, _ := json.Marshal(sourceData)
 	sourceOutput := WrapSuccess("source-node-1", "test", 0, sourceJSON)
-	registry.Set("source-node-1", sourceOutput)
+	
+	// Store in SmartStorage
+	sourceResult := map[string]interface{}{
+		"_meta":   sourceOutput.Meta,
+		"_events": sourceOutput.Events,
+		"result":  sourceOutput.Result,
+	}
+	storage.Set("source-node-1", sourceResult, nil)
 
 	// Create field mapping: /name from source -> /name to destination
 	mappings := []message.FieldMapping{
@@ -98,7 +105,7 @@ func TestFieldMapper_ApplyMappings_SimplePath(t *testing.T) {
 	}
 
 	// Apply mappings
-	result, err := fm.ApplyMappings(registry, mappings, []byte("{}"))
+	result, err := fm.ApplyMappings(storage, mappings, []byte("{}"), -1)
 	require.NoError(t, err)
 
 	// Parse result
@@ -113,7 +120,7 @@ func TestFieldMapper_ApplyMappings_SimplePath(t *testing.T) {
 
 func TestFieldMapper_ApplyMappings_NestedPath(t *testing.T) {
 	fm := NewFieldMapper(nil)
-	registry := NewOutputRegistry()
+	storage := NewSmartStorage(nil)
 
 	// Create a source output
 	sourceData := map[string]interface{}{
@@ -123,7 +130,14 @@ func TestFieldMapper_ApplyMappings_NestedPath(t *testing.T) {
 	}
 	sourceJSON, _ := json.Marshal(sourceData)
 	sourceOutput := WrapSuccess("source-node-1", "test", 0, sourceJSON)
-	registry.Set("source-node-1", sourceOutput)
+	
+	// Store in SmartStorage
+	sourceResult := map[string]interface{}{
+		"_meta":   sourceOutput.Meta,
+		"_events": sourceOutput.Events,
+		"result":  sourceOutput.Result,
+	}
+	storage.Set("source-node-1", sourceResult, nil)
 
 	// Create field mapping: /user/email from source -> /user/email to destination
 	mappings := []message.FieldMapping{
@@ -136,7 +150,7 @@ func TestFieldMapper_ApplyMappings_NestedPath(t *testing.T) {
 	}
 
 	// Apply mappings
-	result, err := fm.ApplyMappings(registry, mappings, []byte("{}"))
+	result, err := fm.ApplyMappings(storage, mappings, []byte("{}"), -1)
 	require.NoError(t, err)
 
 	// Parse result
@@ -152,7 +166,7 @@ func TestFieldMapper_ApplyMappings_NestedPath(t *testing.T) {
 
 func TestFieldMapper_ApplyMappings_EmptyEndpoints_RootLevelMerge(t *testing.T) {
 	fm := NewFieldMapper(nil)
-	registry := NewOutputRegistry()
+	storage := NewSmartStorage(nil)
 
 	// Create a source output with StandardOutput format containing ESR-like data
 	sourceData := map[string]interface{}{
@@ -163,7 +177,14 @@ func TestFieldMapper_ApplyMappings_EmptyEndpoints_RootLevelMerge(t *testing.T) {
 	}
 	sourceJSON, _ := json.Marshal(sourceData)
 	sourceOutput := WrapSuccess("source-node-1", "test", 0, sourceJSON)
-	registry.Set("source-node-1", sourceOutput)
+	
+	// Store in SmartStorage
+	sourceResult := map[string]interface{}{
+		"_meta":   sourceOutput.Meta,
+		"_events": sourceOutput.Events,
+		"result":  sourceOutput.Result,
+	}
+	storage.Set("source-node-1", sourceResult, nil)
 
 	// Create field mapping: empty sourceEndpoint and empty destinationEndpoint
 	// This should extract entire data field and merge at root level
@@ -177,7 +198,7 @@ func TestFieldMapper_ApplyMappings_EmptyEndpoints_RootLevelMerge(t *testing.T) {
 	}
 
 	// Apply mappings with empty destination input
-	result, err := fm.ApplyMappings(registry, mappings, []byte("{}"))
+	result, err := fm.ApplyMappings(storage, mappings, []byte("{}"), -1)
 	require.NoError(t, err)
 
 	// Parse result
