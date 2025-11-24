@@ -1,8 +1,10 @@
-package embedded
+package output
 
 import (
 	"encoding/json"
 	"time"
+
+	runtimeerrors "github.com/wehubfusion/Icarus/pkg/embedded/runtime/errors"
 )
 
 // WrapSuccess wraps a successful node execution output in the StandardOutput format
@@ -47,10 +49,10 @@ func WrapError(nodeID, pluginType string, execTime int64, err error) *StandardOu
 			Error:   true,
 		},
 		Error: &ErrorInfo{
-			Code:      CategorizeError(err),
+			Code:      runtimeerrors.CategorizeError(err),
 			Message:   err.Error(),
-			Retryable: IsRetryable(err),
-			Details:   ExtractErrorDetails(err),
+			Retryable: runtimeerrors.IsRetryable(err),
+			Details:   runtimeerrors.ExtractErrorDetails(err),
 		},
 		Result: nil,
 	}

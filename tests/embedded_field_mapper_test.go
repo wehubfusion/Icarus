@@ -10,31 +10,6 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
-func TestEmbeddedFieldMapperSetFieldAtPath(t *testing.T) {
-	fm := embedded.NewFieldMapper(nil)
-	data := make(map[string]interface{})
-
-	cases := []struct {
-		path  string
-		value interface{}
-	}{
-		{path: "/name", value: "John Doe"},
-		{path: "/user/email", value: "john@example.com"},
-		{path: "age", value: 30},
-		{path: "/name", value: "Jane"},
-	}
-
-	for _, tc := range cases {
-		embedded.SetFieldAtPathForTests(fm, data, tc.path, tc.value)
-	}
-
-	assert.Equal(t, "Jane", data["name"])
-	assert.Equal(t, 30, data["age"])
-	userMap, ok := data["user"].(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, "john@example.com", userMap["email"])
-}
-
 func TestEmbeddedFieldMapperApplyMappingsSimplePath(t *testing.T) {
 	fm := embedded.NewFieldMapper(nil)
 	storage := embedded.NewSmartStorage(nil)

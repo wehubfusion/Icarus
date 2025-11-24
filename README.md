@@ -764,6 +764,20 @@ processor := embedded.NewProcessorWithLimiter(
 results, err := processor.ProcessEmbeddedNodes(ctx, msg, parentOutput)
 ```
 
+### Embedded Runtime Package Layout
+
+The embedded processor has been modularized into focused runtime packages to simplify maintenance:
+
+- `pkg/embedded/runtime`: processor orchestration, executor registry, and public APIs (re-exported through `pkg/embedded` for backward compatibility).
+- `pkg/embedded/runtime/output`: shared `StandardOutput` types, wrappers, and registries.
+- `pkg/embedded/runtime/storage`: smart storage with consumer-aware cleanup and iteration context helpers.
+- `pkg/embedded/runtime/mapping`: field mapping engine and path utilities bridging into `pathutil`.
+- `pkg/embedded/runtime/errors`: standardized error categorization and retry hints reused by output wrappers.
+- `pkg/embedded/runtime/logging`: lightweight logger interface and structured field helpers used across runtime components.
+- `pkg/embedded/processors/registry`: consolidated helper that wires up all built-in executors (formerly `pkg/embedded/all`).
+
+Import paths that previously referenced `github.com/wehubfusion/Icarus/pkg/embedded` continue to work unchanged because the top-level package re-exports the runtime APIs.
+
 ### Usage with Iterator
 
 Control array iteration concurrency:

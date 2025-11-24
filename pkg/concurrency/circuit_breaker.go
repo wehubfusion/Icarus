@@ -144,10 +144,11 @@ func (cb *CircuitBreaker) transitionTo(newState CircuitBreakerState) {
 	atomic.StoreInt32(&cb.state, int32(newState))
 
 	// Reset counters on state transitions
-	if newState == StateClosed {
+	switch newState {
+	case StateClosed:
 		atomic.StoreInt64(&cb.consecutiveFailures, 0)
 		atomic.StoreInt64(&cb.consecutiveSuccesses, 0)
-	} else if newState == StateHalfOpen {
+	case StateHalfOpen:
 		atomic.StoreInt64(&cb.consecutiveSuccesses, 0)
 	}
 }

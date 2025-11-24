@@ -1,8 +1,8 @@
-package embedded
+package errors
 
 import (
 	"context"
-	"errors"
+	stdErrors "errors"
 	"net"
 	"strings"
 	"time"
@@ -37,7 +37,7 @@ func CategorizeError(err error) string {
 
 	// Check for Icarus error types
 	var appErr *icarusErrors.AppError
-	if errors.As(err, &appErr) {
+	if stdErrors.As(err, &appErr) {
 		switch appErr.Type {
 		case icarusErrors.ValidationFailed:
 			return ErrorCodeValidation
@@ -55,13 +55,13 @@ func CategorizeError(err error) string {
 	}
 
 	// Check for timeout errors
-	if errors.Is(err, context.DeadlineExceeded) {
+	if stdErrors.Is(err, context.DeadlineExceeded) {
 		return ErrorCodeTimeout
 	}
 
 	// Check for network errors
 	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if stdErrors.As(err, &netErr) {
 		if netErr.Timeout() {
 			return ErrorCodeTimeout
 		}
@@ -125,13 +125,13 @@ func IsRetryable(err error) bool {
 	}
 
 	// Check for timeout errors (usually retryable)
-	if errors.Is(err, context.DeadlineExceeded) {
+	if stdErrors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 
 	// Check for network errors
 	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if stdErrors.As(err, &netErr) {
 		if netErr.Timeout() {
 			return true
 		}
@@ -179,7 +179,7 @@ func ExtractErrorDetails(err error) map[string]interface{} {
 
 	// Check for Icarus error types that might have additional context
 	var appErr *icarusErrors.AppError
-	if errors.As(err, &appErr) {
+	if stdErrors.As(err, &appErr) {
 		if appErr.Code != "" {
 			details["error_code"] = appErr.Code
 		}
@@ -190,7 +190,7 @@ func ExtractErrorDetails(err error) map[string]interface{} {
 
 	// Extract timeout information
 	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if stdErrors.As(err, &netErr) {
 		if netErr.Timeout() {
 			details["timeout"] = true
 		}

@@ -1,4 +1,4 @@
-package embedded
+package runtime
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/wehubfusion/Icarus/pkg/concurrency"
-	"github.com/wehubfusion/Icarus/pkg/embedded/pathutil"
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime/pathutil"
 	"github.com/wehubfusion/Icarus/pkg/iteration"
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
@@ -130,7 +130,7 @@ func (p *Processor) processEmbeddedNodesSequential(
 	storage := NewSmartStorageWithConsumers(consumerGraph, p.logger)
 	p.logger.Debug("Initialized SmartStorage with consumer graph",
 		Field{Key: "source_count", Value: len(consumerGraph)})
-	
+
 	// Store parent output in storage with array detection
 	parentResult := map[string]interface{}{
 		"_meta":   parentOutput.Meta,
@@ -197,7 +197,7 @@ func (p *Processor) ProcessEmbeddedNodesConcurrent(
 	storage := NewSmartStorageWithConsumers(consumerGraph, p.logger)
 	p.logger.Debug("Initialized SmartStorage with consumer graph",
 		Field{Key: "source_count", Value: len(consumerGraph)})
-	
+
 	// Store parent output in storage with array detection
 	parentResult := map[string]interface{}{
 		"_meta":   parentOutput.Meta,
@@ -224,7 +224,6 @@ func (p *Processor) ProcessEmbeddedNodesConcurrent(
 	if err := storage.Set(msg.Node.NodeID, parentResult, iterationCtx); err != nil {
 		return nil, fmt.Errorf("failed to store parent output: %w", err)
 	}
-	
 
 	// Process each depth level sequentially
 	// Within each level, process nodes concurrently
@@ -461,13 +460,13 @@ func (p *Processor) processWithCoordinatedIteration(
 
 	// Process each array index
 	results := make([]interface{}, arrayLength)
-	
+
 	for i := 0; i < arrayLength; i++ {
 		// Apply field mappings at this specific iteration index
 		mappedInput, err := p.fieldMapper.ApplyMappings(storage, embNode.FieldMappings, []byte("{}"), i)
 		if err != nil {
 			execTime := time.Since(startTime).Milliseconds()
-			wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, 
+			wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime,
 				fmt.Errorf("field mapping failed at iteration %d: %w", i, err))
 
 			errorResult := map[string]interface{}{
@@ -681,7 +680,7 @@ func (p *Processor) processWithAutoIteration(
 	if err != nil {
 		// Iteration failed - wrap error
 		wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, fmt.Errorf("auto-iteration failed: %w", err))
-		
+
 		// Store error in storage
 		errorResult := map[string]interface{}{
 			"_meta":   wrappedOutput.Meta,
@@ -725,7 +724,7 @@ func (p *Processor) processWithAutoIteration(
 		ArrayPath:   "/result",
 		ArrayLength: len(arrayItems),
 	}
-	
+
 	// Store in storage with iteration context
 	successResult := map[string]interface{}{
 		"_meta":   wrappedOutput.Meta,
@@ -788,7 +787,7 @@ func (p *Processor) processNode(
 
 	// Path 1: Check for coordinated iteration (takes precedence)
 	needsCoordinatedIteration, maxArrayLength := p.checkCoordinatedIteration(embNode, storage)
-	
+
 	if needsCoordinatedIteration {
 		p.logger.Debug("Using COORDINATED ITERATION path",
 			Field{Key: "node_id", Value: embNode.NodeID},
@@ -832,7 +831,7 @@ func (p *Processor) processNode(
 		// Detection failed - wrap error output
 		execTime := time.Since(startTime).Milliseconds()
 		wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime, fmt.Errorf("auto-iteration detection failed: %w", err))
-		
+
 		errorResult := map[string]interface{}{
 			"_meta":   wrappedOutput.Meta,
 			"_events": wrappedOutput.Events,
@@ -858,7 +857,7 @@ func (p *Processor) processNode(
 			Field{Key: "array_items", Value: len(arrayItems)})
 		// Route to auto-iteration handler (even for empty arrays)
 		result := p.processWithAutoIteration(ctx, embNode, arrayItems, startTime, storage)
-		
+
 		// Mark sources consumed after successful auto-iteration
 		if result.Status == "success" {
 			for _, mapping := range embNode.FieldMappings {

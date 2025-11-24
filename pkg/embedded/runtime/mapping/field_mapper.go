@@ -1,23 +1,26 @@
-package embedded
+package mapping
 
 import (
 	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/wehubfusion/Icarus/pkg/embedded/pathutil"
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime/logging"
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime/output"
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime/pathutil"
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime/storage"
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
 // FieldMapper handles data flow between nodes within a unit
 type FieldMapper struct {
-	logger Logger
+	logger logging.Logger
 }
 
 // NewFieldMapper creates a new field mapper
-func NewFieldMapper(logger Logger) *FieldMapper {
+func NewFieldMapper(logger logging.Logger) *FieldMapper {
 	if logger == nil {
-		logger = &NoOpLogger{}
+		logger = &logging.NoOpLogger{}
 	}
 	return &FieldMapper{
 		logger: logger,
@@ -28,7 +31,7 @@ func NewFieldMapper(logger Logger) *FieldMapper {
 // It uses the SmartStorage to look up source outputs by sourceNodeId
 // currentIterationIndex: when >= 0, extract array items at this specific index from array sources
 func (fm *FieldMapper) ApplyMappings(
-	storage *SmartStorage,
+	storage *storage.SmartStorage,
 	mappings []message.FieldMapping,
 	destinationInput []byte,
 	currentIterationIndex int,
@@ -54,7 +57,7 @@ func (fm *FieldMapper) ApplyMappings(
 	for sourceNodeID, sourceMappings := range mappingsBySource {
 		// Check if source has iteration context (array output)
 		iterationCtx, _ := storage.GetIterationContext(sourceNodeID)
-		
+
 		// Check if ANY mapping from this source has iterate flag
 		hasIterateFlag := false
 		for _, m := range sourceMappings {
@@ -63,39 +66,39 @@ func (fm *FieldMapper) ApplyMappings(
 				break
 			}
 		}
-		
-		var sourceOutput *StandardOutput
+
+		var sourceOutput *output.StandardOutput
 		var err error
-		
+
 		// Extract array items ONLY if: source is array AND has iterate flag AND valid iteration index
 		if iterationCtx != nil && iterationCtx.IsArray && hasIterateFlag && currentIterationIndex >= 0 {
 			// Validate iteration index and get array result
 			_, err := storage.GetWithIterationIndex(sourceNodeID, currentIterationIndex)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get source %s at iteration index %d: %w", 
+				return nil, fmt.Errorf("failed to get source %s at iteration index %d: %w",
 					sourceNodeID, currentIterationIndex, err)
 			}
-			
+
 			// Get the full source output
 			sourceOutput, err = storage.GetResultAsStandardOutput(sourceNodeID)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get source output for %s after index validation: %w", sourceNodeID, err)
 			}
-			
+
 			// Extract the specific array item from result
 			if arrayResult, ok := sourceOutput.Result.([]interface{}); ok {
 				if currentIterationIndex < len(arrayResult) {
 					// Create new StandardOutput with single item instead of array
-					sourceOutput = &StandardOutput{
+					sourceOutput = &output.StandardOutput{
 						Meta:   sourceOutput.Meta,
 						Events: sourceOutput.Events,
 						Error:  sourceOutput.Error,
 						Result: arrayResult[currentIterationIndex],
 					}
 					fm.logger.Debug("Extracted array item from source",
-						Field{Key: "source_node_id", Value: sourceNodeID},
-						Field{Key: "iteration_index", Value: currentIterationIndex},
-						Field{Key: "array_length", Value: len(arrayResult)})
+						logging.Field{Key: "source_node_id", Value: sourceNodeID},
+						logging.Field{Key: "iteration_index", Value: currentIterationIndex},
+						logging.Field{Key: "array_length", Value: len(arrayResult)})
 				}
 			}
 		} else {
@@ -106,7 +109,7 @@ func (fm *FieldMapper) ApplyMappings(
 				// Source node hasn't executed yet or doesn't exist
 				// Skip these mappings (allows for optional dependencies)
 				fm.logger.Debug("Source node not available (optional dependency)",
-					Field{Key: "source_node_id", Value: sourceNodeID})
+					logging.Field{Key: "source_node_id", Value: sourceNodeID})
 				continue
 			}
 		}
@@ -124,15 +127,15 @@ func (fm *FieldMapper) ApplyMappings(
 			if !exists {
 				// Skip if source field not found (allows for optional fields)
 				fm.logger.Debug("Source field not found",
-					Field{Key: "source_node_id", Value: sourceNodeID},
-					Field{Key: "source_endpoint", Value: mapping.SourceEndpoint},
+					logging.Field{Key: "source_node_id", Value: sourceNodeID},
+					logging.Field{Key: "source_endpoint", Value: mapping.SourceEndpoint},
 				)
 				continue
 			}
 			fm.logger.Info("Extracted value from source",
-				Field{Key: "source_node_id", Value: sourceNodeID},
-				Field{Key: "source_endpoint", Value: mapping.SourceEndpoint},
-				Field{Key: "value", Value: sourceValue},
+				logging.Field{Key: "source_node_id", Value: sourceNodeID},
+				logging.Field{Key: "source_endpoint", Value: mapping.SourceEndpoint},
+				logging.Field{Key: "value", Value: sourceValue},
 			)
 
 			// Map value to each destination endpoint
@@ -145,7 +148,7 @@ func (fm *FieldMapper) ApplyMappings(
 	// Debug: Log final mapped result
 	finalResult, _ := json.Marshal(destMap)
 	fm.logger.Info("Final mapped result",
-		Field{Key: "result", Value: string(finalResult)},
+		logging.Field{Key: "result", Value: string(finalResult)},
 	)
 
 	// Marshal back to JSON
@@ -268,6 +271,19 @@ func (fm *FieldMapper) setFieldAtPathWithCollectionTraversal(data map[string]int
 			// Can't traverse further (not a map)
 			return
 		}
+	}
+}
+
+// toPathutilStandardOutput converts runtime output to the lightweight pathutil representation.
+func toPathutilStandardOutput(output *output.StandardOutput) *pathutil.StandardOutput {
+	if output == nil {
+		return nil
+	}
+	return &pathutil.StandardOutput{
+		Meta:   output.Meta,
+		Events: output.Events,
+		Error:  output.Error,
+		Result: output.Result,
 	}
 }
 

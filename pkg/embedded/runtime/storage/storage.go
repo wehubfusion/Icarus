@@ -1,10 +1,13 @@
-package embedded
+package storage
 
 import (
 	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime/logging"
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime/output"
 )
 
 // SmartStorage provides thread-safe storage for all node outputs (parent + embedded)
@@ -13,7 +16,7 @@ type SmartStorage struct {
 	data      map[string]*StorageEntry
 	consumers map[string][]string // nodeID -> list of consumer nodeIDs
 	mu        sync.RWMutex
-	logger    Logger
+	logger    logging.Logger
 }
 
 // StorageEntry represents a single node's output in storage
@@ -35,9 +38,9 @@ type IterationContext struct {
 }
 
 // NewSmartStorage creates a new smart storage instance
-func NewSmartStorage(logger Logger) *SmartStorage {
+func NewSmartStorage(logger logging.Logger) *SmartStorage {
 	if logger == nil {
-		logger = &NoOpLogger{}
+		logger = &logging.NoOpLogger{}
 	}
 	return &SmartStorage{
 		data:      make(map[string]*StorageEntry),
@@ -48,9 +51,9 @@ func NewSmartStorage(logger Logger) *SmartStorage {
 }
 
 // NewSmartStorageWithConsumers creates storage with pre-built consumer graph
-func NewSmartStorageWithConsumers(consumers map[string][]string, logger Logger) *SmartStorage {
+func NewSmartStorageWithConsumers(consumers map[string][]string, logger logging.Logger) *SmartStorage {
 	if logger == nil {
-		logger = &NoOpLogger{}
+		logger = &logging.NoOpLogger{}
 	}
 	return &SmartStorage{
 		data:      make(map[string]*StorageEntry),
@@ -297,13 +300,13 @@ func (s *SmartStorage) ExtractResult(nodeID string, target interface{}) error {
 }
 
 // GetResultAsStandardOutput extracts result as StandardOutput
-func (s *SmartStorage) GetResultAsStandardOutput(nodeID string) (*StandardOutput, error) {
-	var output StandardOutput
-	err := s.ExtractResult(nodeID, &output)
+func (s *SmartStorage) GetResultAsStandardOutput(nodeID string) (*output.StandardOutput, error) {
+	var stdOutput output.StandardOutput
+	err := s.ExtractResult(nodeID, &stdOutput)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract StandardOutput for node %s: %w", nodeID, err)
 	}
-	return &output, nil
+	return &stdOutput, nil
 }
 
 // GetWithIterationIndex retrieves a specific array item from a node's result

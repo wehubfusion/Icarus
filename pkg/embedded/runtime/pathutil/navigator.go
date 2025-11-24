@@ -5,17 +5,12 @@ import (
 	"strings"
 
 	"github.com/tidwall/gjson"
+
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime/output"
 )
 
-// StandardOutput represents the standardized output structure for all nodes
-// This is a local copy to avoid circular dependency with embedded package
-// Must match the structure in embedded.StandardOutput
-type StandardOutput struct {
-	Meta   interface{} `json:"_meta"`
-	Events interface{} `json:"_events"`
-	Error  interface{} `json:"_error,omitempty"`
-	Result interface{} `json:"result"`
-}
+// StandardOutput mirrors runtime/output.StandardOutput for convenience.
+type StandardOutput = output.StandardOutput
 
 // NavigatePath extracts a value from StandardOutput struct with namespace awareness
 // For field mappings: Extracts result field first, then navigates paths in extracted result

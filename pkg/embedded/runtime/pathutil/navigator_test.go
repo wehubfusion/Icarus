@@ -4,17 +4,19 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime/output"
 )
 
 func TestNavigatePath_ExtractDataFirst(t *testing.T) {
 	// Create StandardOutput with result data
 	standardOutput := &StandardOutput{
-		Meta: map[string]interface{}{
-			"status":  "success",
-			"node_id": "test-node",
+		Meta: output.MetaData{
+			Status: "success",
+			NodeID: "test-node",
 		},
-		Events: map[string]interface{}{
-			"success": true,
+		Events: output.EventEndpoints{
+			Success: true,
 		},
 		Result: map[string]interface{}{
 			"name": "John",
@@ -73,12 +75,12 @@ func TestNavigatePath_ExtractDataFirst(t *testing.T) {
 
 func TestNavigatePath_EventTriggers(t *testing.T) {
 	standardOutput := &StandardOutput{
-		Meta: map[string]interface{}{
-			"status": "success",
+		Meta: output.MetaData{
+			Status: "success",
 		},
-		Events: map[string]interface{}{
-			"success": true,
-			"error":   nil,
+		Events: output.EventEndpoints{
+			Success: true,
+			Error:   nil,
 		},
 		Result: map[string]interface{}{
 			"name": "John",
@@ -125,8 +127,8 @@ func TestNavigatePath_EventTriggers(t *testing.T) {
 
 func TestNavigatePath_ArrayIteration(t *testing.T) {
 	standardOutput := &StandardOutput{
-		Meta: map[string]interface{}{
-			"status": "success",
+		Meta: output.MetaData{
+			Status: "success",
 		},
 		Result: []interface{}{
 			map[string]interface{}{"name": "John", "age": float64(30)},
@@ -202,11 +204,11 @@ func TestNavigatePath_BackwardCompatibility(t *testing.T) {
 
 func TestNavigatePath_EmptyPath(t *testing.T) {
 	standardOutput := &StandardOutput{
-		Meta: map[string]interface{}{
-			"status": "success",
+		Meta: output.MetaData{
+			Status: "success",
 		},
-		Events: map[string]interface{}{
-			"success": true,
+		Events: output.EventEndpoints{
+			Success: true,
 		},
 		Result: map[string]interface{}{
 			"Assignment": []interface{}{

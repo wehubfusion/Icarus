@@ -1,34 +1,13 @@
-package embedded
+package runtime
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime/output"
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
-
-// Logger defines a simple logging interface to avoid external dependencies
-type Logger interface {
-	Debug(msg string, fields ...Field)
-	Info(msg string, fields ...Field)
-	Warn(msg string, fields ...Field)
-	Error(msg string, fields ...Field)
-}
-
-// Field represents a key-value pair for structured logging
-type Field struct {
-	Key   string
-	Value interface{}
-}
-
-// NoOpLogger is a logger that does nothing (used when no logger is provided)
-type NoOpLogger struct{}
-
-func (n *NoOpLogger) Debug(msg string, fields ...Field) {}
-func (n *NoOpLogger) Info(msg string, fields ...Field)  {}
-func (n *NoOpLogger) Warn(msg string, fields ...Field)  {}
-func (n *NoOpLogger) Error(msg string, fields ...Field) {}
 
 // NodeConfig contains configuration for executing a single embedded node
 type NodeConfig struct {
@@ -42,13 +21,13 @@ type NodeConfig struct {
 
 // EmbeddedNodeResult represents the result of an embedded node execution
 type EmbeddedNodeResult struct {
-	NodeID               string          `json:"node_id"`
-	PluginType           string          `json:"plugin_type"`
-	Status               string          `json:"status"` // "success", "failed"
-	Output               *StandardOutput `json:"output,omitempty"`
-	Error                string          `json:"error,omitempty"`
-	ExecutionOrder       int             `json:"execution_order"`
-	ProcessingDurationMs int64           `json:"processing_duration_ms"`
+	NodeID               string                 `json:"node_id"`
+	PluginType           string                 `json:"plugin_type"`
+	Status               string                 `json:"status"` // "success", "failed"
+	Output               *output.StandardOutput `json:"output,omitempty"`
+	Error                string                 `json:"error,omitempty"`
+	ExecutionOrder       int                    `json:"execution_order"`
+	ProcessingDurationMs int64                  `json:"processing_duration_ms"`
 }
 
 // NodeExecutor defines the interface for executing embedded nodes

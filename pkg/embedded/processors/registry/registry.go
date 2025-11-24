@@ -1,4 +1,4 @@
-package all
+package registry
 
 import (
 	"github.com/wehubfusion/Icarus/pkg/embedded"
