@@ -1,19 +1,20 @@
-package embedded
+package tests
 
 import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	embedded "github.com/wehubfusion/Icarus/pkg/embedded"
 )
 
-// TestDetectAutoIteration verifies auto-iteration detection logic
-func TestDetectAutoIteration(t *testing.T) {
-	processor := NewProcessor(NewExecutorRegistry())
+// Mirrors pkg/embedded/auto_iteration_test.go but exercises through exported helpers.
+func TestEmbeddedDetectAutoIteration(t *testing.T) {
+	processor := embedded.NewProcessor(embedded.NewExecutorRegistry())
 
 	t.Run("Detects data envelope with array", func(t *testing.T) {
 		input := []byte(`{"data": [1, 2, 3]}`)
-		isArray, items, err := processor.detectAutoIteration(input)
+		isArray, items, err := embedded.DetectAutoIterationForTests(processor, input)
 		require.NoError(t, err)
 		assert.True(t, isArray)
 		assert.Len(t, items, 3)
@@ -21,7 +22,7 @@ func TestDetectAutoIteration(t *testing.T) {
 
 	t.Run("Detects root-level array", func(t *testing.T) {
 		input := []byte(`[{"name": "a"}, {"name": "b"}]`)
-		isArray, items, err := processor.detectAutoIteration(input)
+		isArray, items, err := embedded.DetectAutoIterationForTests(processor, input)
 		require.NoError(t, err)
 		assert.True(t, isArray)
 		assert.Len(t, items, 2)
@@ -29,7 +30,7 @@ func TestDetectAutoIteration(t *testing.T) {
 
 	t.Run("Detects array of data envelopes", func(t *testing.T) {
 		input := []byte(`[{"data": "value1"}, {"data": "value2"}]`)
-		isArray, items, err := processor.detectAutoIteration(input)
+		isArray, items, err := embedded.DetectAutoIterationForTests(processor, input)
 		require.NoError(t, err)
 		assert.True(t, isArray)
 		assert.Len(t, items, 2)
@@ -37,7 +38,7 @@ func TestDetectAutoIteration(t *testing.T) {
 
 	t.Run("Detects empty array in data field", func(t *testing.T) {
 		input := []byte(`{"data": []}`)
-		isArray, items, err := processor.detectAutoIteration(input)
+		isArray, items, err := embedded.DetectAutoIterationForTests(processor, input)
 		require.NoError(t, err)
 		assert.True(t, isArray)
 		assert.Len(t, items, 0)
@@ -45,7 +46,7 @@ func TestDetectAutoIteration(t *testing.T) {
 
 	t.Run("Detects empty root-level array", func(t *testing.T) {
 		input := []byte(`[]`)
-		isArray, items, err := processor.detectAutoIteration(input)
+		isArray, items, err := embedded.DetectAutoIterationForTests(processor, input)
 		require.NoError(t, err)
 		assert.True(t, isArray)
 		assert.Len(t, items, 0)
@@ -53,7 +54,7 @@ func TestDetectAutoIteration(t *testing.T) {
 
 	t.Run("Does not detect single object", func(t *testing.T) {
 		input := []byte(`{"name": "test"}`)
-		isArray, items, err := processor.detectAutoIteration(input)
+		isArray, items, err := embedded.DetectAutoIterationForTests(processor, input)
 		require.NoError(t, err)
 		assert.False(t, isArray)
 		assert.Nil(t, items)
@@ -61,7 +62,7 @@ func TestDetectAutoIteration(t *testing.T) {
 
 	t.Run("Does not detect data field with non-array", func(t *testing.T) {
 		input := []byte(`{"data": "string value"}`)
-		isArray, items, err := processor.detectAutoIteration(input)
+		isArray, items, err := embedded.DetectAutoIterationForTests(processor, input)
 		require.NoError(t, err)
 		assert.False(t, isArray)
 		assert.Nil(t, items)
@@ -69,7 +70,7 @@ func TestDetectAutoIteration(t *testing.T) {
 
 	t.Run("Handles invalid JSON", func(t *testing.T) {
 		input := []byte(`{invalid json}`)
-		isArray, items, err := processor.detectAutoIteration(input)
+		isArray, items, err := embedded.DetectAutoIterationForTests(processor, input)
 		require.NoError(t, err)
 		assert.False(t, isArray)
 		assert.Nil(t, items)
@@ -77,7 +78,7 @@ func TestDetectAutoIteration(t *testing.T) {
 
 	t.Run("Handles empty input", func(t *testing.T) {
 		input := []byte(``)
-		isArray, items, err := processor.detectAutoIteration(input)
+		isArray, items, err := embedded.DetectAutoIterationForTests(processor, input)
 		require.NoError(t, err)
 		assert.False(t, isArray)
 		assert.Nil(t, items)

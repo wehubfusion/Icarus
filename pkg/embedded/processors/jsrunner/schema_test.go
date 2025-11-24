@@ -2,6 +2,7 @@ package jsrunner
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 
@@ -9,6 +10,48 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wehubfusion/Icarus/pkg/embedded"
 )
+
+func decodeJSRunnerOutput(t *testing.T, raw []byte) interface{} {
+	t.Helper()
+	var wrapper map[string]interface{}
+	require.NoError(t, json.Unmarshal(raw, &wrapper))
+
+	dataField, ok := wrapper["data"].(string)
+	require.True(t, ok, "result missing data field")
+
+	decoded, err := base64.StdEncoding.DecodeString(dataField)
+	require.NoError(t, err)
+
+	var val interface{}
+	require.NoError(t, json.Unmarshal(decoded, &val))
+	return val
+}
+
+func decodeJSRunnerOutputAsString(t *testing.T, raw []byte) string {
+	t.Helper()
+	val := decodeJSRunnerOutput(t, raw)
+	switch v := val.(type) {
+	case string:
+		return v
+	default:
+		bytes, err := json.Marshal(v)
+		require.NoError(t, err)
+		return string(bytes)
+	}
+}
+
+func decodeJSRunnerOutputAsBytes(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	val := decodeJSRunnerOutput(t, raw)
+	switch v := val.(type) {
+	case string:
+		return []byte(v)
+	default:
+		bytes, err := json.Marshal(v)
+		require.NoError(t, err)
+		return bytes
+	}
+}
 
 func TestExecutor_SchemaAccess(t *testing.T) {
 	tests := []struct {
@@ -21,7 +64,7 @@ func TestExecutor_SchemaAccess(t *testing.T) {
 	}{
 		{
 			name:   "Access schema properties",
-			script: "JSON.stringify(schema.properties)",
+			script: "return JSON.stringify(schema.properties);",
 			schema: map[string]interface{}{
 				"type": "OBJECT",
 				"properties": map[string]interface{}{
@@ -41,10 +84,9 @@ func TestExecutor_SchemaAccess(t *testing.T) {
 			name: "Access schema type",
 			script: `
 				if (schema.type === "OBJECT") {
-					"type is OBJECT";
-				} else {
-					"type is not OBJECT";
+					return "type is OBJECT";
 				}
+				return "type is not OBJECT";
 			`,
 			schema: map[string]interface{}{
 				"type": "OBJECT",
@@ -65,10 +107,9 @@ func TestExecutor_SchemaAccess(t *testing.T) {
 				});
 				
 				if (missingFields.length > 0) {
-					"Missing fields: " + missingFields.join(", ");
-				} else {
-					"All required fields present";
+					return "Missing fields: " + missingFields.join(", ");
 				}
+				return "All required fields present";
 			`,
 			schema: map[string]interface{}{
 				"type": "OBJECT",
@@ -106,7 +147,7 @@ func TestExecutor_SchemaAccess(t *testing.T) {
 					}
 				}
 				
-				JSON.stringify(output);
+				return JSON.stringify(output);
 			`,
 			schema: map[string]interface{}{
 				"type": "OBJECT",
@@ -134,10 +175,9 @@ func TestExecutor_SchemaAccess(t *testing.T) {
 			name: "No schema provided - schema undefined",
 			script: `
 				if (typeof schema === 'undefined') {
-					"schema is undefined";
-				} else {
-					"schema is defined";
+					return "schema is undefined";
 				}
+				return "schema is defined";
 			`,
 			schema:         nil,
 			input:          map[string]interface{}{},
@@ -182,7 +222,8 @@ func TestExecutor_SchemaAccess(t *testing.T) {
 				assert.Error(t, err)
 			} else {
 				require.NoError(t, err)
-				assert.Equal(t, tt.expectedOutput, string(result))
+				actual := decodeJSRunnerOutputAsString(t, result)
+				assert.Equal(t, tt.expectedOutput, actual)
 			}
 		})
 	}
@@ -197,49 +238,49 @@ func TestExecutor_RawByteOutput(t *testing.T) {
 	}{
 		{
 			name:           "String output becomes bytes",
-			script:         `"Hello World"`,
+			script:         `return "Hello World";`,
 			expectedOutput: []byte("Hello World"),
 			expectError:    false,
 		},
 		{
 			name:           "Number output marshaled to JSON",
-			script:         `42`,
+			script:         `return 42;`,
 			expectedOutput: []byte("42"),
 			expectError:    false,
 		},
 		{
 			name:           "Object output marshaled to JSON",
-			script:         `({name: "John", age: 30})`,
+			script:         `return ({name: "John", age: 30});`,
 			expectedOutput: []byte(`{"age":30,"name":"John"}`),
 			expectError:    false,
 		},
 		{
 			name:           "Array output marshaled to JSON",
-			script:         `[1, 2, 3, 4, 5]`,
+			script:         `return [1, 2, 3, 4, 5];`,
 			expectedOutput: []byte(`[1,2,3,4,5]`),
 			expectError:    false,
 		},
 		{
 			name:           "Boolean output marshaled to JSON",
-			script:         `true`,
+			script:         `return true;`,
 			expectedOutput: []byte("true"),
 			expectError:    false,
 		},
 		{
 			name:           "Null output marshaled to JSON",
-			script:         `null`,
+			script:         `return null;`,
 			expectedOutput: []byte("null"),
 			expectError:    false,
 		},
 		{
 			name: "Complex object with nested structures",
-			script: `({
+			script: `return ({
 				user: {
 					name: "Alice",
 					roles: ["admin", "user"]
 				},
 				timestamp: 1234567890
-			})`,
+			});`,
 			expectedOutput: []byte(`{"timestamp":1234567890,"user":{"name":"Alice","roles":["admin","user"]}}`),
 			expectError:    false,
 		},
@@ -268,7 +309,8 @@ func TestExecutor_RawByteOutput(t *testing.T) {
 				assert.Error(t, err)
 			} else {
 				require.NoError(t, err)
-				assert.Equal(t, tt.expectedOutput, result)
+				decoded := decodeJSRunnerOutputAsBytes(t, result)
+				assert.Equal(t, tt.expectedOutput, decoded)
 			}
 		})
 	}
@@ -326,10 +368,9 @@ func TestExecutor_SchemaEnrichment_Integration(t *testing.T) {
 		}
 		
 		if (errors.length > 0) {
-			JSON.stringify({valid: false, errors: errors});
-		} else {
-			JSON.stringify({valid: true, data: input});
+			return {valid: false, errors: errors};
 		}
+		return {valid: true, data: input};
 	`
 
 	config := Config{
@@ -358,12 +399,12 @@ func TestExecutor_SchemaEnrichment_Integration(t *testing.T) {
 		result, err := executor.Execute(context.Background(), nodeConfig)
 		require.NoError(t, err)
 
-		var output map[string]interface{}
-		err = json.Unmarshal(result, &output)
-		require.NoError(t, err)
+		decoded := decodeJSRunnerOutput(t, result)
+		output, ok := decoded.(map[string]interface{})
+		require.True(t, ok)
 
 		assert.True(t, output["valid"].(bool))
-		assert.NotNil(t, output["result"])
+		assert.NotNil(t, output["data"])
 	})
 
 	t.Run("Missing required field", func(t *testing.T) {
@@ -383,9 +424,9 @@ func TestExecutor_SchemaEnrichment_Integration(t *testing.T) {
 		result, err := executor.Execute(context.Background(), nodeConfig)
 		require.NoError(t, err)
 
-		var output map[string]interface{}
-		err = json.Unmarshal(result, &output)
-		require.NoError(t, err)
+		decoded := decodeJSRunnerOutput(t, result)
+		output, ok := decoded.(map[string]interface{})
+		require.True(t, ok)
 
 		assert.False(t, output["valid"].(bool))
 		assert.Contains(t, output["errors"], "Missing required field: email")
@@ -409,9 +450,9 @@ func TestExecutor_SchemaEnrichment_Integration(t *testing.T) {
 		result, err := executor.Execute(context.Background(), nodeConfig)
 		require.NoError(t, err)
 
-		var output map[string]interface{}
-		err = json.Unmarshal(result, &output)
-		require.NoError(t, err)
+		decoded := decodeJSRunnerOutput(t, result)
+		output, ok := decoded.(map[string]interface{})
+		require.True(t, ok)
 
 		assert.False(t, output["valid"].(bool))
 		errors := output["errors"].([]interface{})

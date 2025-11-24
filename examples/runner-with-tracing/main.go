@@ -17,7 +17,6 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/concurrency"
 	"github.com/wehubfusion/Icarus/pkg/message"
 	"github.com/wehubfusion/Icarus/pkg/runner"
-	"github.com/wehubfusion/Icarus/pkg/tracing"
 	"go.uber.org/zap"
 )
 
@@ -221,7 +220,7 @@ func main() {
 	processor := NewSimpleProcessor("example-processor", logger)
 
 	// Setup tracing configuration
-	tracingConfig := tracing.JaegerConfig("testSDK2")
+	tracingConfig := runner.JaegerTracingConfig("testSDK2")
 
 	// Create runner with built-in tracing
 	runnerInstance, err := runner.NewRunner(

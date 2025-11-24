@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
+	internaltracing "github.com/wehubfusion/Icarus/internal/tracing"
 	"github.com/wehubfusion/Icarus/pkg/client"
 	"github.com/wehubfusion/Icarus/pkg/concurrency"
 	"github.com/wehubfusion/Icarus/pkg/message"
-	"github.com/wehubfusion/Icarus/pkg/tracing"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -54,7 +54,7 @@ type Runner struct {
 // tracingConfig is optional - if nil, no tracing will be set up. If provided, tracing will be automatically configured and cleaned up.
 // limiter is optional - if nil, no concurrency limiting will be applied beyond the worker pool.
 // Returns an error if any of the parameters are invalid.
-func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, numWorkers int, processTimeout time.Duration, logger *zap.Logger, tracingConfig *tracing.TracingConfig, limiter *concurrency.Limiter) (*Runner, error) {
+func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, numWorkers int, processTimeout time.Duration, logger *zap.Logger, tracingConfig *TracingConfig, limiter *concurrency.Limiter) (*Runner, error) {
 	if client == nil {
 		return nil, errors.New("client cannot be nil")
 	}
@@ -105,7 +105,8 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 	// Setup tracing if configuration is provided
 	if tracingConfig != nil {
 		ctx := context.Background()
-		shutdown, err := tracing.SetupTracing(ctx, *tracingConfig, logger)
+		internalCfg := tracingConfig.toInternalConfig()
+		shutdown, err := internaltracing.SetupTracing(ctx, internalCfg, logger)
 		if err != nil {
 			logger.Warn("Failed to setup tracing, continuing without tracing", zap.Error(err))
 		} else {
@@ -360,7 +361,7 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 			if msg.Metadata != nil {
 				executionID = msg.Metadata["execution_id"]
 			}
-			
+
 			reportCtx, reportCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if reportErr := r.client.Messages.ReportError(reportCtx, executionID, workflowID, runID, processErr, msg.GetNATSMsg()); reportErr != nil {
 				r.logger.Error("Error reporting failure",

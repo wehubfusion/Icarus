@@ -42,7 +42,6 @@ import (
     "github.com/wehubfusion/Icarus/pkg/client"
     "github.com/wehubfusion/Icarus/pkg/message"
     "github.com/wehubfusion/Icarus/pkg/runner"
-    "github.com/wehubfusion/Icarus/pkg/tracing"
     "go.uber.org/zap"
 )
 
@@ -392,24 +391,17 @@ Configure tracing when creating a Runner or set it up manually:
 
 ```go
 // Option 1: Jaeger configuration (recommended for development)
-tracingConfig := tracing.JaegerConfig("my-service-name")
+tracingConfig := runner.JaegerTracingConfig("my-service-name")
 tracingConfig.SampleRatio = 1.0 // Sample all traces in development
 
 // Option 2: Generic OTLP configuration
-tracingConfig := tracing.TracingConfig{
+tracingConfig := runner.TracingConfig{
     ServiceName:    "my-service",
     ServiceVersion: "1.0.0",
     Environment:    "production",
     OTLPEndpoint:   "otel-collector.company.com:4318", // Host:port only
     SampleRatio:    0.1, // Sample 10% of traces in production
 }
-
-// Option 3: Manual setup
-shutdown, err := tracing.SetupTracing(ctx, tracingConfig, logger)
-if err != nil {
-    logger.Error("Failed to setup tracing", zap.Error(err))
-}
-defer shutdown(ctx) // Cleanup when done
 ```
 
 ### Tracing with Runner

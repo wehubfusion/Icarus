@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wehubfusion/Icarus/pkg/tracing"
+	"github.com/wehubfusion/Icarus/internal/tracing"
 	"go.uber.org/zap"
 )
 

@@ -20,23 +20,11 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 	registry.Register(simplecondition.NewExecutor())
 	processor := embedded.NewProcessor(registry)
 	t.Run("Embedded node maps field from parent node", func(t *testing.T) {
-		// Simulate parent HTTP response wrapped in StandardOutput format
-		// This is what Elysium workflow.go now produces after wrapping
+		// Simulate parent HTTP response payload
 		parentOutput := map[string]interface{}{
-			"_meta": map[string]interface{}{
-				"status":      "success",
-				"node_id":     "http-parent",
-				"plugin_type": "plugin-http",
-			},
-			"_events": map[string]interface{}{
-				"success": true,
-				"error":   nil,
-			},
-			"result": map[string]interface{}{
-				"status_code": 200,
-				"payload":     "amqp message data",
-				"headers":     map[string]interface{}{"content-type": "application/json"},
-			},
+			"status_code": 200,
+			"payload":     "amqp message data",
+			"headers":     map[string]interface{}{"content-type": "application/json"},
 		}
 		parentOutputBytes, _ := json.Marshal(parentOutput)
 		parentOutputWrapped := embedded.WrapSuccess("http-parent", "test", 0, parentOutputBytes)
@@ -52,7 +40,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "http-parent",
-						SourceEndpoint:       "payload", // Regular field in result namespace
+						SourceEndpoint:       "/payload", // Regular field in result namespace
 						DestinationEndpoints: []string{"data_value"},
 						IsEventTrigger:       false,
 					},
@@ -68,7 +56,8 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			},
 			EmbeddedNodes: embeddedNodes,
 		}
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped, map[string][]string{})
+		graph := buildConsumerGraphForMessage(msg)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped, graph)
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 		// Verify embedded node executed successfully (not skipped)
@@ -89,8 +78,6 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 	t.Run("Embedded node maps nested field from parent", func(t *testing.T) {
 		// Parent with nested data structure
 		parentOutput := map[string]interface{}{
-			"status":  "success",
-			"node_id": "parent",
 			"response": map[string]interface{}{
 				"user": map[string]interface{}{
 					"email": "test@example.com",
@@ -110,7 +97,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "parent",
-						SourceEndpoint:       "response/user/email", // Nested path in result namespace
+						SourceEndpoint:       "/response/user/email", // Nested path in result namespace
 						DestinationEndpoints: []string{"user_email"},
 					},
 				},
@@ -124,7 +111,8 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, map[string][]string{})
+		graph := buildConsumerGraphForMessage(msg)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, graph)
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 		assert.Equal(t, "success", results[0].Status)
@@ -162,7 +150,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "stage-data",
-						SourceEndpoint:       "Assignment_Category", // Maps from parent
+						SourceEndpoint:       "/Assignment_Category", // Maps from parent
 						DestinationEndpoints: []string{"category"},
 					},
 				},
@@ -175,7 +163,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "stage-data",
-						SourceEndpoint:       "User_Assignment_Status", // Maps from parent
+						SourceEndpoint:       "/User_Assignment_Status", // Maps from parent
 						DestinationEndpoints: []string{"status"},
 					},
 				},
@@ -189,7 +177,8 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, map[string][]string{})
+		graph := buildConsumerGraphForMessage(msg)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, graph)
 		require.Len(t, results, 2)
 		// Both nodes should execute successfully - this is the key test!
 		// If field mapping from parent works, both nodes will have "success" status
@@ -239,7 +228,8 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, map[string][]string{})
+		graph := buildConsumerGraphForMessage(msg)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, graph)
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 		// Verify embedded node executed (triggered by parent success)
@@ -279,7 +269,8 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, map[string][]string{})
+		graph := buildConsumerGraphForMessage(msg)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, graph)
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 		// Verify error handler executed (triggered by parent error)
@@ -319,7 +310,7 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 				FieldMappings: []message.FieldMapping{
 					{
 						SourceNodeID:         "07d21e5e-b8d6-40e2-881e-d1f6fe6e7d51", // Parent AMQP node
-						SourceEndpoint:       "payload",                              // ep.json line 31: "/payload"
+						SourceEndpoint:       "/payload",                             // ep.json line 31: "/payload"
 						DestinationEndpoints: []string{"parsed_data"},
 					},
 				},
@@ -333,7 +324,8 @@ func TestParentToEmbeddedMapping(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, map[string][]string{})
+		graph := buildConsumerGraphForMessage(msg)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentResponse, graph)
 		require.NoError(t, err)
 		require.Len(t, results, 1)
 		// Verify ESR Parser executed successfully

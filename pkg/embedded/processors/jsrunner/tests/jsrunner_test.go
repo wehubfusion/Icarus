@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -15,9 +16,6 @@ import (
 
 // TestJSRunnerBasicExecution tests basic JavaScript execution
 func TestJSRunnerBasicExecution(t *testing.T) {
-	executor := jsrunner.NewExecutor()
-	defer executor.Close()
-
 	tests := []struct {
 		name     string
 		script   string
@@ -44,16 +42,22 @@ func TestJSRunnerBasicExecution(t *testing.T) {
 		},
 		{
 			name: "return object",
-			script: `({
-				sum: input.a + input.b,
-				product: input.a * input.b
-			})`,
+			script: `
+				var result = {
+					sum: input.a + input.b,
+					product: input.a * input.b,
+				};
+				return result;
+			`,
 			input: map[string]interface{}{"a": 5, "b": 3},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			executor := jsrunner.NewExecutor()
+			defer executor.Close()
+
 			config := jsrunner.Config{
 				Script:           tt.script,
 				EnabledUtilities: []string{"console", "json"},
@@ -77,13 +81,22 @@ func TestJSRunnerBasicExecution(t *testing.T) {
 				t.Fatalf("execution failed: %v", err)
 			}
 
-			var result map[string]interface{}
-			if err := json.Unmarshal(output, &result); err != nil {
-				t.Fatalf("failed to unmarshal output: %v", err)
-			}
-
-			if result["result"] == nil {
-				t.Fatalf("expected result, got nil")
+			decoded := decodeJSRunnerTestOutput(t, output)
+			if tt.expected != nil {
+				if decoded != tt.expected {
+					t.Fatalf("expected %v, got %v", tt.expected, decoded)
+				}
+			} else {
+				resultMap, ok := decoded.(map[string]interface{})
+				if !ok {
+					t.Fatalf("expected map output, got %T (%v)", decoded, decoded)
+				}
+				if resultMap["sum"] != float64(8) {
+					t.Fatalf("expected sum=8, got %v", resultMap["sum"])
+				}
+				if resultMap["product"] != float64(15) {
+					t.Fatalf("expected product=15, got %v", resultMap["product"])
+				}
 			}
 		})
 	}
@@ -144,7 +157,7 @@ func TestJSRunnerConsoleUtility(t *testing.T) {
 	script := `
 		console.log('Hello', 'World');
 		console.error('Error message');
-		input.value + 1
+		return input.value + 1;
 	`
 
 	config := jsrunner.Config{
@@ -170,13 +183,9 @@ func TestJSRunnerConsoleUtility(t *testing.T) {
 		t.Fatalf("execution failed: %v", err)
 	}
 
-	var result map[string]interface{}
-	if err := json.Unmarshal(output, &result); err != nil {
-		t.Fatalf("failed to unmarshal output: %v", err)
-	}
-
-	if result["result"] != float64(42) {
-		t.Errorf("expected 42, got %v", result["result"])
+	decoded := decodeJSRunnerTestOutput(t, output)
+	if decoded != float64(42) {
+		t.Errorf("expected 42, got %v", decoded)
 	}
 }
 
@@ -189,7 +198,7 @@ func TestJSRunnerJSONUtility(t *testing.T) {
 		var obj = { name: 'Alice', age: 30 };
 		var str = JSON.stringify(obj);
 		var parsed = JSON.parse(str);
-		parsed
+		return parsed;
 	`
 
 	config := jsrunner.Config{
@@ -215,12 +224,7 @@ func TestJSRunnerJSONUtility(t *testing.T) {
 		t.Fatalf("execution failed: %v", err)
 	}
 
-	var result map[string]interface{}
-	if err := json.Unmarshal(output, &result); err != nil {
-		t.Fatalf("failed to unmarshal output: %v", err)
-	}
-
-	resultObj, ok := result["result"].(map[string]interface{})
+	resultObj, ok := decodeJSRunnerTestOutput(t, output).(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected object result")
 	}
@@ -238,7 +242,7 @@ func TestJSRunnerEncodingUtility(t *testing.T) {
 	script := `
 		var encoded = btoa('Hello World');
 		var decoded = atob(encoded);
-		({ encoded: encoded, decoded: decoded })
+		return { encoded: encoded, decoded: decoded };
 	`
 
 	config := jsrunner.Config{
@@ -264,12 +268,7 @@ func TestJSRunnerEncodingUtility(t *testing.T) {
 		t.Fatalf("execution failed: %v", err)
 	}
 
-	var result map[string]interface{}
-	if err := json.Unmarshal(output, &result); err != nil {
-		t.Fatalf("failed to unmarshal output: %v", err)
-	}
-
-	resultObj, ok := result["result"].(map[string]interface{})
+	resultObj, ok := decodeJSRunnerTestOutput(t, output).(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected object result")
 	}
@@ -384,14 +383,9 @@ func TestJSRunnerSecurity(t *testing.T) {
 				t.Fatalf("execution failed: %v", err)
 			}
 
-			var result map[string]interface{}
-			if err := json.Unmarshal(output, &result); err != nil {
-				t.Fatalf("failed to unmarshal output: %v", err)
-			}
-
-			// These globals should be undefined in sandboxed environment
-			if result["result"] != "undefined" {
-				t.Errorf("expected 'undefined', got %v", result["result"])
+			decoded := decodeJSRunnerTestOutput(t, output)
+			if decoded != "undefined" {
+				t.Errorf("expected 'undefined', got %v", decoded)
 			}
 		})
 	}
@@ -439,15 +433,11 @@ func TestJSRunnerConcurrency(t *testing.T) {
 				return
 			}
 
-			var result map[string]interface{}
-			if err := json.Unmarshal(output, &result); err != nil {
-				errors <- fmt.Errorf("goroutine %d unmarshal: %w", val, err)
-				return
-			}
+			decoded := decodeJSRunnerTestOutput(t, output)
 
 			expected := float64(val * 2)
-			if result["result"] != expected {
-				errors <- fmt.Errorf("goroutine %d: expected %v, got %v", val, expected, result["result"])
+			if decoded != expected {
+				errors <- fmt.Errorf("goroutine %d: expected %v, got %v", val, expected, decoded)
 			}
 		}(i)
 	}
@@ -565,6 +555,27 @@ func TestJSRunnerConfigValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func decodeJSRunnerTestOutput(t *testing.T, raw []byte) interface{} {
+	t.Helper()
+	var wrapper map[string]interface{}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		t.Fatalf("failed to unmarshal jsrunner output: %v", err)
+	}
+	dataField, ok := wrapper["data"].(string)
+	if !ok {
+		t.Fatalf("jsrunner output missing data field")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(dataField)
+	if err != nil {
+		t.Fatalf("failed to decode base64 jsrunner output: %v", err)
+	}
+	var val interface{}
+	if err := json.Unmarshal(decoded, &val); err != nil {
+		t.Fatalf("failed to unmarshal decoded jsrunner output: %v", err)
+	}
+	return val
 }
 
 // BenchmarkJSRunnerExecution benchmarks JavaScript execution

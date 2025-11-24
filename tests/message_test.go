@@ -412,8 +412,8 @@ func TestMessage_ValidateEmbeddedNodes_InvalidReferences(t *testing.T) {
 	msg := message.NewMessage().WithNode("parent", nil)
 	embeddedNodes := []message.EmbeddedNode{
 		{
-			NodeID:        "node1",
-			PluginType:    "test",
+			NodeID:         "node1",
+			PluginType:     "test",
 			ExecutionOrder: 0,
 			FieldMappings: []message.FieldMapping{
 				{SourceNodeID: "unknown_node", SourceEndpoint: "output"},

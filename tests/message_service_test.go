@@ -86,7 +86,7 @@ func TestMessageServiceReportError(t *testing.T) {
 
 	// Create a mock NATS message for acknowledgment
 	executionID := "exec-" + uuid.New().String()
-	
+
 	natsMsg := &nats.Msg{
 		Subject: "test.subject",
 		Reply:   "test.reply",

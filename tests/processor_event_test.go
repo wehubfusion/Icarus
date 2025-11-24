@@ -62,13 +62,14 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 				WorkflowID: "test-workflow",
 				RunID:      "test-run",
 			},
-		EmbeddedNodes: embeddedNodes,
-	}
+			EmbeddedNodes: embeddedNodes,
+		}
 
-	results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput, map[string][]string{})
-	if err != nil {
-		t.Fatalf("ProcessEmbeddedNodes failed: %v", err)
-	}		// Node should be skipped
+		graph := buildConsumerGraphForMessage(msg)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput, graph)
+		if err != nil {
+			t.Fatalf("ProcessEmbeddedNodes failed: %v", err)
+		} // Node should be skipped
 		if results[0].Status != "skipped" {
 			t.Errorf("Expected node to be skipped when event is null, got status: %s", results[0].Status)
 		}
@@ -129,7 +130,8 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped, map[string][]string{})
+		graph := buildConsumerGraphForMessage(msg)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped, graph)
 		if err != nil {
 			t.Fatalf("ProcessEmbeddedNodes failed: %v", err)
 		}
@@ -194,7 +196,8 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped, map[string][]string{})
+		graph := buildConsumerGraphForMessage(msg)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped, graph)
 		if err != nil {
 			t.Fatalf("ProcessEmbeddedNodes failed: %v", err)
 		}
@@ -259,7 +262,8 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped, map[string][]string{})
+		graph := buildConsumerGraphForMessage(msg)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped, graph)
 		if err != nil {
 			t.Fatalf("ProcessEmbeddedNodes failed: %v", err)
 		}
@@ -309,7 +313,8 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput, map[string][]string{})
+		graph := buildConsumerGraphForMessage(msg)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutput, graph)
 		if err != nil {
 			t.Fatalf("ProcessEmbeddedNodes failed: %v", err)
 		}
@@ -372,7 +377,8 @@ func TestProcessor_EventTriggerLogic(t *testing.T) {
 			EmbeddedNodes: embeddedNodes,
 		}
 
-		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped, map[string][]string{})
+		graph := buildConsumerGraphForMessage(msg)
+		results, err := processor.ProcessEmbeddedNodes(context.Background(), msg, parentOutputWrapped, graph)
 		if err != nil {
 			t.Fatalf("ProcessEmbeddedNodes failed: %v", err)
 		}

@@ -37,6 +37,8 @@ func (p *integrationProcessor) Process(ctx context.Context, msg *message.Message
 func TestClientMessageServiceIntegration(t *testing.T) {
 	// Create client with mock JetStream
 	c := client.NewClientWithJSContext(NewMockJS())
+	attachNoopTemporal(c)
+	attachNoopTemporal(c)
 
 	if c.Messages == nil {
 		t.Fatal("Messages service should be initialized")
@@ -94,6 +96,8 @@ func TestClientMessageServiceIntegration(t *testing.T) {
 func TestRunnerIntegration(t *testing.T) {
 	// Create client with mock JetStream
 	c := client.NewClientWithJSContext(NewMockJS())
+	attachNoopTemporal(c)
+	attachNoopTemporal(c)
 
 	// Create integration processor
 	processor := &integrationProcessor{}
@@ -152,6 +156,7 @@ func TestRunnerIntegration(t *testing.T) {
 func TestRunnerWithFailingProcessor(t *testing.T) {
 	// Create client with mock JetStream
 	c := client.NewClientWithJSContext(NewMockJS())
+	attachNoopTemporal(c)
 
 	// Create failing processor
 	processor := &integrationProcessor{shouldFail: true}
@@ -248,6 +253,7 @@ func TestMessageHandlerIntegration(t *testing.T) {
 func TestEndToEndWorkflow(t *testing.T) {
 	// Test a complete end-to-end workflow
 	c := client.NewClientWithJSContext(NewMockJS())
+	attachNoopTemporal(c)
 	ctx := context.Background()
 
 	workflowID := "e2e-workflow-" + uuid.New().String()
@@ -280,9 +286,12 @@ func TestEndToEndWorkflow(t *testing.T) {
 
 	// 3. Create result message
 	resultMsg := message.NewWorkflowMessage(workflowID, runID).
-		WithPayload("e2e-processor", "processed data", "e2e-result").
+		WithPayload("e2e-processor", `{"status":"processed"}`, "e2e-result").
 		WithNode("output-node", map[string]interface{}{"type": "output"}).
-		WithOutput("callback")
+		WithOutput("callback").
+		WithMetadata("temporal_workflow_id", workflowID).
+		WithMetadata("temporal_run_id", runID).
+		WithMetadata("temporal_signal_name", "unit-result-"+workflowID)
 
 	// 4. Report success (may fail due to mock NATS message acknowledgment)
 	err = c.Messages.ReportSuccess(ctx, *resultMsg, processedMsg.GetNATSMsg())
@@ -304,6 +313,7 @@ func TestEndToEndWorkflow(t *testing.T) {
 func TestErrorReportingWorkflow(t *testing.T) {
 	// Test error reporting workflow
 	c := client.NewClientWithJSContext(NewMockJS())
+	attachNoopTemporal(c)
 	ctx := context.Background()
 
 	workflowID := "error-workflow-" + uuid.New().String()
