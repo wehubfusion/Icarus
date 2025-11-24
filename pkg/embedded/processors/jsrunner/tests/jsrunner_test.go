@@ -69,7 +69,7 @@ func TestJSRunnerBasicExecution(t *testing.T) {
 
 			nodeConfig := embedded.NodeConfig{
 				NodeID:        "test-node",
-				PluginType:    "plugin-jsrunner",
+				PluginType:    "plugin-js",
 				Configuration: configJSON,
 				Input:         inputJSON,
 			}
@@ -125,7 +125,7 @@ func TestJSRunnerTimeout(t *testing.T) {
 
 	nodeConfig := embedded.NodeConfig{
 		NodeID:        "test-node",
-		PluginType:    "plugin-jsrunner",
+		PluginType:    "plugin-js",
 		Configuration: configJSON,
 		Input:         inputJSON,
 	}
@@ -171,7 +171,7 @@ func TestJSRunnerConsoleUtility(t *testing.T) {
 
 	nodeConfig := embedded.NodeConfig{
 		NodeID:        "test-node",
-		PluginType:    "plugin-jsrunner",
+		PluginType:    "plugin-js",
 		Configuration: configJSON,
 		Input:         inputJSON,
 	}
@@ -212,7 +212,7 @@ func TestJSRunnerJSONUtility(t *testing.T) {
 
 	nodeConfig := embedded.NodeConfig{
 		NodeID:        "test-node",
-		PluginType:    "plugin-jsrunner",
+		PluginType:    "plugin-js",
 		Configuration: configJSON,
 		Input:         inputJSON,
 	}
@@ -256,7 +256,7 @@ func TestJSRunnerEncodingUtility(t *testing.T) {
 
 	nodeConfig := embedded.NodeConfig{
 		NodeID:        "test-node",
-		PluginType:    "plugin-jsrunner",
+		PluginType:    "plugin-js",
 		Configuration: configJSON,
 		Input:         inputJSON,
 	}
@@ -317,7 +317,7 @@ func TestJSRunnerErrorHandling(t *testing.T) {
 
 			nodeConfig := embedded.NodeConfig{
 				NodeID:        "test-node",
-				PluginType:    "plugin-jsrunner",
+				PluginType:    "plugin-js",
 				Configuration: configJSON,
 				Input:         inputJSON,
 			}
@@ -371,7 +371,7 @@ func TestJSRunnerSecurity(t *testing.T) {
 
 			nodeConfig := embedded.NodeConfig{
 				NodeID:        "test-node",
-				PluginType:    "plugin-jsrunner",
+				PluginType:    "plugin-js",
 				Configuration: configJSON,
 				Input:         inputJSON,
 			}
@@ -418,7 +418,7 @@ func TestJSRunnerConcurrency(t *testing.T) {
 
 			nodeConfig := embedded.NodeConfig{
 				NodeID:        "test-node",
-				PluginType:    "plugin-jsrunner",
+				PluginType:    "plugin-js",
 				Configuration: configJSON,
 				Input:         inputJSON,
 			}
@@ -467,7 +467,7 @@ func TestJSRunnerPoolStats(t *testing.T) {
 
 	nodeConfig := embedded.NodeConfig{
 		NodeID:        "test-node",
-		PluginType:    "plugin-jsrunner",
+		PluginType:    "plugin-js",
 		Configuration: configJSON,
 		Input:         inputJSON,
 	}
@@ -604,7 +604,7 @@ func BenchmarkJSRunnerExecution(b *testing.B) {
 
 	nodeConfig := embedded.NodeConfig{
 		NodeID:        "test-node",
-		PluginType:    "plugin-jsrunner",
+		PluginType:    "plugin-js",
 		Configuration: configJSON,
 		Input:         inputJSON,
 	}

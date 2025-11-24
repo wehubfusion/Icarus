@@ -143,5 +143,5 @@ func (e *Executor) executeProduce(input []byte, config Config) ([]byte, error) {
 
 // PluginType returns the plugin type this executor handles
 func (e *Executor) PluginType() string {
-	return "plugin-jsonops"
+	return "plugin-json-operations"
 }

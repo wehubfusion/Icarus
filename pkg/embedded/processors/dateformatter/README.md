@@ -764,7 +764,7 @@ Combine dateformatter with other processors for complex workflows:
   "embeddedNodes": [
     {
       "nodeId": "parse-input",
-      "pluginType": "plugin-jsonops",
+      "pluginType": "plugin-json-operations",
       "order": 1,
       "configuration": {
         "operation": "parse",
@@ -788,7 +788,7 @@ Combine dateformatter with other processors for complex workflows:
     },
     {
       "nodeId": "produce-output",
-      "pluginType": "plugin-jsonops",
+      "pluginType": "plugin-json-operations",
       "order": 3,
       "configuration": {
         "operation": "produce",

@@ -265,7 +265,7 @@ When used in Elysium workflows, the `schema_id` is automatically enriched:
 {
   "embedded_nodes": [
     {
-      "plugin_type": "plugin-jsrunner",
+      "plugin_type": "plugin-js",
       "configuration": {
         "script": "// Use schema here",
         "schema_id": "user-schema"

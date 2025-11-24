@@ -131,7 +131,7 @@ func example3() {
 
 	nodeConfig := embedded.NodeConfig{
 		NodeID:        "example-node",
-		PluginType:    "plugin-jsrunner",
+		PluginType:    "plugin-js",
 		Configuration: configJSON,
 		Input:         inputJSON,
 	}
@@ -182,7 +182,7 @@ func example4() {
 
 	nodeConfig := embedded.NodeConfig{
 		NodeID:        "example-node",
-		PluginType:    "plugin-jsrunner",
+		PluginType:    "plugin-js",
 		Configuration: configJSON,
 		Input:         inputJSON,
 	}
@@ -264,7 +264,7 @@ func example6() {
 
 	nodeConfig := embedded.NodeConfig{
 		NodeID:        "example-node",
-		PluginType:    "plugin-jsrunner",
+		PluginType:    "plugin-js",
 		Configuration: configJSON,
 		Input:         inputJSON,
 	}
@@ -312,7 +312,7 @@ func example7() {
 
 	nodeConfig := embedded.NodeConfig{
 		NodeID:        "example-node",
-		PluginType:    "plugin-jsrunner",
+		PluginType:    "plugin-js",
 		Configuration: configJSON,
 		Input:         inputJSON,
 	}

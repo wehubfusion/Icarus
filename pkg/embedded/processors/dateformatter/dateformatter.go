@@ -62,5 +62,5 @@ func (e *Executor) executeFormatOperation(input []byte, paramsRaw json.RawMessag
 
 // PluginType returns the plugin type this executor handles
 func (e *Executor) PluginType() string {
-	return "plugin-date-formatter"
+	return "plugin-dateformatter"
 }

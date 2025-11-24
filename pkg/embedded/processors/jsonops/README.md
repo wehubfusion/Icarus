@@ -219,7 +219,7 @@ The processor uses the Icarus schema format. See [Olympus SCHEMA.md](../../../..
 ```json
 {
   "nodeId": "parse-user-input",
-  "pluginType": "plugin-jsonops",
+  "pluginType": "plugin-json-operations",
   "order": 1,
   "configuration": {
     "operation": "parse",
@@ -254,7 +254,7 @@ The processor uses the Icarus schema format. See [Olympus SCHEMA.md](../../../..
 ```json
 {
   "nodeId": "produce-api-response",
-  "pluginType": "plugin-jsonops",
+  "pluginType": "plugin-json-operations",
   "order": 5,
   "configuration": {
     "operation": "produce",
@@ -300,7 +300,7 @@ The processor uses the Icarus schema format. See [Olympus SCHEMA.md](../../../..
   "embeddedNodes": [
     {
       "nodeId": "parse-input",
-      "pluginType": "plugin-jsonops",
+      "pluginType": "plugin-json-operations",
       "order": 1,
       "configuration": {
         "operation": "parse",
@@ -311,7 +311,7 @@ The processor uses the Icarus schema format. See [Olympus SCHEMA.md](../../../..
     },
     {
       "nodeId": "transform-data",
-      "pluginType": "plugin-jsrunner",
+      "pluginType": "plugin-js",
       "order": 2,
       "configuration": {
         "script": "return { ...input, processed: true };"
@@ -319,7 +319,7 @@ The processor uses the Icarus schema format. See [Olympus SCHEMA.md](../../../..
     },
     {
       "nodeId": "produce-output",
-      "pluginType": "plugin-jsonops",
+      "pluginType": "plugin-json-operations",
       "order": 3,
       "configuration": {
         "operation": "produce",

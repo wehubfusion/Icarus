@@ -315,7 +315,7 @@ func (e *Executor) ensurePool(config *Config) error {
 
 // PluginType returns the plugin type this executor handles
 func (e *Executor) PluginType() string {
-	return "plugin-jsrunner"
+	return "plugin-js"
 }
 
 // Close closes the executor and releases resources

@@ -872,7 +872,7 @@ func (p *Processor) processNode(
 	// Path 3: Single-item processing (normal flow)
 	p.logger.Debug("Using NORMAL processing path",
 		Field{Key: "node_id", Value: embNode.NodeID})
-	if embNode.PluginType == "plugin-js" || embNode.PluginType == "plugin-jsrunner" {
+	if embNode.PluginType == "plugin-js" {
 		p.logger.Info("JS Runner input mapped",
 			Field{Key: "node_id", Value: embNode.NodeID},
 			Field{Key: "plugin_type", Value: embNode.PluginType},

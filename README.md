@@ -1339,7 +1339,7 @@ When used in Elysium workflows, specify `schema_id` in the configuration. Elysiu
 
 ```json
 {
-  "plugin_type": "plugin-jsrunner",
+  "plugin_type": "plugin-js",
   "configuration": {
     "script": "// Your JS code with schema access",
     "schema_id": "user-schema"
@@ -2017,3 +2017,7 @@ c.Messages.Publish(ctx, "subject", msg)
 
 - Go 1.25.1 or higher
 - NATS Server 2.x or higher with JetStream enabled (required for all operations)
+
+## Changelog
+
+- **2025-11-24**: Standardized embedded processor plugin identifiers. Use `plugin-js`, `plugin-json-operations`, and `plugin-dateformatter` across workflows, configs, and tests.
