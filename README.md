@@ -21,6 +21,7 @@ A clean, future-proof Go SDK for messaging over NATS JetStream with idiomatic pa
 - **Connection Management**: Automatic reconnection and connection health monitoring
 - **Full JetStream Integration**: Automatic JetStream context initialization and advanced operations
 - **Structured Logging**: Built-in zap logger integration with configurable log levels
+- **Kubernetes-Aware Concurrency Control**: Production-ready goroutine limiting with automatic CPU quota detection, circuit breaker protection, and comprehensive observability
 - **Future-Proof**: Designed for easy extension with growing process management capabilities
 
 ## Installation
@@ -41,7 +42,6 @@ import (
     "github.com/wehubfusion/Icarus/pkg/client"
     "github.com/wehubfusion/Icarus/pkg/message"
     "github.com/wehubfusion/Icarus/pkg/runner"
-    "github.com/wehubfusion/Icarus/pkg/tracing"
     "go.uber.org/zap"
 )
 
@@ -391,24 +391,17 @@ Configure tracing when creating a Runner or set it up manually:
 
 ```go
 // Option 1: Jaeger configuration (recommended for development)
-tracingConfig := tracing.JaegerConfig("my-service-name")
+tracingConfig := runner.JaegerTracingConfig("my-service-name")
 tracingConfig.SampleRatio = 1.0 // Sample all traces in development
 
 // Option 2: Generic OTLP configuration
-tracingConfig := tracing.TracingConfig{
+tracingConfig := runner.TracingConfig{
     ServiceName:    "my-service",
     ServiceVersion: "1.0.0",
     Environment:    "production",
     OTLPEndpoint:   "otel-collector.company.com:4318", // Host:port only
     SampleRatio:    0.1, // Sample 10% of traces in production
 }
-
-// Option 3: Manual setup
-shutdown, err := tracing.SetupTracing(ctx, tracingConfig, logger)
-if err != nil {
-    logger.Error("Failed to setup tracing", zap.Error(err))
-}
-defer shutdown(ctx) // Cleanup when done
 ```
 
 ### Tracing with Runner
@@ -587,7 +580,7 @@ Success callbacks contain:
   },
   "payload": {
     "source": "processor",
-    "data": "Processing completed successfully",
+    "result": "Processing completed successfully",
     "reference": "result-ref"
   },
   "metadata": {
@@ -608,7 +601,7 @@ Error callbacks contain:
   },
   "payload": {
     "source": "callback-service",
-    "data": "Processing failed: connection timeout",
+    "result": "Processing failed: connection timeout",
     "reference": "error-workflow-123-run-456"
   },
   "metadata": {
@@ -675,6 +668,257 @@ The callback system handles message acknowledgment automatically:
 - **Success Callbacks**: Original message is acknowledged after successful callback publication
 - **Error Callbacks**: Original message is negatively acknowledged after callback publication
 - **Retry Logic**: Callbacks are published with retry logic for reliability
+
+## Concurrency Control
+
+Icarus provides production-ready, Kubernetes-aware concurrency control that prevents unlimited goroutine creation, provides observability, and scales properly in containerized environments.
+
+### Features
+
+- **Semaphore-Based Limiting**: Prevents unlimited goroutine creation with bounded concurrency
+- **Circuit Breaker**: Automatic failure detection and graceful degradation under load
+- **Kubernetes-Aware**: Automatically detects and respects container CPU limits using `automaxprocs`
+- **Configurable**: Environment variables for fine-tuning based on workload characteristics
+- **Observable**: Comprehensive metrics logged every 30 seconds
+- **Thread-Safe**: All operations use atomic counters and proper synchronization
+
+### Quick Start
+
+```go
+import (
+    "github.com/wehubfusion/Icarus/pkg/concurrency"
+    "github.com/wehubfusion/Icarus/pkg/runner"
+)
+
+func main() {
+    // Initialize Kubernetes-aware concurrency (respects cgroup CPU limits)
+    undoMaxprocs := concurrency.InitializeForKubernetes()
+    defer undoMaxprocs()
+    
+    // Load configuration (auto-detects environment)
+    config := concurrency.LoadConfig()
+    
+    // Create limiter with optimal settings
+    limiter := concurrency.NewLimiter(config.MaxConcurrent)
+    
+    // Log configuration for observability
+    logger.Info("Concurrency initialized",
+        zap.Int("max_concurrent", config.MaxConcurrent),
+        zap.Int("runner_workers", config.RunnerWorkers),
+        zap.Int("effective_cpus", config.EffectiveCPUs),
+        zap.Bool("is_kubernetes", config.IsKubernetes),
+    )
+    
+    // Pass limiter to runner and processor
+    runner, err := runner.NewRunner(
+        client,
+        processor,
+        "TASKS",
+        "consumer",
+        10,                   // batch size
+        config.RunnerWorkers, // workers from config
+        5*time.Minute,
+        logger,
+        nil,    // tracing
+        limiter, // concurrency limiter
+    )
+}
+```
+
+### Configuration
+
+Concurrency is configured through environment variables with intelligent defaults:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ICARUS_MAX_CONCURRENT` | Explicit max concurrent goroutines | Auto-detected |
+| `ICARUS_CONCURRENCY_MULTIPLIER` | CPU × multiplier for max concurrent | K8s: 2, Bare: 4 |
+| `ICARUS_RUNNER_WORKERS` | Number of NATS consumer workers | max(CPU, 4) |
+| `ICARUS_PROCESSOR_MODE` | `concurrent` or `sequential` processing | `concurrent` |
+| `ICARUS_ITERATOR_MODE` | `parallel` or `sequential` array iteration | `sequential` |
+
+**Configuration Priority**: Explicit env vars > auto-detection > defaults
+
+**Environment Detection**:
+- **Kubernetes**: Detected via `KUBERNETES_SERVICE_HOST` environment variable
+- **CPU Limits**: Automatically detected using `runtime.GOMAXPROCS(0)` which respects cgroup limits
+
+### Usage with Processor
+
+The limiter automatically controls goroutine creation in embedded node processing:
+
+```go
+import (
+    "github.com/wehubfusion/Icarus/pkg/embedded"
+    "github.com/wehubfusion/Icarus/pkg/concurrency"
+)
+
+// Create processor with limiter
+processor := embedded.NewProcessorWithLimiter(
+    registry,
+    true,    // concurrent mode
+    limiter, // concurrency limiter
+)
+
+// Process embedded nodes - goroutines are automatically limited
+results, err := processor.ProcessEmbeddedNodes(ctx, msg, parentOutput)
+```
+
+### Embedded Runtime Package Layout
+
+The embedded processor has been modularized into focused runtime packages to simplify maintenance:
+
+- `pkg/embedded/runtime`: processor orchestration, executor registry, and public APIs (re-exported through `pkg/embedded` for backward compatibility).
+- `pkg/embedded/runtime/output`: shared `StandardOutput` types, wrappers, and registries.
+- `pkg/embedded/runtime/storage`: smart storage with consumer-aware cleanup and iteration context helpers.
+- `pkg/embedded/runtime/mapping`: field mapping engine and path utilities bridging into `pathutil`.
+- `pkg/embedded/runtime/errors`: standardized error categorization and retry hints reused by output wrappers.
+- `pkg/embedded/runtime/logging`: lightweight logger interface and structured field helpers used across runtime components.
+- `pkg/embedded/processors/registry`: consolidated helper that wires up all built-in executors (formerly `pkg/embedded/all`).
+
+Import paths that previously referenced `github.com/wehubfusion/Icarus/pkg/embedded` continue to work unchanged because the top-level package re-exports the runtime APIs.
+
+### Usage with Iterator
+
+Control array iteration concurrency:
+
+```go
+import (
+    "github.com/wehubfusion/Icarus/pkg/iteration"
+    "github.com/wehubfusion/Icarus/pkg/concurrency"
+)
+
+// Create iterator with limiter
+iterator := iteration.NewIteratorWithLimiter(
+    iteration.Config{
+        Strategy: iteration.StrategyParallel,
+    },
+    limiter,
+)
+
+// Process items - worker goroutines are automatically limited
+results, err := iterator.Process(ctx, items, processFn)
+```
+
+### Observability
+
+The runner logs concurrency metrics every 30 seconds:
+
+```json
+{
+  "level": "info",
+  "msg": "Concurrency metrics",
+  "active_goroutines": 45,
+  "peak_concurrent": 78,
+  "total_acquired": 1523,
+  "total_released": 1478,
+  "avg_wait_time": "15ms",
+  "circuit_breaker": "closed"
+}
+```
+
+**Key Metrics**:
+- **active_goroutines**: Current concurrent operations
+- **peak_concurrent**: Maximum concurrency reached since start
+- **total_acquired/released**: Cumulative slot acquisitions
+- **avg_wait_time**: Average time waiting for a concurrency slot
+- **circuit_breaker**: Protection state (closed/open/half-open)
+
+### Circuit Breaker
+
+Protects against cascade failures during overload:
+
+- **Threshold**: Opens after 100 consecutive failures
+- **Reset Timeout**: 30 seconds before attempting recovery
+- **Half-Open State**: Tests recovery with limited traffic
+- **Automatic Recovery**: Closes after 5 consecutive successes
+
+When the circuit breaker is open, new operations fail immediately instead of overwhelming the system.
+
+### Tuning Guidelines
+
+#### CPU-Bound Workloads
+
+Increase concurrency and enable parallelism:
+
+```bash
+export ICARUS_CONCURRENCY_MULTIPLIER=4
+export ICARUS_PROCESSOR_MODE=concurrent
+export ICARUS_ITERATOR_MODE=parallel
+```
+
+Monitor CPU throttling and adjust as needed.
+
+#### I/O-Bound Workloads
+
+Use higher concurrency with conservative CPU allocation:
+
+```bash
+export ICARUS_CONCURRENCY_MULTIPLIER=8
+export ICARUS_RUNNER_WORKERS=12
+```
+
+Higher concurrency allows better I/O overlap.
+
+#### Memory-Constrained Environments
+
+Reduce concurrency and use sequential processing:
+
+```bash
+export ICARUS_CONCURRENCY_MULTIPLIER=1
+export ICARUS_PROCESSOR_MODE=sequential
+export ICARUS_ITERATOR_MODE=sequential
+export ICARUS_RUNNER_WORKERS=2
+```
+
+### Kubernetes Deployment
+
+See the `k8s/` directory for complete Kubernetes manifests including:
+- ConfigMap with concurrency settings
+- Deployment with proper resource limits
+- HorizontalPodAutoscaler for automatic scaling
+- Service for health and metrics endpoints
+
+```bash
+# Deploy with default settings
+kubectl apply -f k8s/
+
+# Monitor concurrency metrics
+kubectl logs -f -l app=icarus-processor | grep "Concurrency metrics"
+
+# Check autoscaling
+kubectl get hpa icarus-processor-hpa
+```
+
+**Critical for Kubernetes**: Set CPU limits in your deployment:
+
+```yaml
+resources:
+  limits:
+    cpu: "2000m"  # automaxprocs uses this to set GOMAXPROCS
+    memory: "4Gi"
+```
+
+### Best Practices
+
+1. **Always Initialize**: Call `concurrency.InitializeForKubernetes()` at the start of `main()`
+2. **Pass Limiter Through**: Pass the limiter to Runner, Processor, and Iterator
+3. **Monitor Metrics**: Watch for high `avg_wait_time` or `circuit_breaker: open`
+4. **Start Conservative**: Begin with default settings, scale up based on metrics
+5. **Set Resource Limits**: In Kubernetes, always set both requests and limits
+6. **Test Scaling**: Verify behavior under load before production deployment
+
+### Troubleshooting
+
+**High Wait Times**: Increase `ICARUS_CONCURRENCY_MULTIPLIER` or scale horizontally
+
+**Circuit Breaker Opens**: Check downstream services and reduce load temporarily
+
+**CPU Throttling**: Increase CPU limits in Kubernetes or reduce concurrency multiplier
+
+**Memory Pressure**: Reduce max concurrent operations and use sequential modes
+
+See `k8s/README.md` for detailed troubleshooting guides.
 
 ## Advanced Usage
 
@@ -928,6 +1172,232 @@ msg = message.NewMessage().
     WithOutput("payment-gateway")
 ```
 
+## StandardOutput Format
+
+All nodes (parent and embedded) output a standardized structure with reserved namespaces for consistent error handling and event routing.
+
+### Output Structure
+
+```json
+{
+  "_meta": {
+    "status": "success|failed|skipped",
+    "node_id": "node-123",
+    "plugin_type": "plugin-http",
+    "execution_time_ms": 150,
+    "timestamp": "2024-01-15T10:30:00Z"
+  },
+  "_events": {
+    "success": true|null,
+    "error": null|true
+  },
+  "_error": {
+    "code": "ERROR_CODE",
+    "message": "Error description",
+    "retryable": true|false
+  },
+  "result": {
+    "... actual plugin output ..."
+  }
+}
+```
+
+### Reserved Namespaces
+
+- **`_meta`**: Execution metadata (status, timing, node information)
+- **`_events`**: Event endpoints for routing (success/error events)
+- **`_error`**: Detailed error information (only present on failure)
+- **`result`**: Actual plugin output result (null on error)
+
+### Error Events
+
+Failed nodes emit error events that can trigger error handling nodes:
+
+```go
+// Failed node output
+{
+  "_events": {
+    "error": true  // Error event fires!
+  },
+  "_error": {
+    "code": "HTTP_TIMEOUT",
+    "message": "Request timed out",
+    "retryable": true
+  }
+}
+
+// Error handler field mapping
+{
+  "sourceEndpoint": "_events/error",
+  "isEventTrigger": true
+}
+```
+
+**Key Feature**: Failed nodes store their outputs in the registry, enabling:
+- Error event routing to error handlers
+- Access to error details for intelligent recovery
+- Rich observability through error metadata
+
+See [Error Handling Guide](../Olympus/docs/ERROR_HANDLING.md) for comprehensive patterns.
+
+## Embedded Node Processors
+
+Icarus includes powerful embedded node processors that enable sophisticated data processing within workflow nodes.
+
+### JSRunner - JavaScript Processor
+
+The JSRunner processor executes JavaScript code with schema-aware capabilities, enabling flexible data transformation and validation.
+
+**Key Features:**
+
+- **Schema-Aware Processing**: Access input schemas directly in JavaScript for meta-programming
+- **Raw Byte Output**: Always returns raw bytes for efficient processing
+- **VM Pooling**: Reuses JavaScript VMs for performance
+- **Configurable Security**: Multiple security levels (strict, standard, permissive)
+- **Timeout Protection**: Configurable execution timeouts
+
+**Basic Usage:**
+
+```go
+import "github.com/wehubfusion/Icarus/pkg/embedded/processors/jsrunner"
+
+// Create executor
+executor := jsrunner.NewExecutor()
+defer executor.Close()
+
+// Configure with schema
+config := jsrunner.Config{
+    Script: `
+        // Access input and schema
+        var requiredFields = Object.keys(schema.properties);
+        
+        // Validate and transform
+        var output = {};
+        for (var key in schema.properties) {
+            var field = schema.properties[key];
+            if (input[key] !== undefined) {
+                output[key] = input[key];
+            } else if (field.default !== undefined) {
+                output[key] = field.default;
+            }
+        }
+        
+        JSON.stringify(output);
+    `,
+}
+
+// Add schema if needed
+schemaBytes, _ := json.Marshal(map[string]interface{}{
+    "type": "OBJECT",
+    "properties": map[string]interface{}{
+        "name": map[string]interface{}{
+            "type": "STRING",
+            "required": true,
+        },
+        "status": map[string]interface{}{
+            "type": "STRING",
+            "default": "active",
+        },
+    },
+})
+config.SchemaDefinition = schemaBytes
+
+// Execute
+configBytes, _ := json.Marshal(config)
+inputBytes, _ := json.Marshal(map[string]interface{}{"name": "John"})
+
+result, err := executor.Execute(ctx, embedded.NodeConfig{
+    Configuration: configBytes,
+    Input:         inputBytes,
+})
+
+// Result is raw bytes: {"name":"John","status":"active"}
+fmt.Println(string(result))
+```
+
+**JavaScript Context:**
+
+Your JavaScript code has access to two global variables:
+
+- **`input`**: The input data (always available)
+- **`schema`**: The schema definition (when `schema_id` is provided and enriched)
+
+**Output Format:**
+
+JSRunner always returns raw bytes (not wrapped JSON):
+
+| JavaScript Return | Output |
+|------------------|--------|
+| String | Raw string as bytes |
+| Number | JSON-marshaled: `42` → `"42"` |
+| Object | JSON-marshaled: `{a:1}` → `{"a":1}` |
+| Array | JSON-marshaled: `[1,2]` → `[1,2]` |
+
+**Schema Integration:**
+
+When used in Elysium workflows, specify `schema_id` in the configuration. Elysium's enrichment framework automatically fetches the schema from Morpheus and injects it before execution:
+
+```json
+{
+  "plugin_type": "plugin-js",
+  "configuration": {
+    "script": "// Your JS code with schema access",
+    "schema_id": "user-schema"
+  }
+}
+```
+
+The enrichment is transparent - jsrunner receives the full schema definition and makes it available as the `schema` global variable.
+
+**Common Use Cases:**
+
+- Custom validation logic beyond schema rules
+- Dynamic field mapping based on schema
+- Conditional data transformation
+- Applying business rules to data
+- Schema-driven default value application
+
+For detailed examples and API documentation, see `pkg/embedded/processors/jsrunner/README.md`.
+
+### JSONOps Processor
+
+The JSONOps processor provides schema-driven JSON data validation and transformation using Icarus schemas.
+
+**Operations:**
+
+- **parse**: Validate and structure incoming JSON data against a schema
+- **produce**: Validate and encode JSON data to base64 output
+
+**Configuration:**
+
+```go
+import "github.com/wehubfusion/Icarus/pkg/embedded/processors/jsonops"
+
+// Parse operation - validate and structure incoming data
+config := jsonops.Config{
+    Operation: "parse",
+    SchemaID:  "user-input-schema",
+}
+
+// Produce operation - validate and encode output
+config := jsonops.Config{
+    Operation: "produce",
+    SchemaID:  "api-output-schema",
+}
+```
+
+**Key Features:**
+
+- Flat configuration structure (no nested params)
+- Operation-specific smart defaults
+- Schema-based validation using Icarus schemas
+- Base64 encoding for produce operation
+- Integration with Elysium schema enrichment
+
+When executed in Elysium, the `schema_id` is automatically enriched with the full schema definition from Morpheus before processing.
+
+For detailed documentation, see `pkg/embedded/processors/jsonops/README.md`.
+
 ## String Processing Utilities
 
 The SDK includes comprehensive string processing utilities for workflow orchestration and data manipulation:
@@ -973,6 +1443,335 @@ normalized := strings.Normalize("café") // "cafe"
 - **Utilities**: `Length` (rune-aware character count)
 
 All functions are Unicode-aware and handle multi-byte characters correctly.
+
+## Schema Validation and Transformation
+
+The SDK includes a comprehensive schema package for data validation, transformation, and structuring according to JSON Schema definitions:
+
+```go
+import "github.com/wehubfusion/Icarus/pkg/schema"
+
+// Create schema engine
+engine := schema.NewEngine()
+
+// Parse and process data with schema
+result, err := engine.ProcessWithSchema(
+    inputData,           // JSON data to process
+    schemaDefinition,    // Schema definition (JSON)
+    schema.ProcessOptions{
+        ApplyDefaults:  true,  // Apply default values from schema
+        ValidateData:   true,  // Validate data against schema
+        StructureData:  false, // Restructure data to match schema
+        TruncateFields: true,  // Remove fields not in schema
+        TruncateLevel:  0,     // Truncation depth (0 = all levels)
+        StrictMode:     false, // Strict validation mode
+    },
+)
+
+if err != nil {
+    log.Fatalf("Schema processing failed: %v", err)
+}
+
+// Access results
+if result.Valid {
+    processedData := result.Data
+    fmt.Println("Data validated and transformed successfully")
+} else {
+    for _, err := range result.Errors {
+        fmt.Printf("Validation error at %s: %s\n", err.Path, err.Message)
+    }
+}
+```
+
+### Schema Types
+
+The schema package supports the following data types:
+
+- **STRING**: Text data with optional length, pattern, format, and enum constraints
+- **NUMBER**: Numeric data with optional min/max constraints
+- **BOOLEAN**: True/false values
+- **OBJECT**: Nested objects with properties
+- **ARRAY**: Arrays with item schema and optional length, uniqueness constraints
+- **DATE**: Date values (YYYY-MM-DD format)
+- **DATETIME**: DateTime values (RFC3339 format)
+- **BYTE**: Base64-encoded binary data with optional decoded byte length constraints
+- **ANY**: Any JSON value (no validation)
+
+### Validation Rules
+
+Each property in a schema can have validation rules:
+
+**String Validations:**
+```json
+{
+  "type": "STRING",
+  "validation": {
+    "minLength": 3,
+    "maxLength": 50,
+    "pattern": "^[a-zA-Z]+$",
+    "format": "email",
+    "enum": ["option1", "option2"]
+  }
+}
+```
+
+**Number Validations:**
+```json
+{
+  "type": "NUMBER",
+  "validation": {
+    "minimum": 0,
+    "maximum": 100
+  }
+}
+```
+
+**Array Validations:**
+```json
+{
+  "type": "ARRAY",
+  "validation": {
+    "minItems": 1,
+    "maxItems": 10,
+    "uniqueItems": true
+  },
+  "items": {
+    "type": "STRING"
+  }
+}
+```
+
+**Byte Validations:**
+```json
+{
+  "type": "BYTE",
+  "validation": {
+    "minLength": 100,
+    "maxLength": 1048576
+  }
+}
+```
+
+The `BYTE` type expects base64-encoded string data. Validation rules (`minLength` and `maxLength`) apply to the decoded byte length, not the base64 string length. This allows precise control over binary data sizes for file attachments, images, certificates, and other binary content.
+
+**Example Usage:**
+```go
+// Schema for file upload with size constraints
+schemaJSON := `{
+  "type": "OBJECT",
+  "properties": {
+    "filename": {
+      "type": "STRING",
+      "required": true
+    },
+    "content": {
+      "type": "BYTE",
+      "required": true,
+      "validation": {
+        "minLength": 1,
+        "maxLength": 5242880
+      }
+    }
+  }
+}`
+
+// Input data with base64-encoded file
+inputData := `{
+  "filename": "document.pdf",
+  "content": "JVBERi0xLjQKJeLjz9MKMyAwIG9iago8PC9UeXBl..."
+}`
+
+// Validates that decoded content is between 1 byte and 5MB
+result, err := engine.ProcessWithSchema(
+    []byte(inputData),
+    []byte(schemaJSON),
+    schema.ProcessOptions{ValidateData: true},
+)
+```
+
+### Supported Formats
+
+The schema validator includes built-in format validators:
+
+- `email`: RFC 5322 email validation
+- `uri`: URI/URL validation (HTTP, HTTPS, FTP, WS, WSS)
+- `uuid`: UUID v4 format validation
+- `date`: ISO 8601 date format (YYYY-MM-DD)
+- `datetime`: RFC3339 datetime format
+
+You can also register custom format validators:
+
+```go
+validator := schema.NewValidator()
+validator.RegisterFormat("phone", func(value string) bool {
+    // Custom phone number validation logic
+    return regexp.MustCompile(`^\+?[1-9]\d{1,14}$`).MatchString(value)
+})
+```
+
+### Default Values
+
+The schema engine can automatically apply default values to missing fields:
+
+```go
+// Schema with default values
+schemaJSON := `{
+  "type": "OBJECT",
+  "properties": {
+    "name": {
+      "type": "STRING",
+      "required": true
+    },
+    "country": {
+      "type": "STRING",
+      "default": "US"
+    },
+    "active": {
+      "type": "BOOLEAN",
+      "default": true
+    }
+  }
+}`
+
+// Input data missing 'country' and 'active'
+inputData := `{"name": "John"}`
+
+// Process with defaults
+result, _ := engine.ProcessWithSchema(
+    []byte(inputData),
+    []byte(schemaJSON),
+    schema.ProcessOptions{ApplyDefaults: true},
+)
+
+// Result: {"name": "John", "country": "US", "active": true}
+```
+
+### Data Structuring
+
+The schema engine can restructure data to match the schema structure:
+
+```go
+// Flat input data
+inputData := `{
+  "firstName": "John",
+  "lastName": "Doe",
+  "email": "john@example.com"
+}`
+
+// Nested schema structure
+schemaJSON := `{
+  "type": "OBJECT",
+  "properties": {
+    "user": {
+      "type": "OBJECT",
+      "properties": {
+        "name": {
+          "type": "OBJECT",
+          "properties": {
+            "first": {"type": "STRING"},
+            "last": {"type": "STRING"}
+          }
+        },
+        "contact": {
+          "type": "OBJECT",
+          "properties": {
+            "email": {"type": "STRING"}
+          }
+        }
+      }
+    }
+  }
+}`
+
+// Process with structuring
+result, _ := engine.ProcessWithSchema(
+    []byte(inputData),
+    []byte(schemaJSON),
+    schema.ProcessOptions{StructureData: true},
+)
+
+// Result is restructured to match schema
+```
+
+### Field Truncation
+
+Remove fields not defined in the schema:
+
+```go
+result, _ := engine.ProcessWithSchema(
+    inputData,
+    schemaDefinition,
+    schema.ProcessOptions{
+        TruncateFields: true,
+        TruncateLevel:  0,  // 0 = all levels, 1 = first level only, etc.
+    },
+)
+```
+
+### Components
+
+The schema package is organized into focused components:
+
+- **`types.go`**: Schema structure definitions (Schema, Property, ValidationRules)
+- **`parser.go`**: Schema parsing from JSON
+- **`validator.go`**: Data validation against schemas
+- **`transformer.go`**: Data transformation (defaults, structuring, truncation)
+- **`engine.go`**: Main orchestrator coordinating all operations
+- **`formats.go`**: Format validators (email, UUID, date, etc.)
+- **`errors.go`**: Schema-specific error types
+
+### Usage in Plugins
+
+The schema package is designed to be used by Elysium plugins like `plugin-stage-data`, `plugin-json-operations`, and others that need schema-based validation and transformation:
+
+```go
+import (
+    "github.com/wehubfusion/Icarus/pkg/schema"
+)
+
+// In your plugin activity
+type StageDataActivity struct {
+    schemaEngine *schema.Engine
+}
+
+func NewActivity(logger *zap.Logger) *Activity {
+    return &Activity{
+        schemaEngine: schema.NewEngine(),
+    }
+}
+
+func (a *Activity) Execute(ctx context.Context, req *Request) (*Response, error) {
+    // Fetch schema from Morpheus
+    schemaDefinition := fetchSchemaFromMorpheus(req.SchemaID)
+    
+    // Process data with schema
+    result, err := a.schemaEngine.ProcessWithSchema(
+        req.InputData,
+        schemaDefinition,
+        schema.ProcessOptions{
+            ApplyDefaults:  true,
+            ValidateData:   true,
+            TruncateFields: true,
+        },
+    )
+    
+    if err != nil {
+        return nil, err
+    }
+    
+    if !result.Valid {
+        return &Response{
+            Success: false,
+            ValidationErrors: result.Errors,
+        }, nil
+    }
+    
+    return &Response{
+        Success: true,
+        Data:    result.Data,
+    }, nil
+}
+```
 
 ## Complete Example
 
@@ -1218,3 +2017,7 @@ c.Messages.Publish(ctx, "subject", msg)
 
 - Go 1.25.1 or higher
 - NATS Server 2.x or higher with JetStream enabled (required for all operations)
+
+## Changelog
+
+- **2025-11-24**: Standardized embedded processor plugin identifiers. Use `plugin-js`, `plugin-json-operations`, and `plugin-dateformatter` across workflows, configs, and tests.

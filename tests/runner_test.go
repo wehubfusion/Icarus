@@ -215,7 +215,7 @@ func TestNewRunner(t *testing.T) {
 	batchSize := 5
 	numWorkers := 3
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, stream, consumer, batchSize, numWorkers, 30*time.Second, createTestLogger(), nil)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, stream, consumer, batchSize, numWorkers, 30*time.Second, createTestLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("NewRunner returned error: %v", err)
 	}
@@ -233,43 +233,43 @@ func TestNewRunnerValidation(t *testing.T) {
 	mockProc := &mockProcessor{}
 
 	// Test nil client
-	_, err := runner.NewRunner(nil, mockProc, "stream", "consumer", 1, 1, 30*time.Second, createTestLogger(), nil)
+	_, err := runner.NewRunner(nil, mockProc, "stream", "consumer", 1, 1, 30*time.Second, createTestLogger(), nil, nil)
 	if err == nil {
 		t.Error("Expected error for nil client")
 	}
 
 	// Test nil processor
-	_, err = runner.NewRunner(mockClient.Client, nil, "stream", "consumer", 1, 1, 30*time.Second, createTestLogger(), nil)
+	_, err = runner.NewRunner(mockClient.Client, nil, "stream", "consumer", 1, 1, 30*time.Second, createTestLogger(), nil, nil)
 	if err == nil {
 		t.Error("Expected error for nil processor")
 	}
 
 	// Test empty stream
-	_, err = runner.NewRunner(mockClient.Client, mockProc, "", "consumer", 1, 1, 30*time.Second, createTestLogger(), nil)
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "", "consumer", 1, 1, 30*time.Second, createTestLogger(), nil, nil)
 	if err == nil {
 		t.Error("Expected error for empty stream")
 	}
 
 	// Test empty consumer
-	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "", 1, 1, 30*time.Second, createTestLogger(), nil)
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "", 1, 1, 30*time.Second, createTestLogger(), nil, nil)
 	if err == nil {
 		t.Error("Expected error for empty consumer")
 	}
 
 	// Test invalid batch size
-	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 0, 1, 30*time.Second, createTestLogger(), nil)
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 0, 1, 30*time.Second, createTestLogger(), nil, nil)
 	if err == nil {
 		t.Error("Expected error for zero batch size")
 	}
 
 	// Test invalid worker count
-	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 1, 0, 30*time.Second, createTestLogger(), nil)
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 1, 0, 30*time.Second, createTestLogger(), nil, nil)
 	if err == nil {
 		t.Error("Expected error for zero workers")
 	}
 
 	// Test nil logger
-	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 1, 1, 30*time.Second, nil, nil)
+	_, err = runner.NewRunner(mockClient.Client, mockProc, "stream", "consumer", 1, 1, 30*time.Second, nil, nil, nil)
 	if err == nil {
 		t.Error("Expected error for nil logger")
 	}
@@ -294,7 +294,7 @@ func TestRunnerRunWithSuccessfulProcessor(t *testing.T) {
 		},
 	}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger(), nil)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestRunnerRunWithFailingProcessor(t *testing.T) {
 		},
 	}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger(), nil)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}
@@ -381,7 +381,7 @@ func TestRunnerRunWithMultipleMessages(t *testing.T) {
 		},
 	}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 2, 2, 30*time.Second, createTestLogger(), nil)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 2, 2, 30*time.Second, createTestLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestRunnerRunWithPullError(t *testing.T) {
 
 	mockProc := &mockProcessor{}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger(), nil)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestRunnerRunWithReportError(t *testing.T) {
 		},
 	}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger(), nil)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestRunnerRunContextCancellation(t *testing.T) {
 		},
 	}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger(), nil)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}
@@ -533,7 +533,7 @@ func TestRunnerRunEmptyMessages(t *testing.T) {
 
 	mockProc := &mockProcessor{}
 
-	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger(), nil)
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 1, 30*time.Second, createTestLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("NewRunner failed: %v", err)
 	}

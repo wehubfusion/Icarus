@@ -10,9 +10,10 @@ import (
 	"sync"
 	"time"
 
+	internaltracing "github.com/wehubfusion/Icarus/internal/tracing"
 	"github.com/wehubfusion/Icarus/pkg/client"
+	"github.com/wehubfusion/Icarus/pkg/concurrency"
 	"github.com/wehubfusion/Icarus/pkg/message"
-	"github.com/wehubfusion/Icarus/pkg/tracing"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -40,6 +41,7 @@ type Runner struct {
 	processTimeout  time.Duration
 	tracer          trace.Tracer
 	tracingShutdown func(context.Context) error
+	limiter         *concurrency.Limiter
 }
 
 // NewRunner creates a new Runner instance with a connected client and stream/consumer configuration.
@@ -50,8 +52,9 @@ type Runner struct {
 // processTimeout specifies the maximum time allowed for processing a single message.
 // logger is the zap logger instance for structured logging.
 // tracingConfig is optional - if nil, no tracing will be set up. If provided, tracing will be automatically configured and cleaned up.
+// limiter is optional - if nil, no concurrency limiting will be applied beyond the worker pool.
 // Returns an error if any of the parameters are invalid.
-func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, numWorkers int, processTimeout time.Duration, logger *zap.Logger, tracingConfig *tracing.TracingConfig) (*Runner, error) {
+func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, numWorkers int, processTimeout time.Duration, logger *zap.Logger, tracingConfig *TracingConfig, limiter *concurrency.Limiter) (*Runner, error) {
 	if client == nil {
 		return nil, errors.New("client cannot be nil")
 	}
@@ -96,12 +99,14 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 		processTimeout: processTimeout,
 		logger:         logger,
 		tracer:         otel.Tracer("icarus/runner"),
+		limiter:        limiter,
 	}
 
 	// Setup tracing if configuration is provided
 	if tracingConfig != nil {
 		ctx := context.Background()
-		shutdown, err := tracing.SetupTracing(ctx, *tracingConfig, logger)
+		internalCfg := tracingConfig.toInternalConfig()
+		shutdown, err := internaltracing.SetupTracing(ctx, internalCfg, logger)
 		if err != nil {
 			logger.Warn("Failed to setup tracing, continuing without tracing", zap.Error(err))
 		} else {
@@ -140,6 +145,15 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Use WaitGroup to wait for all goroutines to finish
 	var wg sync.WaitGroup
+
+	// Start concurrency stats logging if limiter is available
+	if r.limiter != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.logConcurrencyStats(ctx)
+		}()
+	}
 
 	// Start worker goroutines
 	for i := 0; i < r.numWorkers; i++ {
@@ -342,12 +356,19 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		// Report error if we have workflow information
 		// Use a background context with timeout to ensure reporting works even if parent context is cancelled
 		if workflowID != "" && runID != "" {
+			// Extract executionID from message metadata
+			executionID := ""
+			if msg.Metadata != nil {
+				executionID = msg.Metadata["execution_id"]
+			}
+
 			reportCtx, reportCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if reportErr := r.client.Messages.ReportError(reportCtx, workflowID, runID, processErr, msg.GetNATSMsg()); reportErr != nil {
+			if reportErr := r.client.Messages.ReportError(reportCtx, executionID, workflowID, runID, processErr, msg.GetNATSMsg()); reportErr != nil {
 				r.logger.Error("Error reporting failure",
 					zap.Int("workerID", workerID),
 					zap.String("workflowID", workflowID),
 					zap.String("runID", runID),
+					zap.String("executionID", executionID),
 					zap.Error(reportErr))
 			}
 			reportCancel()
@@ -411,4 +432,34 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		}
 	}
 
+}
+
+// logConcurrencyStats periodically logs concurrency metrics for observability
+func (r *Runner) logConcurrencyStats(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if r.limiter == nil {
+				return
+			}
+
+			metrics := r.limiter.GetMetrics()
+			avgWait := r.limiter.GetAverageWaitTime()
+			circuitState := r.limiter.GetCircuitBreakerState()
+
+			r.logger.Info("Concurrency metrics",
+				zap.Int64("active_goroutines", r.limiter.CurrentActive()),
+				zap.Int64("peak_concurrent", metrics.PeakConcurrent),
+				zap.Int64("total_acquired", metrics.TotalAcquired),
+				zap.Int64("total_released", metrics.TotalReleased),
+				zap.Duration("avg_wait_time", avgWait),
+				zap.String("circuit_breaker", circuitState),
+			)
+		case <-ctx.Done():
+			return
+		}
+	}
 }

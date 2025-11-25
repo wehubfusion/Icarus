@@ -11,6 +11,18 @@ import (
 	"go.uber.org/zap"
 )
 
+// TemporalSignaler interface for signaling Temporal workflows
+type TemporalSignaler interface {
+	SignalWorkflow(ctx context.Context, workflowID, runID, signalName string, data interface{}) error
+}
+
+// BlobStorageClient interface for storing large workflow results
+type BlobStorageClient interface {
+	UploadResult(ctx context.Context, blobPath string, data []byte, metadata map[string]string) (string, error)
+	GenerateSASURL(ctx context.Context, blobURL string, expiryHours int) (string, error)
+	DownloadResult(ctx context.Context, sasURL string) ([]byte, error)
+}
+
 // Client is the central JetStream client that manages the connection and provides access to services.
 // It serves as the entry point for all JetStream operations and automatically initializes
 // the JetStream context and service interfaces.
@@ -41,6 +53,12 @@ type Client struct {
 
 	// Processes will provide process management functionality (reserved for future use)
 	// Processes *process.ProcessService
+
+	// temporalClient is used to signal Zeus workflows with execution results
+	temporalClient TemporalSignaler
+
+	// blobStorage is used to store large execution results
+	blobStorage BlobStorageClient
 }
 
 // NewClient creates a new JetStream SDK client with default configuration.
@@ -277,6 +295,24 @@ func (c *Client) ensureConnected() error {
 		return sdkerrors.NewInternalError("", "not connected to NATS", "NOT_CONNECTED", nil)
 	}
 	return nil
+}
+
+// SetTemporalClient injects the Temporal client for signaling Zeus workflows
+func (c *Client) SetTemporalClient(tc TemporalSignaler) {
+	c.temporalClient = tc
+	if c.Messages != nil {
+		c.Messages.SetTemporalClient(tc)
+	}
+	c.logger.Info("Temporal signaling enabled for Icarus client")
+}
+
+// SetBlobStorage injects the blob storage client for large results
+func (c *Client) SetBlobStorage(bs BlobStorageClient) {
+	c.blobStorage = bs
+	if c.Messages != nil {
+		c.Messages.SetBlobStorage(bs)
+	}
+	c.logger.Info("Azure Blob storage enabled for Icarus client")
 }
 
 // Ping sends a ping to the NATS server to verify connectivity.

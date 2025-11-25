@@ -39,6 +39,7 @@ type FieldMapping struct {
 	DestinationEndpoints []string `json:"destinationEndpoints"`
 	DataType             string   `json:"dataType"`
 	Iterate              bool     `json:"iterate"`
+	IsEventTrigger       bool     `json:"isEventTrigger,omitempty"` // True when this mapping is an event trigger (conditional execution)
 }
 
 // ConnectionDetails represents connection information
@@ -60,6 +61,7 @@ type EmbeddedNode struct {
 	NodeID         string             `json:"nodeId"`
 	PluginType     string             `json:"pluginType"`
 	Configuration  json.RawMessage    `json:"configuration"`
+	Depth          int                `json:"depth"` // Dependency depth within the embedded context
 	ExecutionOrder int                `json:"executionOrder"`
 	FieldMappings  []FieldMapping     `json:"fieldMappings,omitempty"`
 	Connection     *ConnectionDetails `json:"connection,omitempty"`
