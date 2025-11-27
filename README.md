@@ -121,6 +121,7 @@ func (p *MyProcessor) Process(ctx context.Context, msg *message.Message) (messag
 // Create and configure runner with tracing
 processor := &MyProcessor{}
 tracingConfig := tracing.JaegerConfig("my-service")
+limiter := concurrency.NewLimiter(10) // limit to 10 concurrent executions
 
 runner, err := runner.NewRunner(
     c,                // client
@@ -128,10 +129,10 @@ runner, err := runner.NewRunner(
     "TASKS",          // stream name
     "task-consumer",  // consumer name
     10,               // batch size
-    3,                // number of workers
     5*time.Minute,    // process timeout
     logger,           // zap logger
     &tracingConfig,   // tracing configuration (optional)
+    limiter,          // concurrency limiter (nil for sequential)
 )
 if err != nil {
     log.Fatal(err)
@@ -145,11 +146,12 @@ if err := runner.Run(ctx); err != nil {
 ```
 
 The Runner provides:
-- Concurrent message processing with configurable worker pools
+- Concurrent message processing with limiter-driven parallelism
 - Batch message pulling from JetStream consumers
 - Automatic success/error reporting to the "result" subject
 - Built-in OpenTelemetry tracing support
 - Graceful shutdown on context cancellation
+- Middleware support for cross-cutting concerns (e.g., blob resolution)
 
 ## Client Architecture
 
@@ -210,14 +212,14 @@ if js != nil {
 
 ## Runner Framework
 
-The Runner provides a powerful concurrent message processing framework that automatically handles batch processing, worker pools, success/error callbacks, and distributed tracing.
+The Runner provides a powerful concurrent message processing framework that automatically handles batch processing, limiter-governed concurrency, success/error callbacks, and distributed tracing.
 
 ### Runner Architecture
 
 The Runner consists of the following components:
 
 - **Processor Interface**: Defines how individual messages are processed
-- **Worker Pool**: Configurable number of goroutines for concurrent processing
+- **Concurrency Limiter**: Governs how many messages are processed in parallel and tracks circuit-breaker metrics
 - **Batch Puller**: Pulls messages in configurable batches from JetStream consumers
 - **Callback Reporter**: Automatically reports success/error results to the "result" subject
 - **Tracing Integration**: Built-in OpenTelemetry tracing with span propagation
@@ -370,6 +372,77 @@ _, err = js.AddConsumer("TASKS", &nats.ConsumerConfig{
     MaxAckPending: 100,             // Allow pending messages
 })
 ```
+
+### Middleware Support
+
+The Runner supports middleware for cross-cutting concerns. Middleware wraps the processor and can modify messages before processing or handle responses after processing.
+
+```go
+// Apply blob resolving middleware to transparently download large payloads
+runner.WithMiddleware(
+    icarusRunner.BlobResolvingMiddleware(blobClient, logger),
+)
+
+// Chain multiple middlewares
+runner.WithMiddleware(middleware1).
+       WithMiddleware(middleware2).
+       WithMiddleware(middleware3)
+```
+
+**Built-in Middleware:**
+
+- **BlobResolvingMiddleware**: Transparently downloads large payloads from Azure Blob Storage when messages contain a `BlobReference`. Plugins receive inline data without knowing about blob storage.
+
+**Creating Custom Middleware:**
+
+```go
+func MyMiddleware(logger *zap.Logger) runner.Middleware {
+    return func(next runner.Processor) runner.Processor {
+        return runner.ProcessorFunc(func(ctx context.Context, msg *message.Message) (message.Message, error) {
+            // Pre-processing logic
+            logger.Info("Processing message", zap.String("id", msg.CorrelationID))
+            
+            // Call next processor in chain
+            result, err := next.Process(ctx, msg)
+            
+            // Post-processing logic
+            if err != nil {
+                logger.Error("Processing failed", zap.Error(err))
+            }
+            
+            return result, err
+        })
+    }
+}
+```
+
+### BlobReference for Large Payloads
+
+Messages can contain a `BlobReference` in the payload for large data that exceeds inline limits (>1.5MB):
+
+```go
+// Payload with blob reference (set by Zeus when publishing large inputs)
+type Payload struct {
+    Source        string         `json:"source"`
+    Data          string         `json:"data"`                    // Inline data (for small payloads)
+    Reference     string         `json:"reference"`
+    BlobReference *BlobReference `json:"blobReference,omitempty"` // Reference to blob storage
+}
+
+type BlobReference struct {
+    URL       string `json:"url"`       // Direct blob URL (for logging)
+    SizeBytes int    `json:"sizeBytes"` // Original data size in bytes
+}
+```
+
+When `BlobResolvingMiddleware` is applied:
+1. It checks if the message has a `BlobReference`
+2. If yes, downloads the data from Azure Blob Storage using the shared-key client
+3. Populates `Payload.Data` with the downloaded content
+4. Clears the `BlobReference`
+5. Passes the message to the processor with inline data
+
+**Plugins never need to know about blob storage** - they always receive inline data.
 
 ### Tracing Integration
 

@@ -2,7 +2,7 @@ package concurrency
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +16,9 @@ type Metrics struct {
 	TotalWaitTimeNs int64
 	mu              sync.RWMutex
 }
+
+// ErrCircuitOpen indicates the limiter circuit breaker is open
+var ErrCircuitOpen = errors.New("circuit breaker is open")
 
 // Limiter provides semaphore-based concurrency control with observability
 type Limiter struct {
@@ -58,7 +61,7 @@ func NewLimiterWithCircuitBreaker(maxConcurrent int, cb *CircuitBreaker) *Limite
 func (l *Limiter) Acquire(ctx context.Context) error {
 	// Check circuit breaker first
 	if l.circuitBreaker.IsOpen() {
-		return fmt.Errorf("circuit breaker is open")
+		return ErrCircuitOpen
 	}
 
 	start := time.Now()

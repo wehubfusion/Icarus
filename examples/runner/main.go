@@ -167,7 +167,7 @@ func main() {
 	// Create the runner
 	// - Pull from the "TASKS" stream using "task-processor" consumer
 	// - Process 5 messages at a time (batch size)
-	// - Use worker count from config for concurrent processing
+	// - Use limiter for concurrent processing
 	// - Set 5 minute timeout for message processing
 	taskRunner, err := runner.NewRunner(
 		c,                    // client
@@ -175,7 +175,6 @@ func main() {
 		"TASKS",              // stream name
 		"task-processor",     // consumer name
 		5,                    // batch size
-		config.RunnerWorkers, // number of workers from config
 		5*time.Minute,        // process timeout (5 minutes)
 		logger,               // zap logger
 		nil,                  // no tracing configuration

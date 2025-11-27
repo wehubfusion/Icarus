@@ -20,11 +20,21 @@ type Node struct {
 	Configuration interface{} `json:"configuration"`
 }
 
+// BlobReference contains information for fetching data from blob storage.
+// When a payload is too large to send inline (>1.5MB), it is uploaded to Azure Blob Storage
+// and a BlobReference is included instead of the raw data.
+type BlobReference struct {
+	URL       string `json:"url"`       // Direct blob URL (for metadata/logging)
+	SizeBytes int    `json:"sizeBytes"` // Original data size in bytes
+}
+
 // Payload represents the message payload data
 type Payload struct {
-	Source    string `json:"source"`
-	Data      string `json:"data"`
-	Reference string `json:"reference"`
+	Source        string         `json:"source"`
+	Data          string         `json:"data"` // Inline data (for small payloads)
+	Reference     string         `json:"reference"`
+	BlobReference *BlobReference `json:"blobReference,omitempty"` // Reference to blob storage (for large payloads)
+	FieldMappings []FieldMapping `json:"fieldMappings,omitempty"` // Field mappings for extracting data from blob
 }
 
 // Output represents output destination information
