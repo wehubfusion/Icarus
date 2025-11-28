@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -63,6 +64,162 @@ func (s *Service) ResolveInput(ctx context.Context, inline []byte, blobRef *mess
 		return nil, fmt.Errorf("resolver: failed to download input from blob: %w", err)
 	}
 	return data, nil
+}
+
+// FieldMappingParams describes how resolver should apply field mappings.
+type FieldMappingParams struct {
+	FieldMappings    []message.FieldMapping
+	SourceResults    map[string]*SourceResult
+	TriggerData      []byte
+	BlobSourceNodeID string
+}
+
+// SourceResult contains the minimal data required to evaluate field mappings.
+type SourceResult struct {
+	NodeID            string
+	Status            string
+	ProjectedFields   map[string]map[string]interface{}
+	IterationMetadata map[string]*IterationContext
+}
+
+// IterationContext mirrors array metadata used for coordinated iteration.
+type IterationContext struct {
+	IsArray     bool
+	ArrayPath   string
+	ArrayLength int
+}
+
+// ResolveMappedInput resolves the payload (inline or blob) and applies field mappings when provided.
+func (s *Service) ResolveMappedInput(
+	ctx context.Context,
+	inline []byte,
+	blobRef *message.BlobReference,
+	params *FieldMappingParams,
+) ([]byte, error) {
+	var base []byte
+	var err error
+
+	if len(inline) > 0 || (blobRef != nil && blobRef.URL != "") {
+		base, err = s.ResolveInput(ctx, inline, blobRef)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return buildInputFromFieldMappings(base, params)
+}
+
+// buildInputFromFieldMappings centralizes the logic for constructing unit inputs using field mappings.
+func buildInputFromFieldMappings(
+	base []byte,
+	params *FieldMappingParams,
+) ([]byte, error) {
+	// If no field mappings, try to extract data from NodeExecutionResult format
+	if params == nil || len(params.FieldMappings) == 0 {
+		if len(base) > 0 {
+			// Check if base is a NodeExecutionResult with projected_fields
+			// If so, try to extract the actual data for downstream units
+			if params != nil && params.BlobSourceNodeID != "" {
+				if sr := sourceResultsFromBlob(base, params.BlobSourceNodeID); sr != nil {
+					// Found NodeExecutionResult format - extract data from projected_fields
+					// Return the first node's projected fields as the data
+					for _, sourceResult := range sr {
+						if len(sourceResult.ProjectedFields) > 0 {
+							// Get the first embedded node's data (most common case)
+							for _, fields := range sourceResult.ProjectedFields {
+								if fields != nil {
+									// Check if fields contain a data array
+									if dataArray, ok := fields["data"].([]interface{}); ok {
+										return json.Marshal(dataArray)
+									}
+									// Otherwise return the fields as-is
+									return json.Marshal(fields)
+								}
+							}
+						}
+					}
+				}
+			}
+			// Not a NodeExecutionResult or couldn't extract - return as-is
+			return base, nil
+		}
+		if params != nil && len(params.TriggerData) > 0 {
+			return params.TriggerData, nil
+		}
+		return []byte("{}"), nil
+	}
+
+	sourceResults := params.SourceResults
+	if len(sourceResults) == 0 && len(base) > 0 && params.BlobSourceNodeID != "" {
+		if sr := sourceResultsFromBlob(base, params.BlobSourceNodeID); sr != nil {
+			sourceResults = sr
+		}
+	}
+
+	buildParams := BuildInputParams{
+		UnitNodeID:    params.BlobSourceNodeID,
+		FieldMappings: params.FieldMappings,
+		SourceResults: sourceResults,
+		TriggerData:   params.TriggerData,
+	}
+
+	return buildInputFromMappings(buildParams)
+}
+
+// sourceResultsFromBlob attempts to reconstruct SourceResults by parsing the blob payload as a node execution result.
+func sourceResultsFromBlob(blobData []byte, nodeID string) map[string]*SourceResult {
+	if len(blobData) == 0 || nodeID == "" {
+		return nil
+	}
+
+	var payload nodeExecutionPayload
+	if err := json.Unmarshal(blobData, &payload); err != nil {
+		return nil
+	}
+
+	if len(payload.ProjectedFields) == 0 {
+		return nil
+	}
+
+	return map[string]*SourceResult{
+		nodeID: {
+			NodeID:            payload.NodeID,
+			Status:            payload.Status,
+			ProjectedFields:   payload.ProjectedFields,
+			IterationMetadata: convertRawIterationMetadata(payload.IterationMetadata),
+		},
+	}
+}
+
+func convertRawIterationMetadata(input map[string]*rawIterationContext) map[string]*IterationContext {
+	if len(input) == 0 {
+		return nil
+	}
+	result := make(map[string]*IterationContext, len(input))
+	for nodeID, ctx := range input {
+		if ctx == nil {
+			continue
+		}
+		result[nodeID] = &IterationContext{
+			IsArray:     ctx.IsArray,
+			ArrayPath:   ctx.ArrayPath,
+			ArrayLength: ctx.ArrayLength,
+		}
+	}
+	return result
+}
+
+type nodeExecutionPayload struct {
+	NodeID            string                            `json:"node_id"`
+	Status            string                            `json:"status"`
+	ProjectedFields   map[string]map[string]interface{} `json:"projected_fields"`
+	IterationMetadata map[string]*rawIterationContext   `json:"iteration_metadata"`
+}
+
+type rawIterationContext struct {
+	IsArray     bool   `json:"is_array"`
+	ArrayPath   string `json:"array_path"`
+	ArrayLength int    `json:"array_length"`
 }
 
 // CreateResult decides whether to return inline data or upload it to blob storage.
