@@ -120,7 +120,9 @@ func buildInputFromFieldMappings(
 			// Check if base is a NodeExecutionResult with projected_fields
 			// If so, try to extract the actual data for downstream units
 			if params != nil && params.BlobSourceNodeID != "" {
-				if sr := sourceResultsFromBlob(base, params.BlobSourceNodeID); sr != nil {
+				// For backward compatibility, try to extract using BlobSourceNodeID
+				sourceNodeIDs := map[string]bool{params.BlobSourceNodeID: true}
+				if sr := sourceResultsFromBlob(base, sourceNodeIDs); sr != nil {
 					// Found NodeExecutionResult format - extract data from projected_fields
 					// Return the first node's projected fields as the data
 					for _, sourceResult := range sr {
@@ -143,15 +145,21 @@ func buildInputFromFieldMappings(
 			// Not a NodeExecutionResult or couldn't extract - return as-is
 			return base, nil
 		}
-		if params != nil && len(params.TriggerData) > 0 {
-			return params.TriggerData, nil
-		}
+		// No field mappings - return empty object (don't fall back to trigger data)
 		return []byte("{}"), nil
 	}
 
 	sourceResults := params.SourceResults
-	if len(sourceResults) == 0 && len(base) > 0 && params.BlobSourceNodeID != "" {
-		if sr := sourceResultsFromBlob(base, params.BlobSourceNodeID); sr != nil {
+	if len(sourceResults) == 0 && len(base) > 0 && len(params.FieldMappings) > 0 {
+		// Extract source node IDs from field mappings
+		sourceNodeIDs := make(map[string]bool)
+		for _, mapping := range params.FieldMappings {
+			if mapping.SourceNodeID != "" {
+				sourceNodeIDs[mapping.SourceNodeID] = true
+			}
+		}
+		// Try to extract source results from blob for each source node ID
+		if sr := sourceResultsFromBlob(base, sourceNodeIDs); len(sr) > 0 {
 			sourceResults = sr
 		}
 	}
@@ -167,8 +175,9 @@ func buildInputFromFieldMappings(
 }
 
 // sourceResultsFromBlob attempts to reconstruct SourceResults by parsing the blob payload as a node execution result.
-func sourceResultsFromBlob(blobData []byte, nodeID string) map[string]*SourceResult {
-	if len(blobData) == 0 || nodeID == "" {
+// It extracts source results for the specified source node IDs from the blob's projected_fields.
+func sourceResultsFromBlob(blobData []byte, sourceNodeIDs map[string]bool) map[string]*SourceResult {
+	if len(blobData) == 0 || len(sourceNodeIDs) == 0 {
 		return nil
 	}
 
@@ -181,14 +190,25 @@ func sourceResultsFromBlob(blobData []byte, nodeID string) map[string]*SourceRes
 		return nil
 	}
 
-	return map[string]*SourceResult{
-		nodeID: {
-			NodeID:            payload.NodeID,
-			Status:            payload.Status,
-			ProjectedFields:   payload.ProjectedFields,
-			IterationMetadata: convertRawIterationMetadata(payload.IterationMetadata),
-		},
+	// Build source results map for each source node ID that exists in projected_fields
+	result := make(map[string]*SourceResult)
+	for sourceNodeID := range sourceNodeIDs {
+		// Check if this source node's projected fields exist
+		if nodeFields, exists := payload.ProjectedFields[sourceNodeID]; exists && nodeFields != nil {
+			result[sourceNodeID] = &SourceResult{
+				NodeID:            sourceNodeID,
+				Status:            payload.Status,
+				ProjectedFields:   map[string]map[string]interface{}{sourceNodeID: nodeFields},
+				IterationMetadata: convertRawIterationMetadata(payload.IterationMetadata),
+			}
+		}
 	}
+
+	if len(result) == 0 {
+		return nil
+	}
+
+	return result
 }
 
 func convertRawIterationMetadata(input map[string]*rawIterationContext) map[string]*IterationContext {

@@ -8,6 +8,24 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
+// getMapKeys returns the keys of a map for debugging
+func getMapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// getSourceNodeIDs returns the node IDs from source results map
+func getSourceNodeIDs(sourceResults map[string]*SourceResult) []string {
+	ids := make([]string, 0, len(sourceResults))
+	for k := range sourceResults {
+		ids = append(ids, k)
+	}
+	return ids
+}
+
 // BuildInputParams contains the data required to build unit input from field mappings.
 type BuildInputParams struct {
 	UnitNodeID    string
@@ -122,6 +140,9 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 		setFieldAtPath(inputData, collectionPath, sourceArray)
 	}
 
+	// Track failures for detailed error messages
+	failedMappings := make([]string, 0)
+
 	for _, mapping := range params.FieldMappings {
 		if mapping.IsEventTrigger {
 			continue
@@ -142,7 +163,15 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 			}
 		}
 
-		if sourceResult == nil || strings.ToLower(sourceResult.Status) != "success" {
+		if sourceResult == nil {
+			failedMappings = append(failedMappings, fmt.Sprintf("source node '%s' not found in source results (available nodes: %v)",
+				mapping.SourceNodeID, getSourceNodeIDs(params.SourceResults)))
+			continue
+		}
+
+		if strings.ToLower(sourceResult.Status) != "success" {
+			failedMappings = append(failedMappings, fmt.Sprintf("source node '%s' has status '%s' (expected 'success')",
+				mapping.SourceNodeID, sourceResult.Status))
 			continue
 		}
 
@@ -213,10 +242,31 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 						}
 					}
 				}
+			} else {
+				// Node fields not found
+				availableNodeIDs := make([]string, 0, len(sourceResult.ProjectedFields))
+				for k := range sourceResult.ProjectedFields {
+					availableNodeIDs = append(availableNodeIDs, k)
+				}
+				failedMappings = append(failedMappings, fmt.Sprintf("source node '%s' has no projected fields (available node IDs in projected fields: %v)",
+					mapping.SourceNodeID, availableNodeIDs))
 			}
+		} else {
+			// Source result has no projected fields
+			failedMappings = append(failedMappings, fmt.Sprintf("source node '%s' result has no projected fields",
+				mapping.SourceNodeID))
 		}
 
 		if sourceData == nil {
+			// Track the failure with available field keys
+			fieldKeys := []string{}
+			if sourceResult.ProjectedFields != nil {
+				if nodeFields, hasNode := sourceResult.ProjectedFields[mapping.SourceNodeID]; hasNode {
+					fieldKeys = getMapKeys(nodeFields)
+				}
+			}
+			failedMappings = append(failedMappings, fmt.Sprintf("failed to extract '%s' from source node '%s' (available fields: %v)",
+				mapping.SourceEndpoint, mapping.SourceNodeID, fieldKeys))
 			continue
 		}
 
@@ -272,10 +322,17 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 	}
 
 	if len(inputData) == 0 {
-		if len(params.TriggerData) > 0 {
-			return params.TriggerData, nil
+		// No field mappings succeeded - return detailed error instead of falling back to trigger data
+		if len(failedMappings) > 0 {
+			return nil, fmt.Errorf("field mapping resolution failed: no data could be extracted. Failures: %s",
+				strings.Join(failedMappings, "; "))
 		}
-		return []byte("{}"), nil
+		// No field mappings at all
+		if len(params.FieldMappings) == 0 {
+			return []byte("{}"), nil
+		}
+		// All mappings were event triggers
+		return nil, fmt.Errorf("field mapping resolution failed: no non-event-trigger field mappings were provided")
 	}
 
 	result, err := json.Marshal(inputData)
@@ -420,6 +477,7 @@ func extractFromPath(fields map[string]interface{}, path string) interface{} {
 		return nil
 	}
 
+	originalPath := path
 	path = strings.TrimPrefix(path, "/")
 	if path == "" {
 		return fields
@@ -427,6 +485,17 @@ func extractFromPath(fields map[string]interface{}, path string) interface{} {
 
 	if strings.Contains(path, "//") {
 		return extractWithCollectionTraversal(fields, path)
+	}
+
+	// First, try direct key lookup (for projected fields stored with leading slash keys, e.g., "/payload")
+	// This handles the case where the map key is exactly the path (with or without leading slash)
+	if value, exists := fields[originalPath]; exists {
+		return value
+	}
+	if originalPath != path {
+		if value, exists := fields[path]; exists {
+			return value
+		}
 	}
 
 	if strings.HasPrefix(path, "_meta") ||
@@ -439,13 +508,20 @@ func extractFromPath(fields map[string]interface{}, path string) interface{} {
 		return navigateMap(fields, path)
 	}
 
+	// Try result/ path first
 	resultPath := "result/" + path
 	value := navigateMap(fields, resultPath)
 	if value != nil {
 		return value
 	}
 
-	return navigateMap(fields, path)
+	// Try direct path access (trimmed)
+	value = navigateMap(fields, path)
+	if value != nil {
+		return value
+	}
+
+	return nil
 }
 
 func extractWithCollectionTraversal(fields map[string]interface{}, path string) interface{} {
