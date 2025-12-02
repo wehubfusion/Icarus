@@ -17,6 +17,8 @@ func NewExecutor() *Executor {
 }
 
 // Execute executes the simple condition processor
+// It evaluates conditions on the input and outputs event flags for routing
+// When used in iteration, receives single items and outputs single results
 func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]byte, error) {
 	// Parse configuration
 	var cfg Config
@@ -29,7 +31,13 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	// Evaluate all conditions
+	// Parse input data
+	var inputData interface{}
+	if err := json.Unmarshal(config.Input, &inputData); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	// Evaluate all conditions on the input
 	results := make(map[string]ConditionResult)
 	for _, condition := range cfg.Conditions {
 		result := e.evaluateCondition(condition, config.Input)
@@ -40,8 +48,10 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 	overallResult := e.calculateOverallResult(results, cfg.LogicOperator)
 
 	// Build output with event endpoints for conditional routing
+	// The "true" and "false" endpoints contain the input data when their condition is met
+	// This allows downstream nodes to receive the data through event-based routing
 	output := map[string]interface{}{
-		"result": overallResult,
+		"result":     overallResult,
 		"conditions": results,
 		"summary": Summary{
 			TotalConditions: len(cfg.Conditions),
@@ -49,25 +59,22 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 			UnmetConditions: countUnmetConditions(results),
 			LogicOperator:   cfg.LogicOperator,
 		},
+		// Pass input data through on the matching event path
+		// This enables downstream nodes to receive filtered data
+		"data": inputData,
 	}
 
-	// Add conditional event endpoints
-	// Only one endpoint fires (has truthy value) based on the condition result
+	// Set event outputs - the matching event gets the input data, the other is null
+	// This enables event-based routing in the runtime
 	if overallResult {
-		output["true"] = true  // TRUE event fires
-		output["false"] = nil  // FALSE event does not fire
+		output["true"] = inputData // Condition matched - pass data to "true" consumers
+		output["false"] = nil      // Condition matched - "false" consumers get nothing
 	} else {
-		output["true"] = nil   // TRUE event does not fire
-		output["false"] = true // FALSE event fires
+		output["true"] = nil        // Condition not matched - "true" consumers get nothing
+		output["false"] = inputData // Condition not matched - pass data to "false" consumers
 	}
 
-	// Marshal output
-	outputBytes, err := json.Marshal(output)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal output: %w", err)
-	}
-
-	return outputBytes, nil
+	return json.Marshal(output)
 }
 
 // evaluateCondition evaluates a single condition

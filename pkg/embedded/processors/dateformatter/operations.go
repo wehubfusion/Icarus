@@ -15,9 +15,9 @@ func executeFormat(input []byte, params FormatParams) ([]byte, error) {
 		return nil, NewInputError("", fmt.Sprintf("failed to parse input JSON: %v", err))
 	}
 
-	// Check if input is empty
+	// Check if input is empty - return empty result gracefully (upstream data may be missing)
 	if len(inputData) == 0 {
-		return nil, NewInputError("", "input data is empty - no fields provided. The date formatter requires a 'data' field with a date string")
+		return json.Marshal(map[string]interface{}{"data": nil})
 	}
 
 	// Extract date string from "data" field
@@ -25,19 +25,19 @@ func executeFormat(input []byte, params FormatParams) ([]byte, error) {
 	if !ok {
 		// Check if "data" field exists but is not a string
 		if dataVal, exists := inputData["data"]; exists {
-			// Handle nil or empty data gracefully
+			// Handle nil or empty data gracefully - return null result
 			if dataVal == nil {
-				return nil, NewInputError("data", "'data' field cannot be null")
+				return json.Marshal(map[string]interface{}{"data": nil})
 			}
 			return nil, NewInputError("data", fmt.Sprintf("'data' field must be a string value, got: %T", inputData["data"]))
 		}
-		// No data field - error
-		return nil, NewInputError("", "input must contain a 'data' field with a string value")
+		// No data field - return empty result gracefully
+		return json.Marshal(map[string]interface{}{"data": nil})
 	}
 
 	if dateStr == "" {
-		// Empty date string - error
-		return nil, NewInputError("data", "date string cannot be empty")
+		// Empty date string - return null result gracefully
+		return json.Marshal(map[string]interface{}{"data": nil})
 	}
 
 	// Normalize input date string (handle partial DateTime inputs)
