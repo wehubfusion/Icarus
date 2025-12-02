@@ -30,11 +30,12 @@ type BlobReference struct {
 
 // Payload represents the message payload data
 type Payload struct {
-	Source        string         `json:"source"`
-	Data          string         `json:"data"` // Inline data (for small payloads)
-	Reference     string         `json:"reference"`
-	BlobReference *BlobReference `json:"blobReference,omitempty"` // Reference to blob storage (for large payloads)
-	FieldMappings []FieldMapping `json:"fieldMappings,omitempty"` // Field mappings for extracting data from blob
+	Source         string         `json:"source"`
+	Data           string         `json:"data"` // Inline data (for small payloads)
+	Reference      string         `json:"reference"`
+	BlobReference  *BlobReference `json:"blobReference,omitempty"`  // Reference to blob storage (for large payloads)
+	ResultFilePath string         `json:"resultFilePath,omitempty"` // Path to unified result file (for multi-unit workflows)
+	FieldMappings  []FieldMapping `json:"fieldMappings,omitempty"`  // Field mappings for extracting data from blob
 }
 
 // Output represents output destination information

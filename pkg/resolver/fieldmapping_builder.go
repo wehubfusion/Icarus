@@ -498,30 +498,16 @@ func extractFromPath(fields map[string]interface{}, path string) interface{} {
 		}
 	}
 
+	// Special namespaces are accessed directly
 	if strings.HasPrefix(path, "_meta") ||
 		strings.HasPrefix(path, "_events") ||
 		strings.HasPrefix(path, "_error") {
 		return navigateMap(fields, path)
 	}
 
-	if strings.HasPrefix(path, "result/") {
-		return navigateMap(fields, path)
-	}
-
-	// Try result/ path first
-	resultPath := "result/" + path
-	value := navigateMap(fields, resultPath)
-	if value != nil {
-		return value
-	}
-
-	// Try direct path access (trimmed)
-	value = navigateMap(fields, path)
-	if value != nil {
-		return value
-	}
-
-	return nil
+	// Data is spread at root level by sourceResultsFromResultFile()
+	// Field mappings like /data//hire_date find "data" directly at root
+	return navigateMap(fields, path)
 }
 
 func extractWithCollectionTraversal(fields map[string]interface{}, path string) interface{} {
@@ -537,22 +523,11 @@ func extractWithCollectionTraversal(fields map[string]interface{}, path string) 
 		return nil
 	}
 
-	var collectionPathFull string
-	if strings.HasPrefix(collectionPath, "_meta") ||
-		strings.HasPrefix(collectionPath, "_events") ||
-		strings.HasPrefix(collectionPath, "_error") ||
-		strings.HasPrefix(collectionPath, "result/") {
-		collectionPathFull = collectionPath
-	} else {
-		collectionPathFull = "result/" + collectionPath
-	}
-
-	collection := navigateMap(fields, collectionPathFull)
+	// Data is spread at root level - access collection directly
+	// For /data//Assignment_Category: collectionPath="data", fieldPath="Assignment_Category"
+	collection := navigateMap(fields, collectionPath)
 	if collection == nil {
-		collection = navigateMap(fields, collectionPath)
-		if collection == nil {
-			return nil
-		}
+		return nil
 	}
 
 	collectionArray, ok := collection.([]interface{})

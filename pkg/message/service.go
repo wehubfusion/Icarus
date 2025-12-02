@@ -8,6 +8,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
+	"github.com/wehubfusion/Icarus/pkg/storage"
 	"go.uber.org/zap"
 )
 
@@ -86,12 +87,13 @@ func (s *natsSubAdapter) Fetch(batch int, opts ...nats.PullOpt) ([]*nats.Msg, er
 type MessageService struct {
 	js                JSContext
 	logger            *zap.Logger
-	maxDeliver        int               // Maximum number of delivery attempts before giving up (default: 5)
-	publishMaxRetries int               // Maximum number of retry attempts for publish operations (default: 3)
-	resultStream      string            // JetStream stream name for publishing results (e.g., RESULTS_UAT)
-	resultSubject     string            // Subject for publishing results (e.g., result.uat)
-	temporalClient    TemporalSignaler  // Temporal client for signaling Zeus workflows
-	blobStorage       BlobStorageClient // Blob storage for large results
+	maxDeliver        int                       // Maximum number of delivery attempts before giving up (default: 5)
+	publishMaxRetries int                       // Maximum number of retry attempts for publish operations (default: 3)
+	resultStream      string                    // JetStream stream name for publishing results (e.g., RESULTS_UAT)
+	resultSubject     string                    // Subject for publishing results (e.g., result.uat)
+	temporalClient    TemporalSignaler          // Temporal client for signaling Zeus workflows
+	blobStorage       BlobStorageClient         // Blob storage for large results
+	resultFileClient  *storage.ResultFileClient // Unified result file client for appending node results
 }
 
 // TemporalSignaler interface for signaling workflows
@@ -117,6 +119,11 @@ func (s *MessageService) SetTemporalClient(tc TemporalSignaler) {
 // SetBlobStorage sets the blob storage client for large results
 func (s *MessageService) SetBlobStorage(bs BlobStorageClient) {
 	s.blobStorage = bs
+}
+
+// SetResultFileClient sets the result file client for unified result storage
+func (s *MessageService) SetResultFileClient(rfc *storage.ResultFileClient) {
+	s.resultFileClient = rfc
 }
 
 // validateMessage performs strict validation on the message for callback operations
@@ -566,8 +573,8 @@ const (
 )
 
 // ReportSuccess signals Zeus workflow with execution result using Temporal Signals.
-// For results <1.5MB, sends full payload via signal. For larger results, uploads to
-// Azure Blob Storage and signals with reference.
+// For results <1.5MB, sends full payload via signal. For larger results, stores in
+// the unified result file and signals with reference.
 func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Message, msg *nats.Msg) error {
 	startTime := time.Now()
 	resultMessage.WithMetadata("result_type", string(ResultTypeSuccess))
@@ -635,14 +642,8 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 		return fmt.Errorf("failed to unmarshal result: %w", err)
 	}
 
-	var existingBlobRef *BlobReference
-	if resultMessage.Payload != nil && resultMessage.Payload.BlobReference != nil && resultMessage.Payload.BlobReference.URL != "" {
-		existingBlobRef = resultMessage.Payload.BlobReference
-		nodeResult["blob_reference"] = map[string]interface{}{
-			"url":        existingBlobRef.URL,
-			"size_bytes": existingBlobRef.SizeBytes,
-		}
-	}
+	// Extract node ID for result file operations
+	nodeID, _ := nodeResult["node_id"].(string)
 
 	// Check payload size
 	resultBytes, _ := json.Marshal(nodeResult)
@@ -650,34 +651,118 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 
 	var signalPayload interface{}
 
-	// Size-based routing
-	if existingBlobRef != nil {
-		s.logger.Info("Reusing existing blob reference for large result",
+	// NEW: Unified result file approach for large results
+	// If result file client is available, use it for large results
+	if s.resultFileClient != nil && resultSize > maxSignalSize {
+		s.logger.Info("Result too large, storing in unified result file",
 			zap.String("execution_id", executionID),
-			zap.Int("size_bytes", existingBlobRef.SizeBytes))
+			zap.String("node_id", nodeID),
+			zap.Int("size_bytes", resultSize),
+			zap.Int("threshold", maxSignalSize))
 
-		signalPayload = map[string]interface{}{
-			"execution_id": executionID,
-			"workflow_id":  workflowID,
-			"run_id":       runID,
-			"node_id":      nodeResult["node_id"],
-			"status":       nodeResult["status"],
-			"large_result": true,
-			"blob_url":     existingBlobRef.URL,
-			"result_size":  existingBlobRef.SizeBytes,
-			"timestamp":    time.Now(),
+		// Extract plugin type from metadata or result
+		pluginType := resultMessage.Metadata["plugin_type"]
+		if pluginType == "" {
+			pluginType, _ = nodeResult["plugin_type"].(string)
 		}
-	} else if resultSize <= maxSignalSize {
-		// FAST PATH: Direct signal
-		s.logger.Info("Sending result via direct signal",
+
+		// Extract execution time if available
+		var executionTimeMs int64
+		if execTime, ok := nodeResult["execution_time_ms"].(float64); ok {
+			executionTimeMs = int64(execTime)
+		}
+
+		// Extract actual result data (unwrap if nested under "result")
+		actualResult := nodeResult
+		if inner, ok := nodeResult["result"]; ok {
+			actualResult = map[string]interface{}{"result": inner}
+		}
+
+		// Extract status from result
+		status := "success"
+		if s, ok := nodeResult["status"].(string); ok {
+			status = s
+		}
+
+		// Create NodeResult with proper structure
+		nodeResultObj := storage.CreateNodeResult(
+			nodeID,
+			pluginType,
+			status,
+			executionTimeMs,
+			actualResult,
+			nil, // no error for success
+		)
+
+		// Append to shared result file
+		resultFilePath, err := s.resultFileClient.AppendNodeResult(ctx, workflowID, runID, nodeID, nodeResultObj)
+		if err != nil {
+			s.logger.Error("Failed to append result to result file, will report as error",
+				zap.String("execution_id", executionID),
+				zap.String("workflow_id", workflowID),
+				zap.String("run_id", runID),
+				zap.String("node_id", nodeID),
+				zap.Error(err))
+
+			// Report the result file failure as an error to Temporal
+			fileErr := fmt.Errorf("result file append failed: %w", err)
+			if reportErr := s.ReportError(ctx, executionID, workflowID, runID, fileErr, msg); reportErr != nil {
+				s.logger.Error("Failed to report result file error to workflow",
+					zap.String("execution_id", executionID),
+					zap.String("workflow_id", workflowID),
+					zap.Error(reportErr))
+			}
+
+			if msg != nil {
+				_ = msg.Nak()
+			}
+			return fileErr
+		}
+
+		s.logger.Info("Result appended to unified result file",
 			zap.String("execution_id", executionID),
+			zap.String("node_id", nodeID),
+			zap.String("result_file_path", resultFilePath),
 			zap.Int("size_bytes", resultSize))
 
-		signalPayload = nodeResult
+		// Send signal with result file path reference
+		signalPayload = map[string]interface{}{
+			"execution_id":     executionID,
+			"workflow_id":      workflowID,
+			"run_id":           runID,
+			"node_id":          nodeID,
+			"status":           nodeResult["status"],
+			"result_file_path": resultFilePath,
+			"result_size":      resultSize,
+			"timestamp":        time.Now(),
+		}
+	} else if resultSize <= maxSignalSize {
+		// FAST PATH: Direct signal for small results
+		// Structure signal to match NodeExecutionResult with inline_result field
+		s.logger.Info("Sending result via direct signal",
+			zap.String("execution_id", executionID),
+			zap.Int("size_bytes", resultSize),
+			zap.String("result_file_path", resultMessage.Payload.ResultFilePath))
+
+		// Send signal with proper structure matching NodeExecutionResult
+		signalPayload = map[string]interface{}{
+			"execution_id":  executionID,
+			"node_id":       nodeID,
+			"status":        nodeResult["status"],
+			"inline_result": nodeResult, // Contains full result: { "_meta": {...}, "result": {...} }
+			"result_size":   resultSize,
+			"timestamp":     time.Now(),
+		}
+
+		// CRITICAL: Include result_file_path if set on the message payload
+		// This is needed for units that store embedded node results in the result file
+		if resultMessage.Payload.ResultFilePath != "" {
+			signalPayload.(map[string]interface{})["result_file_path"] = resultMessage.Payload.ResultFilePath
+		}
 
 	} else {
-		// LARGE RESULT PATH: Azure Blob Storage
-		s.logger.Info("Result too large, storing in Azure Blob Storage",
+		// FALLBACK: Legacy blob storage for large results when result file client not available
+		s.logger.Info("Result too large, storing in Azure Blob Storage (legacy path)",
 			zap.String("execution_id", executionID),
 			zap.Int("size_bytes", resultSize),
 			zap.Int("threshold", maxSignalSize))
