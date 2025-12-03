@@ -185,3 +185,291 @@ func TestJSONOpsProduceStrictValidation(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+func TestAutoWrapForIteration(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          interface{} // The data field content
+		schema         map[string]interface{}
+		autoWrap       *bool
+		expectError    bool
+		validateOutput func(t *testing.T, output []byte)
+	}{
+		{
+			name:  "Array of strings with STRING schema - auto-wrap enabled (default)",
+			input: []interface{}{"manual", "saml2", "manual"},
+			schema: map[string]interface{}{
+				"type": "STRING",
+			},
+			autoWrap:    nil, // Use default (true)
+			expectError: false,
+			validateOutput: func(t *testing.T, output []byte) {
+				var result []interface{}
+				if err := json.Unmarshal(output, &result); err != nil {
+					t.Fatalf("Failed to unmarshal output: %v", err)
+				}
+				if len(result) != 3 {
+					t.Errorf("Expected 3 items, got %d", len(result))
+				}
+				// Verify content is preserved
+				if result[0] != "manual" || result[1] != "saml2" || result[2] != "manual" {
+					t.Errorf("Expected [manual, saml2, manual], got %v", result)
+				}
+			},
+		},
+		{
+			name:  "Array of numbers with NUMBER schema - auto-wrap enabled (default)",
+			input: []interface{}{float64(0), float64(1), float64(1), float64(0)},
+			schema: map[string]interface{}{
+				"type": "NUMBER",
+			},
+			autoWrap:    nil, // Use default (true)
+			expectError: false,
+			validateOutput: func(t *testing.T, output []byte) {
+				var result []interface{}
+				if err := json.Unmarshal(output, &result); err != nil {
+					t.Fatalf("Failed to unmarshal output: %v", err)
+				}
+				if len(result) != 4 {
+					t.Errorf("Expected 4 items, got %d", len(result))
+				}
+				// Verify content is preserved
+				expected := []float64{0, 1, 1, 0}
+				for i, v := range result {
+					if v.(float64) != expected[i] {
+						t.Errorf("Expected %v at index %d, got %v", expected[i], i, v)
+					}
+				}
+			},
+		},
+		{
+			name:  "Array with STRING schema - auto-wrap explicitly enabled",
+			input: []interface{}{"value1", "value2"},
+			schema: map[string]interface{}{
+				"type": "OBJECT",
+				"properties": map[string]interface{}{
+					"field": map[string]interface{}{"type": "STRING"},
+				},
+			},
+			autoWrap:    func() *bool { b := true; return &b }(), // Explicitly enabled
+			expectError: false,
+			validateOutput: func(t *testing.T, output []byte) {
+				var result []interface{}
+				if err := json.Unmarshal(output, &result); err != nil {
+					t.Fatalf("Failed to unmarshal output: %v", err)
+				}
+				if len(result) != 2 {
+					t.Errorf("Expected 2 items, got %d", len(result))
+				}
+			},
+		},
+		{
+			name:  "Array with STRING schema - auto-wrap disabled passes through",
+			input: []interface{}{"manual", "saml2"},
+			schema: map[string]interface{}{
+				"type": "STRING",
+			},
+			autoWrap:    func() *bool { b := false; return &b }(), // Explicitly disabled
+			expectError: false,                                    // Schema engine is lenient, passes data through
+			validateOutput: func(t *testing.T, output []byte) {
+				// When auto-wrap is disabled, array data passes through even with STRING schema
+				// (schema engine is lenient and doesn't strictly enforce root type)
+				var result []interface{}
+				if err := json.Unmarshal(output, &result); err != nil {
+					t.Fatalf("Failed to unmarshal output: %v", err)
+				}
+				if len(result) != 2 {
+					t.Errorf("Expected 2 items, got %d", len(result))
+				}
+			},
+		},
+		{
+			name:  "Array with ARRAY schema - no wrapping needed",
+			input: []interface{}{float64(1), float64(2), float64(3)},
+			schema: map[string]interface{}{
+				"type":  "ARRAY",
+				"items": map[string]interface{}{"type": "NUMBER"},
+			},
+			autoWrap:    nil,
+			expectError: false,
+			validateOutput: func(t *testing.T, output []byte) {
+				var result []interface{}
+				if err := json.Unmarshal(output, &result); err != nil {
+					t.Fatalf("Failed to unmarshal output: %v", err)
+				}
+				if len(result) != 3 {
+					t.Errorf("Expected 3 items, got %d", len(result))
+				}
+			},
+		},
+		{
+			name:  "Object with OBJECT schema - no wrapping needed",
+			input: map[string]interface{}{"auth": "manual"},
+			schema: map[string]interface{}{
+				"type": "OBJECT",
+				"properties": map[string]interface{}{
+					"auth": map[string]interface{}{"type": "STRING"},
+				},
+			},
+			autoWrap:    nil,
+			expectError: false,
+			validateOutput: func(t *testing.T, output []byte) {
+				var result map[string]interface{}
+				if err := json.Unmarshal(output, &result); err != nil {
+					t.Fatalf("Failed to unmarshal output: %v", err)
+				}
+				if result["auth"] != "manual" {
+					t.Errorf("Expected auth=manual, got %v", result["auth"])
+				}
+			},
+		},
+		{
+			name:  "Empty array with STRING schema - auto-wrap enabled",
+			input: []interface{}{},
+			schema: map[string]interface{}{
+				"type": "STRING",
+			},
+			autoWrap:    nil,
+			expectError: false,
+			validateOutput: func(t *testing.T, output []byte) {
+				var result []interface{}
+				if err := json.Unmarshal(output, &result); err != nil {
+					t.Fatalf("Failed to unmarshal output: %v", err)
+				}
+				if len(result) != 0 {
+					t.Errorf("Expected empty array, got %d items", len(result))
+				}
+			},
+		},
+		{
+			name: "Array of objects with OBJECT schema - auto-wrap enabled",
+			input: []interface{}{
+				map[string]interface{}{"name": "Alice"},
+				map[string]interface{}{"name": "Bob"},
+			},
+			schema: map[string]interface{}{
+				"type": "OBJECT",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{"type": "STRING"},
+				},
+			},
+			autoWrap:    nil,
+			expectError: false,
+			validateOutput: func(t *testing.T, output []byte) {
+				var result []interface{}
+				if err := json.Unmarshal(output, &result); err != nil {
+					t.Fatalf("Failed to unmarshal output: %v", err)
+				}
+				if len(result) != 2 {
+					t.Errorf("Expected 2 items, got %d", len(result))
+				}
+				// Verify first item
+				firstItem, ok := result[0].(map[string]interface{})
+				if !ok {
+					t.Fatalf("Expected first item to be object")
+				}
+				if firstItem["name"] != "Alice" {
+					t.Errorf("Expected first name=Alice, got %v", firstItem["name"])
+				}
+			},
+		},
+		{
+			name:  "REAL WORKFLOW: Primitive string array with OBJECT schema - wraps into objects",
+			input: []interface{}{"manual", "saml2", "manual"},
+			schema: map[string]interface{}{
+				"type": "OBJECT",
+				"properties": map[string]interface{}{
+					"auth": map[string]interface{}{"type": "STRING"},
+				},
+			},
+			autoWrap:    nil, // Use default (true)
+			expectError: false,
+			validateOutput: func(t *testing.T, output []byte) {
+				var result []map[string]interface{}
+				if err := json.Unmarshal(output, &result); err != nil {
+					t.Fatalf("Failed to unmarshal output: %v", err)
+				}
+				if len(result) != 3 {
+					t.Errorf("Expected 3 items, got %d", len(result))
+				}
+				// Verify each primitive is wrapped into object with property name
+				expected := []string{"manual", "saml2", "manual"}
+				for i, item := range result {
+					if item["auth"] != expected[i] {
+						t.Errorf("Expected auth=%s at index %d, got %v", expected[i], i, item["auth"])
+					}
+				}
+			},
+		},
+		{
+			name:  "REAL WORKFLOW: Primitive number array with OBJECT schema - wraps into objects",
+			input: []interface{}{float64(0), float64(1), float64(1), float64(0)},
+			schema: map[string]interface{}{
+				"type": "OBJECT",
+				"properties": map[string]interface{}{
+					"data": map[string]interface{}{"type": "NUMBER"},
+				},
+			},
+			autoWrap:    nil, // Use default (true)
+			expectError: false,
+			validateOutput: func(t *testing.T, output []byte) {
+				var result []map[string]interface{}
+				if err := json.Unmarshal(output, &result); err != nil {
+					t.Fatalf("Failed to unmarshal output: %v", err)
+				}
+				if len(result) != 4 {
+					t.Errorf("Expected 4 items, got %d", len(result))
+				}
+				// Verify each primitive is wrapped into object with property name
+				expected := []float64{0, 1, 1, 0}
+				for i, item := range result {
+					if item["data"] != expected[i] {
+						t.Errorf("Expected data=%v at index %d, got %v", expected[i], i, item["data"])
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create executor
+			executor := jsonops.NewExecutor()
+
+			// Create config
+			schemaBytes, err := json.Marshal(tt.schema)
+			require.NoError(t, err)
+
+			cfg := map[string]interface{}{
+				"operation": "parse",
+				"schema":    json.RawMessage(schemaBytes),
+			}
+			if tt.autoWrap != nil {
+				cfg["auto_wrap_for_iteration"] = *tt.autoWrap
+			}
+			cfgBytes, err := json.Marshal(cfg)
+			require.NoError(t, err)
+
+			// Create input envelope with data field
+			input := wrapJSONOpsInput(t, tt.input)
+
+			// Execute parse
+			output, err := executor.Execute(context.Background(), embedded.NodeConfig{
+				Configuration: cfgBytes,
+				Input:         input,
+			})
+
+			// Check error expectation
+			if tt.expectError {
+				require.Error(t, err, "Expected error but got none")
+				return
+			}
+			require.NoError(t, err, "Unexpected error")
+
+			// Validate output if provided
+			if tt.validateOutput != nil {
+				tt.validateOutput(t, output)
+			}
+		})
+	}
+}

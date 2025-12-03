@@ -215,28 +215,74 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 				}
 
 				if sourceData == nil {
-					needsArray := false
-					for _, destEndpoint := range mapping.DestinationEndpoints {
-						if strings.Contains(destEndpoint, "//") {
-							needsArray = true
-							break
+					sourceData = extractFromPath(nodeFields, mapping.SourceEndpoint)
+
+					// Fallback: If sourceData is nil, try to find the field inside /data or /result array
+					// This handles embedded processors that output arrays stored under "data" key
+					// when the field mapping expects /field but data is at /data//field
+					if sourceData == nil {
+						sourcePath := strings.Trim(mapping.SourceEndpoint, "/")
+						if sourcePath != "" && !strings.Contains(sourcePath, "/") {
+							// Simple field path like /auth - try to extract from /data array first
+							dataArray := extractFromPath(nodeFields, "/data")
+							if arr, isArr := dataArray.([]interface{}); isArr && len(arr) > 0 {
+								// Check if first item has the field we're looking for
+								if firstItem, ok := arr[0].(map[string]interface{}); ok {
+									if _, hasField := firstItem[sourcePath]; hasField {
+										traversalPath := "/data//" + sourcePath
+										sourceData = extractFromPath(nodeFields, traversalPath)
+									}
+								}
+							}
+
+							// Try /result array if /data didn't work
+							if sourceData == nil {
+								resultArray := extractFromPath(nodeFields, "/result")
+								if arr, isArr := resultArray.([]interface{}); isArr && len(arr) > 0 {
+									if firstItem, ok := arr[0].(map[string]interface{}); ok {
+										if _, hasField := firstItem[sourcePath]; hasField {
+											traversalPath := "/result//" + sourcePath
+											sourceData = extractFromPath(nodeFields, traversalPath)
+										}
+									}
+								}
+							}
+						} else if strings.Contains(mapping.SourceEndpoint, "//") {
+							// Already a traversal path - try as-is
+							sourceData = extractFromPath(nodeFields, mapping.SourceEndpoint)
 						}
 					}
 
-					sourceData = extractFromPath(nodeFields, mapping.SourceEndpoint)
-					if sourceData == nil && needsArray {
-						resultArray := extractFromPath(nodeFields, "/result")
-						if arr, isArr := resultArray.([]interface{}); isArr && len(arr) > 0 {
-							if strings.Contains(mapping.SourceEndpoint, "//") {
-								sourceData = extractFromPath(nodeFields, mapping.SourceEndpoint)
-							} else {
-								sourcePath := strings.Trim(mapping.SourceEndpoint, "/")
-								if sourcePath != "" {
-									traversalPath := "/result//" + sourcePath
-									sourceData = extractFromPath(nodeFields, traversalPath)
-								}
-								if sourceData == nil {
-									sourceData = resultArray
+					// Special case: If sourceData is an array of objects where each object has
+					// a single field matching the sourcePath, extract those values.
+					// This handles /data returning [{data:0}, {data:0}] when we want [0, 0]
+					if sourceData != nil {
+						sourcePath := strings.Trim(mapping.SourceEndpoint, "/")
+						if arr, isArr := sourceData.([]interface{}); isArr && len(arr) > 0 {
+							if firstItem, ok := arr[0].(map[string]interface{}); ok {
+								// Check if items have a field matching the path we looked for
+								if val, hasField := firstItem[sourcePath]; hasField {
+									// Extract the nested field from each item
+									extracted := make([]interface{}, len(arr))
+									allExtracted := true
+									for i, item := range arr {
+										if itemMap, ok := item.(map[string]interface{}); ok {
+											if v, exists := itemMap[sourcePath]; exists {
+												extracted[i] = v
+											} else {
+												allExtracted = false
+												break
+											}
+										} else {
+											// Item is not a map, might be the value itself
+											extracted[i] = item
+										}
+									}
+									// Only use extracted if we successfully got all values
+									// and the extracted values are different (not the same objects)
+									if allExtracted && val != arr[0] {
+										sourceData = extracted
+									}
 								}
 							}
 						}
