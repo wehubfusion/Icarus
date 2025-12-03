@@ -462,8 +462,10 @@ func sourceResultsFromResultFile(resultFile storage.ResultFile, fieldMappings []
 					fields[k] = v
 				}
 			} else {
-				// For non-map results (arrays, primitives), store as-is
-				// The field mapping will need to reference it appropriately
+				// For non-map results (arrays, primitives), store under "data" key
+				// This allows field mappings like /data or /data//field to work correctly
+				// Also keep _raw for backward compatibility
+				fields["data"] = resultData
 				fields["_raw"] = resultData
 			}
 
