@@ -8,6 +8,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
+	"github.com/wehubfusion/Icarus/pkg/storage"
 	"go.uber.org/zap"
 )
 
@@ -86,12 +87,13 @@ func (s *natsSubAdapter) Fetch(batch int, opts ...nats.PullOpt) ([]*nats.Msg, er
 type MessageService struct {
 	js                JSContext
 	logger            *zap.Logger
-	maxDeliver        int               // Maximum number of delivery attempts before giving up (default: 5)
-	publishMaxRetries int               // Maximum number of retry attempts for publish operations (default: 3)
-	resultStream      string            // JetStream stream name for publishing results (e.g., RESULTS_UAT)
-	resultSubject     string            // Subject for publishing results (e.g., result.uat)
-	temporalClient    TemporalSignaler  // Temporal client for signaling Zeus workflows
-	blobStorage       BlobStorageClient // Blob storage for large results
+	maxDeliver        int                       // Maximum number of delivery attempts before giving up (default: 5)
+	publishMaxRetries int                       // Maximum number of retry attempts for publish operations (default: 3)
+	resultStream      string                    // JetStream stream name for publishing results (e.g., RESULTS_UAT)
+	resultSubject     string                    // Subject for publishing results (e.g., result.uat)
+	temporalClient    TemporalSignaler          // Temporal client for signaling Zeus workflows
+	blobStorage       BlobStorageClient         // Blob storage for large results
+	resultFileClient  *storage.ResultFileClient // Unified result file client for appending node results
 }
 
 // TemporalSignaler interface for signaling workflows
@@ -102,8 +104,7 @@ type TemporalSignaler interface {
 // BlobStorageClient interface for storing large results
 type BlobStorageClient interface {
 	UploadResult(ctx context.Context, blobPath string, data []byte, metadata map[string]string) (string, error)
-	GenerateSASURL(ctx context.Context, blobURL string, expiryHours int) (string, error)
-	DownloadResult(ctx context.Context, sasURL string) ([]byte, error)
+	DownloadResult(ctx context.Context, blobURL string) ([]byte, error)
 }
 
 const (
@@ -118,6 +119,11 @@ func (s *MessageService) SetTemporalClient(tc TemporalSignaler) {
 // SetBlobStorage sets the blob storage client for large results
 func (s *MessageService) SetBlobStorage(bs BlobStorageClient) {
 	s.blobStorage = bs
+}
+
+// SetResultFileClient sets the result file client for unified result storage
+func (s *MessageService) SetResultFileClient(rfc *storage.ResultFileClient) {
+	s.resultFileClient = rfc
 }
 
 // validateMessage performs strict validation on the message for callback operations
@@ -567,8 +573,8 @@ const (
 )
 
 // ReportSuccess signals Zeus workflow with execution result using Temporal Signals.
-// For results <1.5MB, sends full payload via signal. For larger results, uploads to
-// Azure Blob Storage and signals with reference.
+// For results <1.5MB, sends full payload via signal. For larger results, stores in
+// the unified result file and signals with reference.
 func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Message, msg *nats.Msg) error {
 	startTime := time.Now()
 	resultMessage.WithMetadata("result_type", string(ResultTypeSuccess))
@@ -613,12 +619,31 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 	// Parse result from payload
 	var nodeResult map[string]interface{}
 	if err := json.Unmarshal([]byte(resultMessage.Payload.Data), &nodeResult); err != nil {
-		s.logger.Error("Failed to unmarshal result", zap.Error(err))
+		s.logger.Error("Failed to unmarshal result, will report as error",
+			zap.String("execution_id", executionID),
+			zap.String("workflow_id", workflowID),
+			zap.String("run_id", runID),
+			zap.Error(err))
+
+		// Report unmarshal failure as error to Temporal if we have executionID
+		if executionID != "" {
+			unmarshalErr := fmt.Errorf("failed to unmarshal result: %w", err)
+			if reportErr := s.ReportError(ctx, executionID, workflowID, runID, unmarshalErr, msg); reportErr != nil {
+				s.logger.Error("Failed to report unmarshal error to workflow",
+					zap.String("execution_id", executionID),
+					zap.String("workflow_id", workflowID),
+					zap.Error(reportErr))
+			}
+		}
+
 		if msg != nil {
 			_ = msg.Nak()
 		}
 		return fmt.Errorf("failed to unmarshal result: %w", err)
 	}
+
+	// Extract node ID for result file operations
+	nodeID, _ := nodeResult["node_id"].(string)
 
 	// Check payload size
 	resultBytes, _ := json.Marshal(nodeResult)
@@ -626,18 +651,118 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 
 	var signalPayload interface{}
 
-	// Size-based routing
-	if resultSize <= maxSignalSize {
-		// FAST PATH: Direct signal
-		s.logger.Info("Sending result via direct signal",
+	// NEW: Unified result file approach for large results
+	// If result file client is available, use it for large results
+	if s.resultFileClient != nil && resultSize > maxSignalSize {
+		s.logger.Info("Result too large, storing in unified result file",
 			zap.String("execution_id", executionID),
+			zap.String("node_id", nodeID),
+			zap.Int("size_bytes", resultSize),
+			zap.Int("threshold", maxSignalSize))
+
+		// Extract plugin type from metadata or result
+		pluginType := resultMessage.Metadata["plugin_type"]
+		if pluginType == "" {
+			pluginType, _ = nodeResult["plugin_type"].(string)
+		}
+
+		// Extract execution time if available
+		var executionTimeMs int64
+		if execTime, ok := nodeResult["execution_time_ms"].(float64); ok {
+			executionTimeMs = int64(execTime)
+		}
+
+		// Extract actual result data (unwrap if nested under "result")
+		actualResult := nodeResult
+		if inner, ok := nodeResult["result"]; ok {
+			actualResult = map[string]interface{}{"result": inner}
+		}
+
+		// Extract status from result
+		status := "success"
+		if s, ok := nodeResult["status"].(string); ok {
+			status = s
+		}
+
+		// Create NodeResult with proper structure
+		nodeResultObj := storage.CreateNodeResult(
+			nodeID,
+			pluginType,
+			status,
+			executionTimeMs,
+			actualResult,
+			nil, // no error for success
+		)
+
+		// Append to shared result file
+		resultFilePath, err := s.resultFileClient.AppendNodeResult(ctx, workflowID, runID, nodeID, nodeResultObj)
+		if err != nil {
+			s.logger.Error("Failed to append result to result file, will report as error",
+				zap.String("execution_id", executionID),
+				zap.String("workflow_id", workflowID),
+				zap.String("run_id", runID),
+				zap.String("node_id", nodeID),
+				zap.Error(err))
+
+			// Report the result file failure as an error to Temporal
+			fileErr := fmt.Errorf("result file append failed: %w", err)
+			if reportErr := s.ReportError(ctx, executionID, workflowID, runID, fileErr, msg); reportErr != nil {
+				s.logger.Error("Failed to report result file error to workflow",
+					zap.String("execution_id", executionID),
+					zap.String("workflow_id", workflowID),
+					zap.Error(reportErr))
+			}
+
+			if msg != nil {
+				_ = msg.Nak()
+			}
+			return fileErr
+		}
+
+		s.logger.Info("Result appended to unified result file",
+			zap.String("execution_id", executionID),
+			zap.String("node_id", nodeID),
+			zap.String("result_file_path", resultFilePath),
 			zap.Int("size_bytes", resultSize))
 
-		signalPayload = nodeResult
+		// Send signal with result file path reference
+		signalPayload = map[string]interface{}{
+			"execution_id":     executionID,
+			"workflow_id":      workflowID,
+			"run_id":           runID,
+			"node_id":          nodeID,
+			"status":           nodeResult["status"],
+			"result_file_path": resultFilePath,
+			"result_size":      resultSize,
+			"timestamp":        time.Now(),
+		}
+	} else if resultSize <= maxSignalSize {
+		// FAST PATH: Direct signal for small results
+		// Structure signal to match NodeExecutionResult with inline_result field
+		s.logger.Info("Sending result via direct signal",
+			zap.String("execution_id", executionID),
+			zap.Int("size_bytes", resultSize),
+			zap.String("result_file_path", resultMessage.Payload.ResultFilePath))
+
+		// Send signal with proper structure matching NodeExecutionResult
+		signalPayload = map[string]interface{}{
+			"execution_id":  executionID,
+			"node_id":       nodeID,
+			"status":        nodeResult["status"],
+			"inline_result": nodeResult, // Contains full result: { "_meta": {...}, "result": {...} }
+			"result_size":   resultSize,
+			"timestamp":     time.Now(),
+		}
+
+		// CRITICAL: Include result_file_path if set on the message payload
+		// This is needed for units that store embedded node results in the result file
+		if resultMessage.Payload.ResultFilePath != "" {
+			signalPayload.(map[string]interface{})["result_file_path"] = resultMessage.Payload.ResultFilePath
+		}
 
 	} else {
-		// LARGE RESULT PATH: Azure Blob Storage
-		s.logger.Info("Result too large, storing in Azure Blob Storage",
+		// FALLBACK: Legacy blob storage for large results when result file client not available
+		s.logger.Info("Result too large, storing in Azure Blob Storage (legacy path)",
 			zap.String("execution_id", executionID),
 			zap.Int("size_bytes", resultSize),
 			zap.Int("threshold", maxSignalSize))
@@ -667,29 +792,36 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 		})
 
 		if err != nil {
-			s.logger.Error("Failed to upload result to blob storage",
+			s.logger.Error("Failed to upload result to blob storage, will report as error",
 				zap.String("execution_id", executionID),
+				zap.String("workflow_id", workflowID),
+				zap.String("run_id", runID),
 				zap.Error(err))
-			if msg != nil {
-				_ = msg.Nak()
-			}
-			return fmt.Errorf("blob upload failed: %w", err)
-		}
 
-		// Generate SAS URL (24h expiry)
-		sasURL, err := s.blobStorage.GenerateSASURL(ctx, blobURL, 24)
-		if err != nil {
-			s.logger.Error("Failed to generate SAS URL", zap.Error(err))
+			// Report the blob upload failure as an error to Temporal
+			blobErr := fmt.Errorf("blob upload failed: %w", err)
+			if reportErr := s.ReportError(ctx, executionID, workflowID, runID, blobErr, msg); reportErr != nil {
+				s.logger.Error("Failed to report blob upload error to workflow",
+					zap.String("execution_id", executionID),
+					zap.String("workflow_id", workflowID),
+					zap.Error(reportErr))
+			}
+
 			if msg != nil {
 				_ = msg.Nak()
 			}
-			return fmt.Errorf("SAS generation failed: %w", err)
+			return blobErr
 		}
 
 		s.logger.Info("Result uploaded to blob storage",
 			zap.String("execution_id", executionID),
 			zap.String("blob_url", blobURL),
 			zap.Int("size_bytes", resultSize))
+
+		nodeResult["blob_reference"] = map[string]interface{}{
+			"url":        blobURL,
+			"size_bytes": resultSize,
+		}
 
 		// Send compact reference signal
 		signalPayload = map[string]interface{}{
@@ -700,26 +832,36 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 			"status":       nodeResult["status"],
 			"large_result": true,
 			"blob_url":     blobURL,
-			"sas_url":      sasURL,
 			"result_size":  resultSize,
 			"timestamp":    time.Now(),
 		}
 	}
 
-	// Signal Zeus workflow with timeout
-	signalCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// Signal Zeus workflow with timeout (30s for reliability)
+	signalCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	if err := s.temporalClient.SignalWorkflow(signalCtx, workflowID, runID, signalName, signalPayload); err != nil {
-		s.logger.Error("Failed to signal workflow",
+		s.logger.Error("Failed to signal workflow with success result, will report as error",
 			zap.String("workflow_id", workflowID),
 			zap.String("execution_id", executionID),
+			zap.String("run_id", runID),
 			zap.Error(err))
+
+		// Report the signal failure as an error to Temporal
+		signalErr := fmt.Errorf("failed to signal workflow: %w", err)
+		if reportErr := s.ReportError(ctx, executionID, workflowID, runID, signalErr, msg); reportErr != nil {
+			s.logger.Error("Failed to report signal error to workflow (cascading failure)",
+				zap.String("execution_id", executionID),
+				zap.String("workflow_id", workflowID),
+				zap.String("run_id", runID),
+				zap.Error(reportErr))
+		}
 
 		if msg != nil {
 			_ = msg.Nak() // Retry on signal failure
 		}
-		return fmt.Errorf("failed to signal workflow: %w", err)
+		return signalErr
 	}
 
 	signalDuration := time.Since(startTime)
@@ -802,20 +944,45 @@ func (s *MessageService) ReportError(ctx context.Context, executionID, workflowI
 		"is_transient": isTransient,
 	}
 
-	// Signal with timeout
+	// Signal with timeout (30s for reliability, with retry)
 	signalName := fmt.Sprintf("unit-result-%s", executionID)
-	signalCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
 
-	if err := s.temporalClient.SignalWorkflow(signalCtx, workflowID, runID, signalName, errorResult); err != nil {
-		s.logger.Error("Failed to signal workflow with error",
+	// Retry logic for critical error reporting
+	var signalErr error
+	maxRetries := 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		signalCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		signalErr = s.temporalClient.SignalWorkflow(signalCtx, workflowID, runID, signalName, errorResult)
+		cancel()
+
+		if signalErr == nil {
+			break
+		}
+
+		if attempt < maxRetries {
+			s.logger.Warn("Failed to signal workflow with error, retrying",
+				zap.String("execution_id", executionID),
+				zap.String("workflow_id", workflowID),
+				zap.String("run_id", runID),
+				zap.Int("attempt", attempt),
+				zap.Int("max_retries", maxRetries),
+				zap.Error(signalErr))
+			// Brief backoff before retry
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+	}
+
+	if signalErr != nil {
+		s.logger.Error("Failed to signal workflow with error after all retries",
 			zap.String("execution_id", executionID),
 			zap.String("workflow_id", workflowID),
-			zap.Error(err))
+			zap.String("run_id", runID),
+			zap.Int("attempts", maxRetries),
+			zap.Error(signalErr))
 		if msg != nil {
 			_ = msg.Nak()
 		}
-		return fmt.Errorf("failed to signal: %w", err)
+		return fmt.Errorf("failed to signal after %d attempts: %w", maxRetries, signalErr)
 	}
 
 	s.logger.Info("Successfully signaled error to Zeus",

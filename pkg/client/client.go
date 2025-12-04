@@ -19,8 +19,7 @@ type TemporalSignaler interface {
 // BlobStorageClient interface for storing large workflow results
 type BlobStorageClient interface {
 	UploadResult(ctx context.Context, blobPath string, data []byte, metadata map[string]string) (string, error)
-	GenerateSASURL(ctx context.Context, blobURL string, expiryHours int) (string, error)
-	DownloadResult(ctx context.Context, sasURL string) ([]byte, error)
+	DownloadResult(ctx context.Context, blobURL string) ([]byte, error)
 }
 
 // Client is the central JetStream client that manages the connection and provides access to services.

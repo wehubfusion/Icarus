@@ -119,6 +119,222 @@ Produce validates JSON data against a schema, removes extra fields, encodes to b
 
 ---
 
+## Automatic Schema Wrapping for Arrays
+
+### Overview
+
+The JSON parser automatically detects when input data is an array but the schema describes a single item (not an ARRAY type), and intelligently wraps the schema at runtime. This enables natural schema authoring where the **schema describes each item** in the array.
+
+### How It Works
+
+When the parser encounters:
+- ✅ Input data is an **ARRAY**: `["value1", "value2"]` or `[1, 2, 3]` or `[{...}, {...}]`
+- ✅ Schema root type is **NOT ARRAY** (i.e., STRING, NUMBER, BOOLEAN, OBJECT, etc.)
+- ✅ Auto-wrap is enabled (default)
+
+It automatically transforms the schema at runtime:
+
+**Original Schema (describes ONE item):**
+```json
+{
+  "type": "STRING"
+}
+```
+
+**Runtime-Wrapped Schema (automatic):**
+```json
+{
+  "type": "ARRAY",
+  "items": {
+    "type": "STRING"
+  }
+}
+```
+
+**Result:** Each array item is validated against the original schema individually.
+
+### Examples
+
+#### Example 1: String Array with STRING Schema
+
+**Input Data:**
+```json
+["manual", "saml2", "manual"]
+```
+
+**Schema (describes each item):**
+```json
+{
+  "type": "STRING"
+}
+```
+
+**Behavior:**
+- Auto-wraps schema to `{type: "ARRAY", items: {type: "STRING"}}`
+- Validates each string in array against STRING type
+- ✅ Output: `["manual", "saml2", "manual"]`
+
+#### Example 2: Number Array with NUMBER Schema
+
+**Input Data:**
+```json
+[0, 1, 1, 0]
+```
+
+**Schema (describes each item):**
+```json
+{
+  "type": "NUMBER"
+}
+```
+
+**Behavior:**
+- Auto-wraps schema to `{type: "ARRAY", items: {type: "NUMBER"}}`
+- Validates each number in array against NUMBER type
+- ✅ Output: `[0, 1, 1, 0]`
+
+#### Example 3: Object Array with OBJECT Schema
+
+**Input Data:**
+```json
+[{"name": "Alice"}, {"name": "Bob"}]
+```
+
+**Schema (describes each item):**
+```json
+{
+  "type": "OBJECT",
+  "properties": {
+    "name": {"type": "STRING"}
+  }
+}
+```
+
+**Behavior:**
+- Auto-wraps schema to `{type: "ARRAY", items: {type: "OBJECT", ...}}`
+- Validates each object in array against OBJECT schema
+- ✅ Output: `[{"name": "Alice"}, {"name": "Bob"}]`
+
+#### Example 4: Object Data with OBJECT Schema (No Wrap)
+
+**Input Data:**
+```json
+{"auth": "manual"}
+```
+
+**Schema:**
+```json
+{
+  "type": "OBJECT",
+  "properties": {
+    "auth": {"type": "STRING"}
+  }
+}
+```
+
+**Behavior:**
+- No wrapping needed (data is not an array)
+- Validates object directly
+- ✅ Success
+
+#### Example 5: Array Data with ARRAY Schema (No Wrap)
+
+**Input Data:**
+```json
+[1, 2, 3]
+```
+
+**Schema:**
+```json
+{
+  "type": "ARRAY",
+  "items": {"type": "NUMBER"}
+}
+```
+
+**Behavior:**
+- No wrapping needed (schema already describes array)
+- Validates array directly
+- ✅ Success
+
+### Configuration
+
+**Default (auto-wrap enabled):**
+```json
+{
+  "operation": "parse",
+  "schema_id": "my-object-schema"
+}
+```
+
+**Explicitly Enable:**
+```json
+{
+  "operation": "parse",
+  "schema_id": "my-object-schema",
+  "auto_wrap_for_iteration": true
+}
+```
+
+**Disable (strict type matching):**
+```json
+{
+  "operation": "parse",
+  "schema_id": "my-item-schema",
+  "auto_wrap_for_iteration": false
+}
+```
+
+When disabled, the schema is used as-is without wrapping.
+
+### Use Cases
+
+1. **JS Runner → JSON Parser Workflows**
+   - JS scripts output arrays of primitive values (strings, numbers)
+   - Schema describes what each item should be (`{type: "STRING"}`)
+   - Parser automatically validates each item in the array
+
+2. **Batch Processing**
+   - Upstream nodes produce arrays of data
+   - Schema defines single item validation rules
+   - Automatic per-item validation
+
+3. **Iteration Contexts**
+   - Auto-iteration produces array results
+   - Schema describes what each iterated result should look like
+   - Seamless validation without manual schema wrapping
+
+### Design Rationale
+
+**Why Data-Based Detection?**
+- ✅ Simple to implement
+- ✅ Works regardless of data source (iteration, batch, manual)
+- ✅ No need to track workflow execution context
+- ✅ Predictable behavior based solely on data structure
+- ✅ Easy to understand and debug
+
+**Why Default to Enabled?**
+- Majority of use cases benefit from auto-wrapping
+- Schemas are more naturally written to describe items (not containers)
+- Can be explicitly disabled when strict behavior is needed
+- Reduces configuration complexity for common patterns
+
+### When Auto-Wrap Occurs
+
+Auto-wrapping happens **only when ALL conditions are met:**
+
+1. ✅ Input data type is ARRAY: `[]interface{}`
+2. ✅ Schema root type is NOT "ARRAY" (i.e., STRING, NUMBER, BOOLEAN, OBJECT, etc.)
+3. ✅ `auto_wrap_for_iteration` is true (default)
+
+### When Auto-Wrap Does NOT Occur
+
+❌ Data is not an array → no wrapping needed
+❌ Schema type is ARRAY → already expects arrays, no wrapping needed
+❌ `auto_wrap_for_iteration: false` → feature disabled
+
+---
+
 ## Configuration Reference
 
 ### Flat Configuration Structure
@@ -131,6 +347,7 @@ Produce validates JSON data against a schema, removes extra fields, encodes to b
   "apply_defaults": true|false,
   "structure_data": true|false,
   "strict_validation": true|false,
+  "auto_wrap_for_iteration": true|false,
   "pretty": true|false
 }
 ```
@@ -145,6 +362,7 @@ Produce validates JSON data against a schema, removes extra fields, encodes to b
 | `apply_defaults` | boolean | No | Apply default values from schema (see defaults below) |
 | `structure_data` | boolean | No | Remove fields not defined in schema (see defaults below) |
 | `strict_validation` | boolean | No | Fail immediately on validation errors (see defaults below) |
+| `auto_wrap_for_iteration` | boolean | No | Auto-wrap OBJECT schemas when data is array (parse only, default: true) |
 | `pretty` | boolean | No | Pretty-format JSON before encoding (produce only, default: false) |
 
 *Either `schema_id` or `schema` must be provided. When using embedded nodes in Elysium, prefer `schema_id` as it will be automatically enriched.
@@ -152,10 +370,11 @@ Produce validates JSON data against a schema, removes extra fields, encodes to b
 ### Operation-Specific Defaults
 
 | Option | Parse Default | Produce Default | Rationale |
-|--------|--------------|-----------------|-----------|
+|--------|--------------|-----------------|-----------||
 | `apply_defaults` | `true` | `false` | Parse fills missing fields; Produce expects complete data |
 | `structure_data` | `false` | `true` | Parse allows extra fields; Produce cleans output |
 | `strict_validation` | `false` | `true` | Parse is lenient; Produce ensures valid output |
+| `auto_wrap_for_iteration` | `true` | N/A | Enables array handling for parse; not applicable to produce |
 
 ---
 

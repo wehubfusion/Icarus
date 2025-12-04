@@ -229,7 +229,6 @@ func main() {
 		streamName,
 		consumerName,
 		10,                   // batch size
-		config.RunnerWorkers, // number of workers from config
 		30*time.Second,       // process timeout
 		logger,
 		&tracingConfig, // tracing configuration

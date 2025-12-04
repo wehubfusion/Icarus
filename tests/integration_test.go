@@ -112,7 +112,6 @@ func TestRunnerIntegration(t *testing.T) {
 		"integration-stream",
 		"integration-consumer",
 		2,              // batch size
-		1,              // num workers
 		30*time.Second, // process timeout
 		logger,
 		nil, // no tracing config
@@ -171,7 +170,6 @@ func TestRunnerWithFailingProcessor(t *testing.T) {
 		"integration-stream",
 		"integration-consumer",
 		1,              // batch size
-		1,              // num workers
 		30*time.Second, // process timeout
 		logger,
 		nil, // no tracing config

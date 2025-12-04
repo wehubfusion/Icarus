@@ -43,6 +43,128 @@ func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]b
 	}
 }
 
+// shouldAutoWrapSchema determines if the schema should be auto-wrapped
+// Returns true when:
+// - Data is an array ([]interface{})
+// - Schema root type is NOT "ARRAY" (i.e., schema describes a single item)
+// This allows schemas to describe single item structure while handling array data
+func shouldAutoWrapSchema(data []byte, schemaDefinition json.RawMessage) bool {
+	// Parse data to check its type
+	var dataValue interface{}
+	if err := json.Unmarshal(data, &dataValue); err != nil {
+		return false
+	}
+
+	// Check if data is an array
+	_, isArray := dataValue.([]interface{})
+	if !isArray {
+		return false // Not an array, no wrapping needed
+	}
+
+	// Parse schema to check root type
+	var schemaStruct struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(schemaDefinition, &schemaStruct); err != nil {
+		return false
+	}
+
+	// Auto-wrap when data is array but schema describes a single item (not ARRAY)
+	// Schema can be STRING, NUMBER, BOOLEAN, OBJECT, etc. - anything that describes one item
+	schemaType := schemaStruct.Type
+	return schemaType != "ARRAY" && schemaType != "array"
+}
+
+// isPrimitiveArray checks if data is an array of primitive values
+func isPrimitiveArray(data []byte) bool {
+	var arr []interface{}
+	if err := json.Unmarshal(data, &arr); err != nil {
+		return false
+	}
+
+	if len(arr) == 0 {
+		return true // Empty array treated as primitive array
+	}
+
+	// Check first non-nil element
+	for _, item := range arr {
+		if item == nil {
+			continue
+		}
+		switch item.(type) {
+		case string, float64, bool:
+			return true
+		default:
+			return false // Not a primitive (likely object or nested array)
+		}
+	}
+
+	return true // All nil or empty
+}
+
+// getFirstPropertyName extracts the first property name from an OBJECT schema
+func getFirstPropertyName(schemaDefinition json.RawMessage) string {
+	var schema struct {
+		Type       string                     `json:"type"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(schemaDefinition, &schema); err != nil {
+		return ""
+	}
+
+	if schema.Type != "OBJECT" && schema.Type != "object" {
+		return ""
+	}
+
+	// Return the first property name
+	for propName := range schema.Properties {
+		return propName
+	}
+
+	return ""
+}
+
+// wrapPrimitivesIntoObjects transforms primitive array into object array
+// Input: ["saml2", "manual"], propertyName: "auth"
+// Output: [{"auth": "saml2"}, {"auth": "manual"}]
+func wrapPrimitivesIntoObjects(data []byte, propertyName string) ([]byte, error) {
+	var arr []interface{}
+	if err := json.Unmarshal(data, &arr); err != nil {
+		return nil, err
+	}
+
+	result := make([]map[string]interface{}, len(arr))
+	for i, item := range arr {
+		result[i] = map[string]interface{}{
+			propertyName: item,
+		}
+	}
+
+	return json.Marshal(result)
+}
+
+// wrapSchemaForIteration wraps schema for array data
+// Creates {type: "ARRAY", items: <original_schema>}
+func wrapSchemaForIteration(itemSchema json.RawMessage) json.RawMessage {
+	var itemsSchema map[string]interface{}
+	if err := json.Unmarshal(itemSchema, &itemsSchema); err != nil {
+		return itemSchema // Return original on error
+	}
+
+	// Create wrapped array schema
+	wrappedSchema := map[string]interface{}{
+		"type":  "ARRAY",
+		"items": itemsSchema,
+	}
+
+	wrapped, err := json.Marshal(wrappedSchema)
+	if err != nil {
+		return itemSchema
+	}
+
+	return wrapped
+}
+
 // executeParse parses and validates JSON against schema
 func (e *Executor) executeParse(input []byte, config Config) ([]byte, error) {
 	// Unmarshal input envelope
@@ -75,8 +197,31 @@ func (e *Executor) executeParse(input []byte, config Config) ([]byte, error) {
 		dataToValidate = marshaled
 	}
 
-	// Process with schema
-	validatedData, err := processWithSchema(dataToValidate, config.Schema, config.SchemaID, SchemaOptions{
+	// Determine which schema to use and potentially transform data
+	schemaToUse := config.Schema
+	dataToProcess := dataToValidate
+
+	if config.GetAutoWrapForIteration() {
+		if shouldAutoWrapSchema(dataToValidate, config.Schema) {
+			// Check if we have a primitive array with an OBJECT schema
+			// In this case, wrap each primitive into an object using the first property name
+			if isPrimitiveArray(dataToValidate) {
+				propName := getFirstPropertyName(config.Schema)
+				if propName != "" {
+					// Transform: ["saml2", "manual"] -> [{"auth": "saml2"}, {"auth": "manual"}]
+					transformed, err := wrapPrimitivesIntoObjects(dataToValidate, propName)
+					if err == nil {
+						dataToProcess = transformed
+					}
+				}
+			}
+			// Wrap schema to expect array of items
+			schemaToUse = wrapSchemaForIteration(config.Schema)
+		}
+	}
+
+	// Process with schema (potentially auto-wrapped for array data)
+	validatedData, err := processWithSchema(dataToProcess, schemaToUse, config.SchemaID, SchemaOptions{
 		ApplyDefaults:    config.GetApplyDefaults(),
 		StructureData:    config.GetStructureData(),
 		StrictValidation: config.GetStrictValidation(),

@@ -54,8 +54,29 @@ const (
 	LogicOr  LogicOperator = "OR"
 )
 
+// InputType defines the data type for manual inputs
+type InputType string
+
+const (
+	InputTypeString InputType = "string"
+	InputTypeNumber InputType = "number"
+	InputTypeDate   InputType = "date"
+)
+
+// ManualInput defines an input field that the condition receives
+type ManualInput struct {
+	// Name is the field name (used in conditions field_path)
+	Name string `json:"name"`
+	// Type is the data type (string, number, date)
+	Type InputType `json:"type"`
+}
+
 // Config defines the configuration for the simple condition processor
 type Config struct {
+	// ManualInputs defines the input fields the condition receives
+	// These are mapped from upstream node outputs via field mapping
+	ManualInputs []ManualInput `json:"manual_inputs,omitempty"`
+
 	// LogicOperator specifies how to combine multiple conditions (AND/OR)
 	// Default: "AND"
 	LogicOperator LogicOperator `json:"logic_operator,omitempty"`

@@ -600,6 +600,213 @@ func (p *Processor) processWithCoordinatedIteration(
 	}
 }
 
+// processWithEventMaskedIteration handles iteration filtered by event mask (boolean array)
+// Only processes items where the event mask is true, getting data from sources at those indices
+func (p *Processor) processWithEventMaskedIteration(
+	ctx context.Context,
+	embNode message.EmbeddedNode,
+	eventMask []bool,
+	startTime time.Time,
+	storage *SmartStorage,
+) EmbeddedNodeResult {
+	// Count how many items we'll process
+	processCount := countTrueValues(eventMask)
+	if processCount == 0 {
+		// No items to process - return empty result
+		execTime := time.Since(startTime).Milliseconds()
+		wrappedOutput := &StandardOutput{
+			Meta: MetaData{
+				Status:          "success",
+				NodeID:          embNode.NodeID,
+				PluginType:      embNode.PluginType,
+				ExecutionTimeMs: execTime,
+				Timestamp:       time.Now(),
+			},
+			Events: EventEndpoints{
+				Success: true,
+				Error:   false,
+			},
+			Result: []interface{}{},
+		}
+
+		successResult := map[string]interface{}{
+			"_meta":   wrappedOutput.Meta,
+			"_events": wrappedOutput.Events,
+			"result":  wrappedOutput.Result,
+		}
+		iterationCtx := &IterationContext{
+			IsArray:     true,
+			ArrayPath:   "/result",
+			ArrayLength: 0,
+		}
+		storage.Set(embNode.NodeID, successResult, iterationCtx)
+
+		return EmbeddedNodeResult{
+			NodeID:               embNode.NodeID,
+			PluginType:           embNode.PluginType,
+			Status:               "success",
+			Output:               wrappedOutput,
+			Error:                "",
+			ExecutionOrder:       embNode.ExecutionOrder,
+			ProcessingDurationMs: execTime,
+		}
+	}
+
+	// Collect indices where mask is true
+	filteredIndices := make([]int, 0, processCount)
+	for i, shouldProcess := range eventMask {
+		if shouldProcess {
+			filteredIndices = append(filteredIndices, i)
+		}
+	}
+
+	// Process each filtered index
+	results := make([]interface{}, len(filteredIndices))
+
+	for resultIdx, sourceIdx := range filteredIndices {
+		// Apply field mappings at this specific source index
+		mappedInput, err := p.fieldMapper.ApplyMappings(storage, embNode.FieldMappings, []byte("{}"), sourceIdx)
+		if err != nil {
+			execTime := time.Since(startTime).Milliseconds()
+			wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime,
+				fmt.Errorf("field mapping failed at index %d (source idx %d): %w", resultIdx, sourceIdx, err))
+
+			errorResult := map[string]interface{}{
+				"_meta":   wrappedOutput.Meta,
+				"_events": wrappedOutput.Events,
+				"_error":  wrappedOutput.Error,
+				"result":  wrappedOutput.Result,
+			}
+			storage.Set(embNode.NodeID, errorResult, nil)
+
+			return EmbeddedNodeResult{
+				NodeID:               embNode.NodeID,
+				PluginType:           embNode.PluginType,
+				Status:               "failed",
+				Output:               wrappedOutput,
+				Error:                fmt.Sprintf("field mapping failed at index %d: %v", sourceIdx, err),
+				ExecutionOrder:       embNode.ExecutionOrder,
+				ProcessingDurationMs: execTime,
+			}
+		}
+
+		// Execute plugin with mapped input for this iteration
+		nodeConfig := NodeConfig{
+			NodeID:        embNode.NodeID,
+			PluginType:    embNode.PluginType,
+			Configuration: embNode.Configuration,
+			Input:         mappedInput,
+			Connection:    embNode.Connection,
+			Schema:        embNode.Schema,
+		}
+
+		nodeOutput, err := p.registry.Execute(ctx, nodeConfig)
+		if err != nil {
+			execTime := time.Since(startTime).Milliseconds()
+			wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime,
+				fmt.Errorf("execution failed at index %d (source idx %d): %w", resultIdx, sourceIdx, err))
+
+			errorResult := map[string]interface{}{
+				"_meta":   wrappedOutput.Meta,
+				"_events": wrappedOutput.Events,
+				"_error":  wrappedOutput.Error,
+				"result":  wrappedOutput.Result,
+			}
+			storage.Set(embNode.NodeID, errorResult, nil)
+
+			return EmbeddedNodeResult{
+				NodeID:               embNode.NodeID,
+				PluginType:           embNode.PluginType,
+				Status:               "failed",
+				Output:               wrappedOutput,
+				Error:                fmt.Sprintf("execution failed at index %d: %v", sourceIdx, err),
+				ExecutionOrder:       embNode.ExecutionOrder,
+				ProcessingDurationMs: execTime,
+			}
+		}
+
+		// Parse output and extract result
+		var output StandardOutput
+		if err := json.Unmarshal(nodeOutput, &output); err != nil {
+			execTime := time.Since(startTime).Milliseconds()
+			wrappedOutput := WrapError(embNode.NodeID, embNode.PluginType, execTime,
+				fmt.Errorf("failed parsing output at index %d (source idx %d): %w", resultIdx, sourceIdx, err))
+
+			errorResult := map[string]interface{}{
+				"_meta":   wrappedOutput.Meta,
+				"_events": wrappedOutput.Events,
+				"_error":  wrappedOutput.Error,
+				"result":  wrappedOutput.Result,
+			}
+			storage.Set(embNode.NodeID, errorResult, nil)
+
+			return EmbeddedNodeResult{
+				NodeID:               embNode.NodeID,
+				PluginType:           embNode.PluginType,
+				Status:               "failed",
+				Output:               wrappedOutput,
+				Error:                fmt.Sprintf("failed parsing output at index %d: %v", sourceIdx, err),
+				ExecutionOrder:       embNode.ExecutionOrder,
+				ProcessingDurationMs: execTime,
+			}
+		}
+
+		results[resultIdx] = output.Result
+	}
+
+	// Mark all sources as consumed after successful event-masked iteration
+	for _, mapping := range embNode.FieldMappings {
+		if !mapping.IsEventTrigger {
+			storage.MarkConsumed(mapping.SourceNodeID, embNode.NodeID)
+		}
+	}
+
+	// Wrap results in StandardOutput with array
+	execTime := time.Since(startTime).Milliseconds()
+	wrappedOutput := &StandardOutput{
+		Meta: MetaData{
+			Status:          "success",
+			NodeID:          embNode.NodeID,
+			PluginType:      embNode.PluginType,
+			ExecutionTimeMs: execTime,
+			Timestamp:       time.Now(),
+		},
+		Events: EventEndpoints{
+			Success: true,
+			Error:   false,
+		},
+		Result: results,
+	}
+
+	// Store with iteration context
+	successResult := map[string]interface{}{
+		"_meta":   wrappedOutput.Meta,
+		"_events": wrappedOutput.Events,
+		"result":  wrappedOutput.Result,
+	}
+	iterationCtx := &IterationContext{
+		IsArray:     true,
+		ArrayPath:   "/result",
+		ArrayLength: len(results),
+	}
+	storage.Set(embNode.NodeID, successResult, iterationCtx)
+
+	p.logger.Debug("Event-masked iteration complete",
+		Field{Key: "node_id", Value: embNode.NodeID},
+		Field{Key: "total_items", Value: len(eventMask)},
+		Field{Key: "processed_items", Value: len(results)})
+
+	return EmbeddedNodeResult{
+		NodeID:               embNode.NodeID,
+		PluginType:           embNode.PluginType,
+		Status:               "success",
+		Output:               wrappedOutput,
+		Error:                "",
+		ExecutionOrder:       embNode.ExecutionOrder,
+		ProcessingDurationMs: execTime,
+	}
+}
+
 // processWithAutoIteration handles auto-detected array iteration concurrently
 // Processes each item through the plugin and aggregates results into single StandardOutput
 func (p *Processor) processWithAutoIteration(
@@ -754,7 +961,7 @@ func (p *Processor) processNode(
 	startTime := time.Now()
 
 	// Check event trigger conditions before executing
-	shouldExecute, skipReason := p.checkEventTriggers(embNode, storage)
+	shouldExecute, skipReason, eventMask := p.checkEventTriggers(embNode, storage)
 	if !shouldExecute {
 		// Event trigger conditions not met - skip this node
 		wrappedOutput := WrapSkipped(embNode.NodeID, embNode.PluginType, skipReason)
@@ -778,12 +985,23 @@ func (p *Processor) processNode(
 		}
 	}
 
-	// ARRAY HANDLING: Three possible paths (checked in priority order):
+	// ARRAY HANDLING: Four possible paths (checked in priority order):
+	// 0. EVENT-MASKED ITERATION: Event trigger is a boolean array (filter items)
+	//    → Process only items where event mask is true
 	// 1. COORDINATED ITERATION: Field mappings have iterate:true from array sources
 	//    → Process N times (once per array index), extracting item[i] from each source
 	// 2. AUTO-ITERATION: Mapped input result is an array (detected via patterns)
 	//    → Process N times (once per array item) through the plugin
 	// 3. NORMAL: Single item processing (no arrays involved)
+
+	// Path 0: Check for event-masked iteration (boolean array event)
+	if len(eventMask) > 0 {
+		p.logger.Debug("Using EVENT-MASKED ITERATION path",
+			Field{Key: "node_id", Value: embNode.NodeID},
+			Field{Key: "mask_length", Value: len(eventMask)},
+			Field{Key: "filtered_count", Value: countTrueValues(eventMask)})
+		return p.processWithEventMaskedIteration(ctx, embNode, eventMask, startTime, storage)
+	}
 
 	// Path 1: Check for coordinated iteration (takes precedence)
 	needsCoordinatedIteration, maxArrayLength := p.checkCoordinatedIteration(embNode, storage)
@@ -940,11 +1158,12 @@ func (p *Processor) processNode(
 }
 
 // checkEventTriggers checks if all event trigger conditions are met for a node
-// Returns (shouldExecute bool, skipReason string)
+// Returns (shouldExecute bool, skipReason string, eventMask []bool)
+// eventMask is non-nil when the event source is a boolean array (for filtered iteration)
 func (p *Processor) checkEventTriggers(
 	embNode message.EmbeddedNode,
 	storage *SmartStorage,
-) (bool, string) {
+) (bool, string, []bool) {
 	// Find all event trigger field mappings
 	eventTriggers := []message.FieldMapping{}
 	for _, mapping := range embNode.FieldMappings {
@@ -955,8 +1174,11 @@ func (p *Processor) checkEventTriggers(
 
 	// If no event triggers, always execute
 	if len(eventTriggers) == 0 {
-		return true, ""
+		return true, "", nil
 	}
+
+	// Track event masks from array sources
+	var eventMask []bool
 
 	// Check each event trigger - ALL must be satisfied for node to execute
 	for _, trigger := range eventTriggers {
@@ -964,7 +1186,7 @@ func (p *Processor) checkEventTriggers(
 		sourceOutput, err := storage.GetResultAsStandardOutput(trigger.SourceNodeID)
 		if err != nil {
 			// Source node hasn't executed yet or failed
-			return false, fmt.Sprintf("event trigger source node '%s' not found", trigger.SourceNodeID)
+			return false, fmt.Sprintf("event trigger source node '%s' not found", trigger.SourceNodeID), nil
 		}
 
 		// Check if the trigger endpoint has data and is truthy using namespace-aware navigation
@@ -977,25 +1199,73 @@ func (p *Processor) checkEventTriggers(
 		// - Value is empty string
 		if !valueExists {
 			return false, fmt.Sprintf("event not fired: endpoint '%s' from node '%s' not found",
-				trigger.SourceEndpoint, trigger.SourceNodeID)
+				trigger.SourceEndpoint, trigger.SourceNodeID), nil
 		}
 
 		if sourceValue == nil {
 			return false, fmt.Sprintf("event not fired: endpoint '%s' from node '%s' is null",
-				trigger.SourceEndpoint, trigger.SourceNodeID)
+				trigger.SourceEndpoint, trigger.SourceNodeID), nil
+		}
+
+		// Check for boolean array event (from simple-condition)
+		if boolArray, ok := sourceValue.([]interface{}); ok {
+			// Convert to []bool for event mask
+			mask := make([]bool, len(boolArray))
+			hasAnyTrue := false
+			for i, v := range boolArray {
+				if b, isBool := v.(bool); isBool && b {
+					mask[i] = true
+					hasAnyTrue = true
+				}
+			}
+			if !hasAnyTrue {
+				return false, fmt.Sprintf("event not fired: array event '%s' from node '%s' has no true values",
+					trigger.SourceEndpoint, trigger.SourceNodeID), nil
+			}
+			// Combine with existing event mask (AND logic for multiple triggers)
+			if eventMask == nil {
+				eventMask = mask
+			} else {
+				// AND the masks together
+				for i := range eventMask {
+					if i < len(mask) {
+						eventMask[i] = eventMask[i] && mask[i]
+					} else {
+						eventMask[i] = false
+					}
+				}
+			}
+			p.logger.Debug("Event trigger is boolean array",
+				Field{Key: "node_id", Value: embNode.NodeID},
+				Field{Key: "source_node", Value: trigger.SourceNodeID},
+				Field{Key: "endpoint", Value: trigger.SourceEndpoint},
+				Field{Key: "array_length", Value: len(mask)},
+				Field{Key: "true_count", Value: countTrueValues(mask)})
+			continue
 		}
 
 		if boolVal, ok := sourceValue.(bool); ok && !boolVal {
 			return false, fmt.Sprintf("event not fired: endpoint '%s' from node '%s' is false",
-				trigger.SourceEndpoint, trigger.SourceNodeID)
+				trigger.SourceEndpoint, trigger.SourceNodeID), nil
 		}
 
 		if strVal, ok := sourceValue.(string); ok && strVal == "" {
 			return false, fmt.Sprintf("event not fired: endpoint '%s' from node '%s' is empty",
-				trigger.SourceEndpoint, trigger.SourceNodeID)
+				trigger.SourceEndpoint, trigger.SourceNodeID), nil
 		}
 	}
 
 	// All event triggers satisfied
-	return true, ""
+	return true, "", eventMask
+}
+
+// countTrueValues counts the number of true values in a boolean slice
+func countTrueValues(mask []bool) int {
+	count := 0
+	for _, v := range mask {
+		if v {
+			count++
+		}
+	}
+	return count
 }

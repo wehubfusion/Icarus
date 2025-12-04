@@ -1,5 +1,5 @@
 // Package runner provides a concurrent message processing framework using NATS JetStream.
-// It allows processing messages from a stream with configurable batch sizes and worker pools,
+// It allows processing messages from a stream with configurable batch sizes and limiter-driven concurrency,
 // with built-in success and error reporting capabilities.
 package runner
 
@@ -28,7 +28,7 @@ type Processor interface {
 }
 
 // Runner manages concurrent message processing from a NATS JetStream consumer.
-// It pulls messages in batches and distributes them to worker goroutines for processing,
+// It pulls messages in batches and dispatches them through the concurrency limiter for processing,
 // with automatic success and error reporting to the "result" subject.
 type Runner struct {
 	client          *client.Client
@@ -36,7 +36,6 @@ type Runner struct {
 	stream          string
 	consumer        string
 	batchSize       int
-	numWorkers      int
 	logger          *zap.Logger
 	processTimeout  time.Duration
 	tracer          trace.Tracer
@@ -48,13 +47,12 @@ type Runner struct {
 // The client must already be connected before creating the runner.
 // The processor must implement the Processor interface for message handling.
 // batchSize specifies how many messages to pull at once from the stream.
-// numWorkers specifies the number of worker goroutines for processing messages.
 // processTimeout specifies the maximum time allowed for processing a single message.
 // logger is the zap logger instance for structured logging.
 // tracingConfig is optional - if nil, no tracing will be set up. If provided, tracing will be automatically configured and cleaned up.
-// limiter is optional - if nil, no concurrency limiting will be applied beyond the worker pool.
+// limiter is optional - if nil, no concurrency limiting will be applied beyond the pull loop.
 // Returns an error if any of the parameters are invalid.
-func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, numWorkers int, processTimeout time.Duration, logger *zap.Logger, tracingConfig *TracingConfig, limiter *concurrency.Limiter) (*Runner, error) {
+func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, processTimeout time.Duration, logger *zap.Logger, tracingConfig *TracingConfig, limiter *concurrency.Limiter) (*Runner, error) {
 	if client == nil {
 		return nil, errors.New("client cannot be nil")
 	}
@@ -69,9 +67,6 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 	}
 	if batchSize <= 0 {
 		return nil, errors.New("batchSize must be greater than 0")
-	}
-	if numWorkers <= 0 {
-		return nil, errors.New("numWorkers must be greater than 0")
 	}
 	if processTimeout <= 0 {
 		return nil, errors.New("processTimeout must be greater than 0")
@@ -95,7 +90,6 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 		stream:         stream,
 		consumer:       consumer,
 		batchSize:      batchSize,
-		numWorkers:     numWorkers,
 		processTimeout: processTimeout,
 		logger:         logger,
 		tracer:         otel.Tracer("icarus/runner"),
@@ -136,37 +130,59 @@ func (r *Runner) Close() error {
 }
 
 // Run starts the message processing pipeline.
-// It spawns worker goroutines and begins pulling messages from the configured stream.
-// The method blocks until the context is cancelled and all workers have finished processing.
+// It pulls messages from the configured stream and processes them through the limiter.
+// The method blocks until the context is cancelled and all processing goroutines have finished.
 // Returns an error if there's a critical failure that prevents the runner from continuing.
 func (r *Runner) Run(ctx context.Context) error {
-	// Create message channel with buffer size equal to batch size
-	messageChan := make(chan *message.Message, r.batchSize)
-
-	// Use WaitGroup to wait for all goroutines to finish
-	var wg sync.WaitGroup
+	var (
+		backgroundWG sync.WaitGroup
+		processWG    sync.WaitGroup
+	)
 
 	// Start concurrency stats logging if limiter is available
 	if r.limiter != nil {
-		wg.Add(1)
+		backgroundWG.Add(1)
 		go func() {
-			defer wg.Done()
+			defer backgroundWG.Done()
 			r.logConcurrencyStats(ctx)
 		}()
 	}
 
-	// Start worker goroutines
-	for i := 0; i < r.numWorkers; i++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			r.worker(ctx, workerID, messageChan)
-		}(i)
+	dispatchMessage := func(msg *message.Message) {
+		if r.limiter == nil {
+			if err := r.processMessage(ctx, msg); err != nil {
+				r.logger.Error("Message processing failed without limiter",
+					zap.Error(err))
+			}
+			return
+		}
+
+		currentMsg := msg
+		processWG.Add(1)
+		err := r.limiter.Go(ctx, func() error {
+			defer processWG.Done()
+			return r.processMessage(ctx, currentMsg)
+		})
+		if err != nil {
+			processWG.Done()
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
+			if errors.Is(err, concurrency.ErrCircuitOpen) {
+				r.logger.Warn("Limiter circuit open; applying backpressure")
+			} else {
+				r.logger.Error("Limiter rejected message", zap.Error(err))
+			}
+			if nakErr := msg.Nak(); nakErr != nil {
+				r.logger.Error("Failed to Nak message after limiter error", zap.Error(nakErr))
+			}
+		}
 	}
 
 	// Start message puller goroutine
+	backgroundWG.Add(1)
 	go func() {
-		defer close(messageChan) // Close channel when done
+		defer backgroundWG.Done()
 
 		backoffDelay := 100 * time.Millisecond
 		maxBackoff := 5 * time.Second
@@ -209,13 +225,13 @@ func (r *Runner) Run(ctx context.Context) error {
 				// Reset backoff on successful pull
 				backoffDelay = 100 * time.Millisecond
 
-				// Send messages to workers
+				// Dispatch messages via limiter
 				for _, msg := range messages {
 					select {
-					case messageChan <- msg:
-						// Message sent successfully
 					case <-ctx.Done():
 						return // Context cancelled, stop sending messages
+					default:
+						dispatchMessage(msg)
 					}
 				}
 			}
@@ -226,7 +242,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		wg.Wait()
+		backgroundWG.Wait()
+		processWG.Wait()
 	}()
 
 	// Wait for completion or context cancellation
@@ -240,27 +257,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 }
 
-// worker processes messages from the channel
-func (r *Runner) worker(ctx context.Context, workerID int, messageChan <-chan *message.Message) {
-	r.logger.Info("Worker started", zap.Int("workerID", workerID))
-	defer r.logger.Info("Worker stopped", zap.Int("workerID", workerID))
-
-	for {
-		select {
-		case msg, ok := <-messageChan:
-			if !ok {
-				// Channel closed, worker should exit
-				return
-			}
-			r.processMessage(ctx, workerID, msg)
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// processMessage handles the actual message processing logic
-func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.Message) {
+// processMessage handles the actual message processing logic.
+// It returns an error when message processing or result reporting fails.
+func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error {
 	// Extract workflow information for reporting
 	var workflowID, runID, correlationID string
 	if msg.Workflow != nil {
@@ -278,7 +277,6 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 	// Start tracing span for message processing
 	ctx, span := r.tracer.Start(ctx, "runner.processMessage",
 		trace.WithAttributes(
-			attribute.Int("worker.id", workerID),
 			attribute.String("workflow.id", workflowID),
 			attribute.String("workflow.run_id", runID),
 			attribute.String("correlation.id", correlationID),
@@ -295,19 +293,17 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 	select {
 	case <-ctx.Done():
 		r.logger.Info("Skipping message processing due to context cancellation",
-			zap.Int("workerID", workerID),
 			zap.String("workflowID", workflowID),
 			zap.String("runID", runID),
 			zap.String("correlationID", correlationID))
 		span.SetStatus(codes.Error, "Context cancelled before processing")
-		return
+		return ctx.Err()
 	default:
 		// Continue with processing
 	}
 
 	start := time.Now()
-	r.logger.Info("Worker processing message",
-		zap.Int("workerID", workerID),
+	r.logger.Info("Processing message",
 		zap.String("workflowID", workflowID),
 		zap.String("runID", runID),
 		zap.String("correlationID", correlationID))
@@ -346,7 +342,6 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		processSpan.SetStatus(codes.Error, processErr.Error())
 
 		r.logger.Error("Error processing message",
-			zap.Int("workerID", workerID),
 			zap.Duration("processingTime", processingTime),
 			zap.String("workflowID", workflowID),
 			zap.String("runID", runID),
@@ -362,26 +357,43 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 				executionID = msg.Metadata["execution_id"]
 			}
 
-			reportCtx, reportCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			reportCtx, reportCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer reportCancel()
+
 			if reportErr := r.client.Messages.ReportError(reportCtx, executionID, workflowID, runID, processErr, msg.GetNATSMsg()); reportErr != nil {
-				r.logger.Error("Error reporting failure",
-					zap.Int("workerID", workerID),
+				// Critical: If we can't report the error, log it extensively but don't fail silently
+				r.logger.Error("CRITICAL: Failed to report error to Temporal workflow - workflow may hang",
 					zap.String("workflowID", workflowID),
 					zap.String("runID", runID),
 					zap.String("executionID", executionID),
+					zap.String("originalError", processErr.Error()),
 					zap.Error(reportErr))
+
+				// Try one more time with a fresh context after a brief delay
+				time.Sleep(2 * time.Second)
+				retryCtx, retryCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				if retryErr := r.client.Messages.ReportError(retryCtx, executionID, workflowID, runID, processErr, msg.GetNATSMsg()); retryErr != nil {
+					r.logger.Error("CRITICAL: Retry also failed to report error to Temporal",
+						zap.String("workflowID", workflowID),
+						zap.String("runID", runID),
+						zap.String("executionID", executionID),
+						zap.Error(retryErr))
+				} else {
+					r.logger.Info("Successfully reported error to Temporal on retry",
+						zap.String("workflowID", workflowID),
+						zap.String("executionID", executionID))
+				}
+				retryCancel()
 			}
-			reportCancel()
 		} else {
 			// If we don't have workflow info, still nak the message since processing failed
 			if nakErr := msg.Nak(); nakErr != nil {
 				r.logger.Error("Error naking message after processing failure",
-					zap.Int("workerID", workerID),
 					zap.Error(nakErr))
 			}
 		}
 
-		return
+		return processErr
 	}
 
 	// Mark spans as successful
@@ -405,7 +417,6 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 	}
 
 	r.logger.Info("Successfully processed message",
-		zap.Int("workerID", workerID),
 		zap.String("workflowID", workflowID),
 		zap.String("runID", runID),
 		zap.String("correlationID", correlationID),
@@ -413,25 +424,63 @@ func (r *Runner) processMessage(ctx context.Context, workerID int, msg *message.
 		zap.Any("resultMessage", resultMessage)) // Log the result message
 
 	// Report success if we have workflow information
+	// Use a longer timeout for large blob uploads (10 minutes to handle very large files)
 	if workflowID != "" && runID != "" {
-		reportCtx, reportCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		reportCtx, reportCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer reportCancel()
 		if reportErr := r.client.Messages.ReportSuccess(reportCtx, resultMessage, msg.GetNATSMsg()); reportErr != nil {
-			r.logger.Error("Error reporting success",
-				zap.Int("workerID", workerID),
+			r.logger.Error("Error reporting success, will report as error to workflow",
 				zap.String("workflowID", workflowID),
 				zap.String("runID", runID),
 				zap.Error(reportErr))
+
+			// Extract executionID from resultMessage metadata
+			executionID := ""
+			if resultMessage.Metadata != nil {
+				executionID = resultMessage.Metadata["execution_id"]
+			}
+
+			// Report the failure as an error to Temporal so the workflow knows about it
+			// Use longer timeout (30s) to match ReportError's retry logic
+			errorCtx, errorCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer errorCancel()
+
+			if errorReportErr := r.client.Messages.ReportError(errorCtx, executionID, workflowID, runID, reportErr, msg.GetNATSMsg()); errorReportErr != nil {
+				// Critical: If we can't report the error, log it extensively
+				r.logger.Error("CRITICAL: Failed to report error to workflow after success report failed - workflow may hang",
+					zap.String("workflowID", workflowID),
+					zap.String("runID", runID),
+					zap.String("executionID", executionID),
+					zap.String("originalError", reportErr.Error()),
+					zap.Error(errorReportErr))
+
+				// Try one more time with a fresh context
+				time.Sleep(2 * time.Second)
+				retryCtx, retryCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				if retryErr := r.client.Messages.ReportError(retryCtx, executionID, workflowID, runID, reportErr, msg.GetNATSMsg()); retryErr != nil {
+					r.logger.Error("CRITICAL: Retry also failed to report error to Temporal",
+						zap.String("workflowID", workflowID),
+						zap.String("executionID", executionID),
+						zap.Error(retryErr))
+				} else {
+					r.logger.Info("Successfully reported error to Temporal on retry",
+						zap.String("workflowID", workflowID),
+						zap.String("executionID", executionID))
+				}
+				retryCancel()
+			}
+			return reportErr
 		}
-		reportCancel()
 	} else {
 		// If we don't have workflow info, still ack the message since processing succeeded
 		if ackErr := msg.Ack(); ackErr != nil {
 			r.logger.Error("Error acking message after successful processing",
-				zap.Int("workerID", workerID),
 				zap.Error(ackErr))
+			return ackErr
 		}
 	}
 
+	return nil
 }
 
 // logConcurrencyStats periodically logs concurrency metrics for observability

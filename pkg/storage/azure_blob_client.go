@@ -2,182 +2,224 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"time"
+	"net/url"
+	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
-	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
-	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/sas"
 	"go.uber.org/zap"
 )
 
 // BlobStorageClient interface for storing large workflow results
 type BlobStorageClient interface {
 	UploadResult(ctx context.Context, blobPath string, data []byte, metadata map[string]string) (string, error)
-	GenerateSASURL(ctx context.Context, blobURL string, expiryHours int) (string, error)
-	DownloadResult(ctx context.Context, sasURL string) ([]byte, error)
+	DownloadResult(ctx context.Context, blobURL string) ([]byte, error)
 }
 
-// AzureBlobClient implements BlobStorageClient for Azure Blob Storage
+// AzureBlobClient implements BlobStorageClient for Azure Blob Storage using shared keys
+// This implementation is intentionally close to the lightweight blob client used by the
+// plugin backend so we can seamlessly target local Azurite instances over HTTP.
 type AzureBlobClient struct {
 	client        *azblob.Client
+	serviceURL    string
 	containerName string
+	credential    *azblob.SharedKeyCredential
 	logger        *zap.Logger
+	containerInit bool
 }
 
-// NewAzureBlobClient creates a new Azure Blob storage client
+// NewAzureBlobClient creates a new Azure Blob storage client from a standard connection string.
 func NewAzureBlobClient(connectionString, containerName string, logger *zap.Logger) (*AzureBlobClient, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("logger is required")
 	}
-
 	if connectionString == "" {
 		return nil, fmt.Errorf("connection string is required")
 	}
-
 	if containerName == "" {
 		return nil, fmt.Errorf("container name is required")
 	}
 
-	client, err := azblob.NewClientFromConnectionString(connectionString, nil)
+	params := parseConnectionString(connectionString)
+	accountName := params["AccountName"]
+	accountKey := params["AccountKey"]
+	serviceURL := params["BlobEndpoint"]
+	if accountName == "" || accountKey == "" {
+		return nil, fmt.Errorf("account name and key are required in the connection string")
+	}
+	if serviceURL == "" {
+		serviceURL = fmt.Sprintf("https://%s.blob.core.windows.net", accountName)
+	}
+
+	credential, err := azblob.NewSharedKeyCredential(accountName, accountKey)
+		if err != nil {
+		return nil, fmt.Errorf("failed to create shared key credential: %w", err)
+		}
+
+	var clientOpts *azblob.ClientOptions
+	if strings.HasPrefix(strings.ToLower(serviceURL), "http://") {
+		clientOpts = &azblob.ClientOptions{
+			ClientOptions: azcore.ClientOptions{
+				InsecureAllowCredentialWithHTTP: true,
+			},
+	}
+	}
+
+	client, err := azblob.NewClientWithSharedKeyCredential(serviceURL, credential, clientOpts)
 	if err != nil {
-		logger.Error("Failed to create Azure Blob client",
-			zap.String("container", containerName),
-			zap.Error(err))
 		return nil, fmt.Errorf("failed to create blob client: %w", err)
 	}
 
-	logger.Info("Created Azure Blob storage client",
-		zap.String("container", containerName))
-
 	return &AzureBlobClient{
 		client:        client,
+		serviceURL:    strings.TrimRight(serviceURL, "/"),
 		containerName: containerName,
+		credential:    credential,
 		logger:        logger,
 	}, nil
 }
 
-// UploadResult uploads a result to Azure Blob Storage
+// UploadResult uploads data to the configured container.
 func (a *AzureBlobClient) UploadResult(ctx context.Context, blobPath string, data []byte, metadata map[string]string) (string, error) {
-	containerClient := a.client.ServiceClient().NewContainerClient(a.containerName)
-	blobClient := containerClient.NewBlockBlobClient(blobPath)
+	if err := a.ensureContainer(ctx); err != nil {
+		return "", err
+	}
 
-	a.logger.Debug("Uploading result to Azure Blob",
-		zap.String("blob_path", blobPath),
-		zap.Int("size_bytes", len(data)))
-
-	// Convert metadata to *string map
-	metadataPtr := make(map[string]*string)
+	metadataPtr := make(map[string]*string, len(metadata))
 	for k, v := range metadata {
 		metadataPtr[k] = to.Ptr(v)
 	}
 
-	// Upload with metadata and content type
-	uploadOptions := &azblob.UploadBufferOptions{
-		Metadata: metadataPtr,
-		HTTPHeaders: &blob.HTTPHeaders{
-			BlobContentType: to.Ptr("application/json"),
-		},
-	}
+		containerClient := a.client.ServiceClient().NewContainerClient(a.containerName)
+		blobClient := containerClient.NewBlockBlobClient(blobPath)
 
-	_, err := blobClient.UploadBuffer(ctx, data, uploadOptions)
-	if err != nil {
-		a.logger.Error("Failed to upload to blob storage",
-			zap.String("blob_path", blobPath),
-			zap.Int("size", len(data)),
-			zap.Error(err))
-		return "", fmt.Errorf("blob upload failed: %w", err)
-	}
+	_, err := blobClient.UploadBuffer(ctx, data, &azblob.UploadBufferOptions{
+			Metadata: metadataPtr,
+			HTTPHeaders: &blob.HTTPHeaders{
+				BlobContentType: to.Ptr("application/json"),
+			},
+	})
+		if err != nil {
+			a.logger.Error("Failed to upload to blob storage",
+				zap.String("blob_path", blobPath),
+				zap.Int("size", len(data)),
+				zap.Error(err))
+			return "", fmt.Errorf("blob upload failed: %w", err)
+		}
 
-	blobURL := blobClient.URL()
-
-	a.logger.Info("Successfully uploaded result to blob storage",
+	a.logger.Info("Successfully uploaded blob",
 		zap.String("blob_path", blobPath),
-		zap.String("blob_url", blobURL),
 		zap.Int("size_bytes", len(data)))
 
-	return blobURL, nil
+	return blobClient.URL(), nil
 }
 
-// GenerateSASURL creates a time-limited SAS URL for blob access
-func (a *AzureBlobClient) GenerateSASURL(ctx context.Context, blobURL string, expiryHours int) (string, error) {
-	a.logger.Debug("Generating SAS URL",
-		zap.String("blob_url", blobURL),
-		zap.Int("expiry_hours", expiryHours))
+// DownloadResult downloads blob contents using the shared-key client.
+func (a *AzureBlobClient) DownloadResult(ctx context.Context, reference string) ([]byte, error) {
+	blobPath, err := a.extractBlobPath(reference)
+		if err != nil {
+		return nil, err
+	}
 
-	// Parse the blob URL to get container and blob name
 	containerClient := a.client.ServiceClient().NewContainerClient(a.containerName)
+	blobClient := containerClient.NewBlobClient(blobPath)
 
-	// Extract blob name from URL (last part after container name)
-	// Format: https://{account}.blob.core.windows.net/{container}/{blobPath}
-	blobName := blobURL[len(containerClient.URL())+1:] // +1 for trailing slash
-
-	blobClient := containerClient.NewBlobClient(blobName)
-
-	// Set expiry time
-	expiryTime := time.Now().Add(time.Duration(expiryHours) * time.Hour)
-
-	// Create SAS permissions (read only)
-	permissions := sas.BlobPermissions{
-		Read: true,
-	}
-
-	// Generate SAS URL
-	sasURL, err := blobClient.GetSASURL(permissions, expiryTime, nil)
+	resp, err := blobClient.DownloadStream(ctx, nil)
 	if err != nil {
-		a.logger.Error("Failed to generate SAS URL",
-			zap.String("blob_url", blobURL),
-			zap.Error(err))
-		return "", fmt.Errorf("failed to generate SAS URL: %w", err)
+		return nil, fmt.Errorf("failed to download blob: %w", err)
 	}
+	defer resp.Body.Close()
 
-	a.logger.Debug("Generated SAS URL",
-		zap.String("blob_url", blobURL),
-		zap.Time("expiry", expiryTime))
-
-	return sasURL, nil
-}
-
-// DownloadResult downloads a result from Azure Blob using SAS URL
-func (a *AzureBlobClient) DownloadResult(ctx context.Context, sasURL string) ([]byte, error) {
-	a.logger.Debug("Downloading result from blob",
-		zap.String("sas_url_prefix", sasURL[:min(50, len(sasURL))]))
-
-	// Create block blob client from SAS URL (pre-authenticated, no credentials needed)
-	blobClient, err := blockblob.NewClientWithNoCredential(sasURL, nil)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		a.logger.Error("Failed to create blob client from SAS URL", zap.Error(err))
-		return nil, fmt.Errorf("failed to create client: %w", err)
+		return nil, fmt.Errorf("failed to read blob data: %w", err)
 	}
-
-	// Download the blob
-	downloadResponse, err := blobClient.DownloadStream(ctx, nil)
-	if err != nil {
-		a.logger.Error("Failed to download from blob", zap.Error(err))
-		return nil, fmt.Errorf("failed to download: %w", err)
-	}
-	defer downloadResponse.Body.Close()
-
-	// Read all data
-	data, err := io.ReadAll(downloadResponse.Body)
-	if err != nil {
-		a.logger.Error("Failed to read blob data", zap.Error(err))
-		return nil, fmt.Errorf("failed to read data: %w", err)
-	}
-
-	a.logger.Debug("Successfully downloaded result",
-		zap.Int("size_bytes", len(data)))
 
 	return data, nil
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+func (a *AzureBlobClient) ensureContainer(ctx context.Context) error {
+	if a.containerInit {
+		return nil
 	}
-	return b
+
+	_, err := a.client.CreateContainer(ctx, a.containerName, nil)
+	if err != nil {
+		var respErr *azcore.ResponseError
+		if strings.Contains(strings.ToLower(err.Error()), "containeralreadyexists") {
+			a.containerInit = true
+			return nil
+		}
+		if errors.As(err, &respErr) {
+			if respErr.ErrorCode == "ContainerAlreadyExists" {
+				a.containerInit = true
+				return nil
+			}
+		}
+		return fmt.Errorf("failed to ensure container: %w", err)
+	}
+
+	a.containerInit = true
+	return nil
 }
 
+func parseConnectionString(connectionString string) map[string]string {
+	parts := strings.Split(connectionString, ";")
+	params := make(map[string]string, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		idx := strings.Index(part, "=")
+		if idx <= 0 {
+			continue
+		}
+		key := part[:idx]
+		value := part[idx+1:]
+		params[key] = value
+	}
+	return params
+}
+
+func (a *AzureBlobClient) extractBlobPath(reference string) (string, error) {
+	ref := strings.TrimSpace(reference)
+	if ref == "" {
+		return "", fmt.Errorf("blob reference is required")
+	}
+
+	lowerSvc := strings.ToLower(a.serviceURL)
+	lowerRef := strings.ToLower(ref)
+	if strings.HasPrefix(lowerRef, lowerSvc) {
+		ref = ref[len(a.serviceURL):]
+	}
+
+	if idx := strings.Index(ref, "?"); idx != -1 {
+		ref = ref[:idx]
+	}
+
+	ref = strings.TrimSpace(ref)
+	decodedRef, err := url.PathUnescape(ref)
+	if err == nil && decodedRef != "" {
+		ref = decodedRef
+	}
+
+	u, err := url.Parse(ref)
+	if err == nil && u.Host != "" {
+		ref = u.Path
+	}
+
+	ref = strings.TrimPrefix(ref, "/")
+	ref = strings.TrimPrefix(ref, a.containerName+"/")
+
+	if ref == "" {
+		return "", fmt.Errorf("blob path is empty")
+	}
+
+	return ref, nil
+}
