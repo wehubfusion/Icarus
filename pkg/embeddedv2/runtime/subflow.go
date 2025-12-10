@@ -74,7 +74,9 @@ type SubflowConfig struct {
 }
 
 // ProcessItem processes a single parent item through all embedded nodes.
-// It handles mid-flow iteration when nodes output arrays.
+// It handles mid-flow iteration by:
+// Phase 1: Process all nodes before iteration starts (pre-iteration)
+// Phase 2: For each array item, process ALL remaining subflow nodes
 func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) BatchResult {
 	start := time.Now()
 	res := BatchResult{
@@ -90,8 +92,9 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 	default:
 	}
 
-	store := NewNodeOutputStore()
-	store.SetSingleOutput(sp.parentNodeId, item.Data)
+	// Pre-iteration store holds outputs from nodes before iteration starts
+	preIterStore := NewNodeOutputStore()
+	preIterStore.SetSingleOutput(sp.parentNodeId, item.Data)
 
 	// Flatten parent data into shared output
 	if sp.arrayPath != "" {
@@ -102,8 +105,9 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 		MergeMaps(res.Output, parentFlat)
 	}
 
-	// Track active iteration
-	var activeIter *IterationState
+	// Phase 1: Process nodes until we find one that starts iteration
+	var iterStartIndex int = -1
+	var iterState IterationState
 
 	for i, node := range sp.nodes {
 		select {
@@ -116,7 +120,7 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 		config := sp.nodeConfigs[i]
 
 		// Should we skip due to event mapping?
-		if sp.shouldSkipNode(config, store) {
+		if sp.shouldSkipNode(config, preIterStore) {
 			sp.logger.Debug("skipping node due to event trigger",
 				Field{Key: "node_id", Value: config.NodeId},
 				Field{Key: "node_label", Value: config.Label},
@@ -125,35 +129,61 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 			continue
 		}
 
-		// Analyze if this node starts a new iteration
-		needsIter, iterState := sp.analyzeNodeIteration(config, store, activeIter)
+		// Check if this node starts iteration
+		needsIter, state := sp.analyzeNodeIteration(config, preIterStore, nil)
 		if needsIter {
-			// Run node for each item
-			err := sp.processNodeWithIteration(ctx, node, config, store, iterState, &res)
-			if err != nil {
-				res.Error = err
-				return res
-			}
-			// update active iteration
-			activeIter = &iterState
-			continue
+			iterStartIndex = i
+			iterState = state
+			sp.logger.Debug("iteration detected, starting per-item subflow processing",
+				Field{Key: "node_id", Value: config.NodeId},
+				Field{Key: "node_label", Value: config.Label},
+				Field{Key: "total_items", Value: state.TotalItems},
+				Field{Key: "start_index", Value: i},
+			)
+			break
 		}
 
-		// If inside an active iteration and this node should inherit it
-		if activeIter != nil && sp.nodeInheritsIteration(config, activeIter, store) {
-			err := sp.processNodeInActiveIteration(ctx, node, config, store, activeIter, &res)
-			if err != nil {
-				res.Error = err
-				return res
-			}
-			continue
-		}
-
-		// Normal single execution
-		err := sp.processNodeSingle(ctx, node, config, store, res.Output)
+		// Normal single execution (pre-iteration)
+		err := sp.processNodeSingle(ctx, node, config, preIterStore, res.Output)
 		if err != nil {
 			res.Error = err
 			return res
+		}
+	}
+
+	// Phase 2: If iteration found, process entire subflow for each item
+	if iterStartIndex >= 0 {
+		// Prepare res.Items with empty maps for each iteration
+		res.Items = make([]map[string]interface{}, iterState.TotalItems)
+		for i := range res.Items {
+			res.Items[i] = make(map[string]interface{})
+		}
+
+		// Process subflow for each item
+		for itemIdx := 0; itemIdx < iterState.TotalItems; itemIdx++ {
+			select {
+			case <-ctx.Done():
+				res.Error = ctx.Err()
+				return res
+			default:
+			}
+
+			// Get current item from the iteration array
+			currentItem := iterState.Items[itemIdx]
+			currentItemMap, ok := currentItem.(map[string]interface{})
+			if !ok {
+				currentItemMap = map[string]interface{}{"value": currentItem}
+			}
+
+			// Create isolated store for this item, inheriting pre-iteration outputs
+			itemStore := sp.createItemStore(preIterStore, currentItemMap, iterState, itemIdx)
+
+			// Process all subflow nodes (from iterStartIndex to end) for this item
+			err := sp.processSubflowForItem(ctx, iterStartIndex, itemStore, iterState, itemIdx, &res)
+			if err != nil {
+				res.Error = err
+				return res
+			}
 		}
 	}
 
@@ -190,11 +220,12 @@ func (sp *SubflowProcessor) analyzeNodeIteration(
 			for _, v := range sourceOutput {
 				if arr, ok := v.([]interface{}); ok && len(arr) > 0 {
 					return true, IterationState{
-						IsActive:     true,
-						ArrayPath:    "",
-						SourceNodeId: m.SourceNodeId,
-						TotalItems:   len(arr),
-						Items:        arr,
+						IsActive:          true,
+						ArrayPath:         "",
+						SourceNodeId:      m.SourceNodeId,
+						InitiatedByNodeId: config.NodeId,
+						TotalItems:        len(arr),
+						Items:             arr,
 					}
 				}
 			}
@@ -205,11 +236,12 @@ func (sp *SubflowProcessor) analyzeNodeIteration(
 		val := GetNestedValue(sourceOutput, arrayPath)
 		if arr, ok := val.([]interface{}); ok && len(arr) > 0 {
 			return true, IterationState{
-				IsActive:     true,
-				ArrayPath:    arrayPath,
-				SourceNodeId: m.SourceNodeId,
-				TotalItems:   len(arr),
-				Items:        arr,
+				IsActive:          true,
+				ArrayPath:         arrayPath,
+				SourceNodeId:      m.SourceNodeId,
+				InitiatedByNodeId: config.NodeId,
+				TotalItems:        len(arr),
+				Items:             arr,
 			}
 		}
 	}
@@ -217,67 +249,65 @@ func (sp *SubflowProcessor) analyzeNodeIteration(
 	return false, IterationState{}
 }
 
-// nodeInheritsIteration checks if a node should run within an existing iteration.
-func (sp *SubflowProcessor) nodeInheritsIteration(
-	config EmbeddedNodeConfig,
-	active *IterationState,
-	store *NodeOutputStore,
-) bool {
-	if active == nil || !active.IsActive {
-		return false
+// createItemStore creates an isolated NodeOutputStore for processing one item.
+// It inherits all pre-iteration outputs and stores the current iteration item.
+func (sp *SubflowProcessor) createItemStore(
+	preIterStore *NodeOutputStore,
+	currentItem map[string]interface{},
+	iter IterationState,
+	itemIndex int,
+) *NodeOutputStore {
+	itemStore := NewNodeOutputStore()
+
+	// Copy all pre-iteration single outputs
+	for nodeId, output := range preIterStore.GetAllSingleOutputs() {
+		itemStore.SetSingleOutput(nodeId, output)
 	}
 
-	for _, m := range config.GetFieldMappings() {
-		if m.SourceNodeId == active.SourceNodeId {
-			return true
-		}
-		if store.HasIteratedOutput(m.SourceNodeId) {
-			return true
-		}
-	}
+	// Store the current item as a special entry for the iteration source
+	// This allows nodes to reference the current item via the source node ID
+	itemStore.SetCurrentIterationItem(iter.SourceNodeId, currentItem, itemIndex)
 
-	return false
+	return itemStore
 }
 
-// processNodeWithIteration processes a node that starts a new iteration.
-func (sp *SubflowProcessor) processNodeWithIteration(
+// processSubflowForItem processes ALL subflow nodes (from startIndex to end) for ONE item.
+// This ensures the entire subflow runs per-item rather than per-node.
+func (sp *SubflowProcessor) processSubflowForItem(
 	ctx context.Context,
-	node EmbeddedNode,
-	config EmbeddedNodeConfig,
-	store *NodeOutputStore,
+	startIndex int,
+	itemStore *NodeOutputStore,
 	iter IterationState,
+	itemIndex int,
 	res *BatchResult,
 ) error {
-	sp.logger.Debug("processing node with iteration",
-		Field{Key: "node_id", Value: config.NodeId},
-		Field{Key: "array_path", Value: iter.ArrayPath},
-		Field{Key: "total_items", Value: iter.TotalItems},
+	sp.logger.Debug("processing subflow for item",
+		Field{Key: "item_index", Value: itemIndex},
+		Field{Key: "start_node_index", Value: startIndex},
+		Field{Key: "total_nodes", Value: len(sp.nodes) - startIndex},
 	)
 
-	outputs := make([]map[string]interface{}, iter.TotalItems)
-
-	for i := 0; i < iter.TotalItems; i++ {
+	for i := startIndex; i < len(sp.nodes); i++ {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
-		// current item
-		item := iter.Items[i]
-		itemMap, ok := item.(map[string]interface{})
-		if !ok {
-			itemMap = map[string]interface{}{"value": item}
-		}
+		node := sp.nodes[i]
+		config := sp.nodeConfigs[i]
 
-		// build input for this iteration
-		input := sp.buildIteratedNodeInput(config, store, itemMap, iter, i)
-
-		// event triggers per iteration
-		if sp.shouldSkipNodeForIteration(config, store, i) {
-			outputs[i] = make(map[string]interface{})
+		// Check event triggers for this item
+		if sp.shouldSkipNodeForItem(config, itemStore, iter, itemIndex) {
+			sp.logger.Debug("skipping node for item due to event trigger",
+				Field{Key: "node_id", Value: config.NodeId},
+				Field{Key: "item_index", Value: itemIndex},
+			)
 			continue
 		}
+
+		// Build input for this node using current item context
+		input := sp.buildItemInput(config, itemStore, iter, itemIndex)
 
 		procInput := ProcessInput{
 			Ctx:           ctx,
@@ -287,7 +317,7 @@ func (sp *SubflowProcessor) processNodeWithIteration(
 			NodeId:        config.NodeId,
 			PluginType:    config.PluginType,
 			Label:         config.Label,
-			ItemIndex:     i,
+			ItemIndex:     itemIndex,
 			TotalItems:    iter.TotalItems,
 			IsIteration:   true,
 			IterationPath: iter.ArrayPath,
@@ -296,132 +326,131 @@ func (sp *SubflowProcessor) processNodeWithIteration(
 		start := time.Now()
 		out := node.Process(procInput)
 		dur := time.Since(start).Nanoseconds()
+
 		if out.Error != nil {
 			sp.metrics.RecordError()
-			return fmt.Errorf("node %s failed at iteration %d: %w", config.Label, i, out.Error)
+			return fmt.Errorf("node %s failed at item %d: %w", config.Label, itemIndex, out.Error)
 		}
 
 		if out.Skipped {
 			sp.metrics.RecordSkipped()
-			outputs[i] = make(map[string]interface{})
+			sp.logger.Debug("node skipped for item",
+				Field{Key: "node_id", Value: config.NodeId},
+				Field{Key: "item_index", Value: itemIndex},
+				Field{Key: "reason", Value: out.SkipReason},
+			)
 			continue
 		}
 
 		sp.metrics.RecordProcessed(dur)
-		outputs[i] = out.Data
 
-		// flatten per item and merge to shared result with index notation
-		flat := FlattenMapWithIndex(out.Data, config.NodeId, "", i)
+		// Store output in item store for downstream nodes in this item's subflow
+		itemStore.SetSingleOutput(config.NodeId, out.Data)
+
+		// Flatten and merge to shared result with index notation
+		flat := FlattenMapWithIndex(out.Data, config.NodeId, "", itemIndex)
 		MergeMaps(res.Output, flat)
-	}
 
-	// store iterated outputs
-	store.SetIteratedOutputs(config.NodeId, outputs)
-	store.SetIterationInfo(config.NodeId, IterationState{
-		IsActive:     true,
-		ArrayPath:    iter.ArrayPath,
-		SourceNodeId: iter.SourceNodeId,
-		TotalItems:   iter.TotalItems,
-		Items:        iter.Items,
-	})
-
-	// append outputs to BatchResult.Items (ensure length)
-	if len(res.Items) < iter.TotalItems {
-		for len(res.Items) < iter.TotalItems {
-			res.Items = append(res.Items, make(map[string]interface{}))
-		}
-	}
-	for i := 0; i < iter.TotalItems; i++ {
-		if outputs[i] != nil {
-			itemFlat := FlattenMap(outputs[i], config.NodeId, "")
-			MergeMaps(res.Items[i], itemFlat)
-		}
+		// Also merge to this item's entry in res.Items
+		itemFlat := FlattenMap(out.Data, config.NodeId, "")
+		MergeMaps(res.Items[itemIndex], itemFlat)
 	}
 
 	return nil
 }
 
-// processNodeInActiveIteration processes a node within an existing iteration.
-func (sp *SubflowProcessor) processNodeInActiveIteration(
-	ctx context.Context,
-	node EmbeddedNode,
+// buildItemInput builds input for a node processing a specific item.
+// It handles four cases for each mapping:
+// 1. Source is the iteration source -> extract from current item
+// 2. Source was processed in this item's subflow -> get from itemStore
+// 3. Source is pre-iteration with array notation (//) -> extract at index
+// 4. Source is pre-iteration without array notation -> pass full value (shared)
+func (sp *SubflowProcessor) buildItemInput(
 	config EmbeddedNodeConfig,
-	store *NodeOutputStore,
-	active *IterationState,
-	res *BatchResult,
-) error {
-	sp.logger.Debug("processing node in active iteration",
-		Field{Key: "node_id", Value: config.NodeId},
-		Field{Key: "iterations", Value: active.TotalItems},
-	)
+	itemStore *NodeOutputStore,
+	iter IterationState,
+	itemIndex int,
+) map[string]interface{} {
+	input := make(map[string]interface{})
 
-	outputs := make([]map[string]interface{}, active.TotalItems)
+	for _, m := range config.GetFieldMappings() {
+		var val interface{}
 
-	for i := 0; i < active.TotalItems; i++ {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		// Check if this is from the iteration source's current item
+		if m.SourceNodeId == iter.SourceNodeId {
+			// Get current item from store
+			currentItem, idx := itemStore.GetCurrentIterationItem(m.SourceNodeId)
+			if currentItem != nil && idx == itemIndex {
+				_, fieldPath, hasArray := ExtractArrayPath(m.SourceEndpoint)
+				if hasArray && fieldPath != "" {
+					val = GetNestedValue(currentItem, fieldPath)
+				} else {
+					val = currentItem
+				}
+			}
+		} else if sourceOut, ok := itemStore.GetOutput(m.SourceNodeId, -1); ok {
+			// Source exists in itemStore (either pre-iteration or processed in this subflow)
+			// Use extractValueAtIndex to handle array notation vs direct path
+			val = sp.extractValueAtIndex(sourceOut, m.SourceEndpoint, itemIndex)
+		}
+
+		if val == nil {
+			continue
+		}
+
+		for _, dest := range m.DestinationEndpoints {
+			SetNestedValue(input, dest, val)
+		}
+	}
+
+	return input
+}
+
+// shouldSkipNodeForItem checks event triggers for a specific item.
+// Handles three cases:
+// 1. Event source is the iteration source -> check current item
+// 2. Event source in itemStore -> check value
+// 3. Event source not found -> skip
+func (sp *SubflowProcessor) shouldSkipNodeForItem(
+	config EmbeddedNodeConfig,
+	itemStore *NodeOutputStore,
+	iter IterationState,
+	itemIndex int,
+) bool {
+	for _, m := range config.GetEventMappings() {
+		var eventVal interface{}
+		var found bool
+
+		if m.SourceNodeId == iter.SourceNodeId {
+			// Event from iteration source - check current item
+			currentItem, idx := itemStore.GetCurrentIterationItem(m.SourceNodeId)
+			if currentItem != nil && idx == itemIndex {
+				eventField := strings.TrimPrefix(m.SourceEndpoint, "/")
+				eventVal, found = currentItem[eventField]
+			}
+		} else if sourceOut, ok := itemStore.GetOutput(m.SourceNodeId, -1); ok {
+			// Event from itemStore
+			eventField := strings.TrimPrefix(m.SourceEndpoint, "/")
+			eventVal, found = sourceOut[eventField]
+		}
+
+		if !found {
+			return true
+		}
+
+		switch v := eventVal.(type) {
+		case bool:
+			if !v {
+				return true
+			}
 		default:
-		}
-
-		input := sp.buildInheritedIterationInput(config, store, i)
-
-		if sp.shouldSkipNodeForIteration(config, store, i) {
-			outputs[i] = make(map[string]interface{})
-			continue
-		}
-
-		procInput := ProcessInput{
-			Ctx:           ctx,
-			Data:          input,
-			Config:        nil,
-			RawConfig:     config.NodeConfig.Config,
-			NodeId:        config.NodeId,
-			PluginType:    config.PluginType,
-			Label:         config.Label,
-			ItemIndex:     i,
-			TotalItems:    active.TotalItems,
-			IsIteration:   true,
-			IterationPath: active.ArrayPath,
-		}
-
-		start := time.Now()
-		out := node.Process(procInput)
-		dur := time.Since(start).Nanoseconds()
-		if out.Error != nil {
-			sp.metrics.RecordError()
-			return fmt.Errorf("node %s failed at iteration %d: %w", config.Label, i, out.Error)
-		}
-
-		if out.Skipped {
-			sp.metrics.RecordSkipped()
-			outputs[i] = make(map[string]interface{})
-			continue
-		}
-
-		sp.metrics.RecordProcessed(dur)
-		outputs[i] = out.Data
-
-		flat := FlattenMapWithIndex(out.Data, config.NodeId, "", i)
-		MergeMaps(res.Output, flat)
-	}
-
-	store.SetIteratedOutputs(config.NodeId, outputs)
-
-	if len(res.Items) < active.TotalItems {
-		for len(res.Items) < active.TotalItems {
-			res.Items = append(res.Items, make(map[string]interface{}))
+			if v == nil {
+				return true
+			}
 		}
 	}
 
-	for i := 0; i < active.TotalItems; i++ {
-		if outputs[i] != nil {
-			itemFlat := FlattenMap(outputs[i], config.NodeId, "")
-			MergeMaps(res.Items[i], itemFlat)
-		}
-	}
-
-	return nil
+	return false
 }
 
 // processNodeSingle processes a node without iteration.
@@ -499,84 +528,6 @@ func (sp *SubflowProcessor) buildSingleNodeInput(
 	return input
 }
 
-// buildIteratedNodeInput builds input for a node starting iteration.
-func (sp *SubflowProcessor) buildIteratedNodeInput(
-	config EmbeddedNodeConfig,
-	store *NodeOutputStore,
-	currentItem map[string]interface{},
-	iter IterationState,
-	index int,
-) map[string]interface{} {
-	input := make(map[string]interface{})
-
-	for _, m := range config.GetFieldMappings() {
-		var val interface{}
-
-		if m.Iterate && m.SourceNodeId == iter.SourceNodeId {
-			// use current item
-			_, fieldPath, hasArray := ExtractArrayPath(m.SourceEndpoint)
-			if hasArray && fieldPath != "" {
-				val = GetNestedValue(currentItem, fieldPath)
-			} else {
-				val = currentItem
-			}
-		} else if store.HasIteratedOutput(m.SourceNodeId) {
-			if outputs, ok := store.GetAllIteratedOutputs(m.SourceNodeId); ok && index < len(outputs) {
-				val = sp.extractValue(outputs[index], m.SourceEndpoint)
-			}
-		} else {
-			if sourceOut, ok := store.GetOutput(m.SourceNodeId, -1); ok {
-				// For non-iterated sources with array notation, extract at index
-				val = sp.extractValueAtIndex(sourceOut, m.SourceEndpoint, index)
-			}
-		}
-
-		if val == nil {
-			continue
-		}
-
-		for _, dest := range m.DestinationEndpoints {
-			SetNestedValue(input, dest, val)
-		}
-	}
-
-	return input
-}
-
-// buildInheritedIterationInput builds input for a node inheriting iteration.
-func (sp *SubflowProcessor) buildInheritedIterationInput(
-	config EmbeddedNodeConfig,
-	store *NodeOutputStore,
-	index int,
-) map[string]interface{} {
-	input := make(map[string]interface{})
-
-	for _, m := range config.GetFieldMappings() {
-		var val interface{}
-		if store.HasIteratedOutput(m.SourceNodeId) {
-			if outputs, ok := store.GetAllIteratedOutputs(m.SourceNodeId); ok && index < len(outputs) {
-				val = sp.extractValue(outputs[index], m.SourceEndpoint)
-			}
-		} else {
-			if sourceOut, ok := store.GetOutput(m.SourceNodeId, -1); ok {
-				// Check if endpoint has array notation and source has array data
-				// In this case, extract the i-th item from the array
-				val = sp.extractValueAtIndex(sourceOut, m.SourceEndpoint, index)
-			}
-		}
-
-		if val == nil {
-			continue
-		}
-
-		for _, dest := range m.DestinationEndpoints {
-			SetNestedValue(input, dest, val)
-		}
-	}
-
-	return input
-}
-
 // shouldSkipNode checks if a node should be skipped due to event triggers.
 func (sp *SubflowProcessor) shouldSkipNode(
 	config EmbeddedNodeConfig,
@@ -584,52 +535,6 @@ func (sp *SubflowProcessor) shouldSkipNode(
 ) bool {
 	for _, m := range config.GetEventMappings() {
 		sourceOut, ok := store.GetOutput(m.SourceNodeId, -1)
-		if !ok {
-			return true
-		}
-
-		eventField := strings.TrimPrefix(m.SourceEndpoint, "/")
-		eventVal, exists := sourceOut[eventField]
-		if !exists {
-			return true
-		}
-
-		switch v := eventVal.(type) {
-		case bool:
-			if !v {
-				return true
-			}
-		default:
-			if v == nil {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-// shouldSkipNodeForIteration checks event triggers for a specific iteration index.
-func (sp *SubflowProcessor) shouldSkipNodeForIteration(
-	config EmbeddedNodeConfig,
-	store *NodeOutputStore,
-	index int,
-) bool {
-	for _, m := range config.GetEventMappings() {
-		var sourceOut map[string]interface{}
-		var ok bool
-
-		if store.HasIteratedOutput(m.SourceNodeId) {
-			outputs, exists := store.GetAllIteratedOutputs(m.SourceNodeId)
-			if !exists || index >= len(outputs) {
-				return true
-			}
-			sourceOut = outputs[index]
-			ok = true
-		} else {
-			sourceOut, ok = store.GetOutput(m.SourceNodeId, -1)
-		}
-
 		if !ok {
 			return true
 		}

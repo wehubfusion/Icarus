@@ -340,6 +340,8 @@ type IterationState struct {
 	ArrayPath string
 	// SourceNodeId is the node that produced the array
 	SourceNodeId string
+	// InitiatedByNodeId is the node that started the iteration (has iterate:true)
+	InitiatedByNodeId string
 	// TotalItems is the total number of items
 	TotalItems int
 	// Items are the actual array items
@@ -357,14 +359,24 @@ type NodeOutputStore struct {
 	IteratedOutputs map[string][]map[string]interface{}
 	// IterationInfo tracks which nodes produced arrays and their state
 	IterationInfo map[string]IterationState
+	// CurrentIterationItems stores the current item being processed for each iteration source
+	// Key: sourceNodeId, Value: {item, index}
+	CurrentIterationItems map[string]currentIterationItem
+}
+
+// currentIterationItem holds the current item and its index for iteration
+type currentIterationItem struct {
+	Item  map[string]interface{}
+	Index int
 }
 
 // NewNodeOutputStore creates a new output store
 func NewNodeOutputStore() *NodeOutputStore {
 	return &NodeOutputStore{
-		SingleOutputs:   make(map[string]map[string]interface{}),
-		IteratedOutputs: make(map[string][]map[string]interface{}),
-		IterationInfo:   make(map[string]IterationState),
+		SingleOutputs:         make(map[string]map[string]interface{}),
+		IteratedOutputs:       make(map[string][]map[string]interface{}),
+		IterationInfo:         make(map[string]IterationState),
+		CurrentIterationItems: make(map[string]currentIterationItem),
 	}
 }
 
@@ -418,6 +430,27 @@ func (s *NodeOutputStore) SetIterationInfo(nodeId string, info IterationState) {
 func (s *NodeOutputStore) GetIterationInfo(nodeId string) (IterationState, bool) {
 	info, ok := s.IterationInfo[nodeId]
 	return info, ok
+}
+
+// GetAllSingleOutputs returns all single (non-iterated) outputs
+func (s *NodeOutputStore) GetAllSingleOutputs() map[string]map[string]interface{} {
+	return s.SingleOutputs
+}
+
+// SetCurrentIterationItem stores the current iteration item for a source node
+func (s *NodeOutputStore) SetCurrentIterationItem(sourceNodeId string, item map[string]interface{}, index int) {
+	s.CurrentIterationItems[sourceNodeId] = currentIterationItem{
+		Item:  item,
+		Index: index,
+	}
+}
+
+// GetCurrentIterationItem retrieves the current iteration item for a source node
+func (s *NodeOutputStore) GetCurrentIterationItem(sourceNodeId string) (map[string]interface{}, int) {
+	if ci, ok := s.CurrentIterationItems[sourceNodeId]; ok {
+		return ci.Item, ci.Index
+	}
+	return nil, -1
 }
 
 // IterationContext holds information about array iteration at the parent level.
