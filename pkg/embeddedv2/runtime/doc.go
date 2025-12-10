@@ -1,8 +1,8 @@
 // Package runtime provides the embedded node processing runtime for Icarus.
 //
 // The runtime handles the execution of embedded nodes within execution units,
-// supporting both sequential and concurrent processing with integration to
-// the concurrency package's Limiter for rate limiting.
+// supporting concurrent processing at both parent-level and mid-flow iteration
+// with integration to the concurrency package's Limiter for rate limiting.
 //
 // # Key Components
 //
@@ -15,7 +15,7 @@
 // SubflowProcessor: Processes embedded nodes for a single item (array element).
 // Implements ItemProcessor for use with WorkerPool. Uses a two-phase approach:
 // Phase 1 processes pre-iteration nodes, Phase 2 processes the entire subflow
-// per-item for proper iteration handling.
+// per-item with concurrent workers for proper iteration handling.
 //
 // WorkerPool: Manages concurrent processing with integration to the limiter.
 //
@@ -35,10 +35,10 @@
 //
 // Only ONE node needs iterate:true to start iteration over an array.
 // All downstream nodes automatically inherit the iteration context. Processing
-// follows a per-item subflow model:
+// follows a per-item subflow model with concurrent execution:
 //
 //   - Phase 1: Pre-iteration nodes run once (before any iterate:true mapping)
-//   - Phase 2: For each array item, ALL remaining nodes run in sequence
+//   - Phase 2: Items processed concurrently, each through ALL remaining nodes
 //
 // This ensures Item[0] flows through all subflow nodes, then Item[1], etc.
 // rather than processing all items at each node sequentially.
@@ -50,12 +50,30 @@
 // Event triggers are evaluated per-item during iteration, allowing conditional
 // execution of nodes based on each array item's values.
 //
+// # Concurrency Model
+//
+// Both parent-level and mid-flow iteration use concurrent worker pools:
+//
+// Parent-Level Iteration (processWithConcurrency):
+//   - Parent outputs array (e.g., {data: [...]})
+//   - WorkerPool processes array items concurrently
+//   - Each worker runs SubflowProcessor.ProcessItem() for one item
+//
+// Mid-Flow Iteration (processMidFlowConcurrently):
+//   - Embedded node produces array mid-flow
+//   - SubflowProcessor creates internal worker pool
+//   - Concurrent processing of mid-flow array items
+//   - Shares limiter with parent-level for rate limiting
+//
+// The shared limiter ensures total concurrency across both levels stays within
+// configured limits, preventing resource exhaustion from nested parallelism.
+//
 // # Per-Item Subflow Processing
 //
 // When a node has iterate:true on a mapping from an array source:
 //
 //  1. Pre-iteration nodes (before iterate:true) run once, output stored
-//  2. For itemIndex := 0 to len(array):
+//  2. Worker pool processes items concurrently:
 //     - Create isolated itemStore inheriting pre-iteration outputs
 //     - Store current array item in itemStore
 //     - Process ALL remaining nodes for this item

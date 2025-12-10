@@ -5,19 +5,25 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/wehubfusion/Icarus/pkg/concurrency"
 )
 
 // SubflowProcessor processes embedded nodes for a single parent item.
 // It supports mid-flow iteration by detecting mappings with iterate:true
 // and running nodes per-item when necessary.
+// Mid-flow iteration uses concurrent processing when a limiter is provided.
 type SubflowProcessor struct {
-	parentNodeId string
-	nodes        []EmbeddedNode
-	nodeConfigs  []EmbeddedNodeConfig
-	arrayPath    string
-	logger       Logger
-	metrics      MetricsCollector
+	parentNodeId     string
+	nodes            []EmbeddedNode
+	nodeConfigs      []EmbeddedNodeConfig
+	arrayPath        string
+	logger           Logger
+	metrics          MetricsCollector
+	limiter          *concurrency.Limiter
+	workerPoolConfig WorkerPoolConfig
 }
 
 // NewSubflowProcessor creates a new subflow processor.
@@ -53,24 +59,31 @@ func NewSubflowProcessor(config SubflowConfig) (*SubflowProcessor, error) {
 		metrics = &NoOpMetricsCollector{}
 	}
 
+	workerPoolCfg := config.WorkerPoolConfig
+	workerPoolCfg.Validate()
+
 	return &SubflowProcessor{
-		parentNodeId: config.ParentNodeId,
-		nodes:        nodes,
-		nodeConfigs:  sortedConfigs,
-		arrayPath:    config.ArrayPath,
-		logger:       logger,
-		metrics:      metrics,
+		parentNodeId:     config.ParentNodeId,
+		nodes:            nodes,
+		nodeConfigs:      sortedConfigs,
+		arrayPath:        config.ArrayPath,
+		logger:           logger,
+		metrics:          metrics,
+		limiter:          config.Limiter,
+		workerPoolConfig: workerPoolCfg,
 	}, nil
 }
 
 // SubflowConfig holds configuration for creating a SubflowProcessor
 type SubflowConfig struct {
-	ParentNodeId string
-	NodeConfigs  []EmbeddedNodeConfig
-	Factory      EmbeddedNodeFactory
-	ArrayPath    string
-	Logger       Logger
-	Metrics      MetricsCollector
+	ParentNodeId     string
+	NodeConfigs      []EmbeddedNodeConfig
+	Factory          EmbeddedNodeFactory
+	ArrayPath        string
+	Logger           Logger
+	Metrics          MetricsCollector
+	Limiter          *concurrency.Limiter // Optional: enables concurrent mid-flow iteration
+	WorkerPoolConfig WorkerPoolConfig     // Config for mid-flow worker pool
 }
 
 // ProcessItem processes a single parent item through all embedded nodes.
@@ -151,7 +164,7 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 		}
 	}
 
-	// Phase 2: If iteration found, process entire subflow for each item
+	// Phase 2: If iteration found, process entire subflow for each item concurrently
 	if iterStartIndex >= 0 {
 		// Prepare res.Items with empty maps for each iteration
 		res.Items = make([]map[string]interface{}, iterState.TotalItems)
@@ -159,36 +172,264 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 			res.Items[i] = make(map[string]interface{})
 		}
 
-		// Process subflow for each item
-		for itemIdx := 0; itemIdx < iterState.TotalItems; itemIdx++ {
-			select {
-			case <-ctx.Done():
-				res.Error = ctx.Err()
-				return res
-			default:
-			}
-
-			// Get current item from the iteration array
-			currentItem := iterState.Items[itemIdx]
-			currentItemMap, ok := currentItem.(map[string]interface{})
-			if !ok {
-				currentItemMap = map[string]interface{}{"value": currentItem}
-			}
-
-			// Create isolated store for this item, inheriting pre-iteration outputs
-			itemStore := sp.createItemStore(preIterStore, currentItemMap, iterState, itemIdx)
-
-			// Process all subflow nodes (from iterStartIndex to end) for this item
-			err := sp.processSubflowForItem(ctx, iterStartIndex, itemStore, iterState, itemIdx, &res)
-			if err != nil {
-				res.Error = err
-				return res
-			}
+		// Process items concurrently using worker pool pattern
+		err := sp.processMidFlowConcurrently(ctx, iterStartIndex, preIterStore, iterState, &res)
+		if err != nil {
+			res.Error = err
+			return res
 		}
 	}
 
 	sp.metrics.RecordProcessed(time.Since(start).Nanoseconds())
 	return res
+}
+
+// midFlowItemJob represents a job for processing one mid-flow item
+type midFlowItemJob struct {
+	itemIndex int
+	itemData  map[string]interface{}
+}
+
+// midFlowItemResult represents the result of processing one mid-flow item
+type midFlowItemResult struct {
+	itemIndex   int
+	itemOutput  map[string]interface{} // flattened output for this item
+	sharedMerge map[string]interface{} // output to merge into shared (with index notation)
+	err         error
+}
+
+// processMidFlowConcurrently processes mid-flow iteration items concurrently.
+// It uses a worker pool pattern similar to parent-level iteration.
+func (sp *SubflowProcessor) processMidFlowConcurrently(
+	ctx context.Context,
+	startIndex int,
+	preIterStore *NodeOutputStore,
+	iter IterationState,
+	res *BatchResult,
+) error {
+	totalItems := iter.TotalItems
+
+	// Determine number of workers
+	numWorkers := sp.workerPoolConfig.NumWorkers
+	if numWorkers <= 0 {
+		numWorkers = 4 // Default for mid-flow
+	}
+	// Don't use more workers than items
+	if numWorkers > totalItems {
+		numWorkers = totalItems
+	}
+
+	sp.logger.Debug("starting concurrent mid-flow processing",
+		Field{Key: "total_items", Value: totalItems},
+		Field{Key: "workers", Value: numWorkers},
+		Field{Key: "start_index", Value: startIndex},
+	)
+
+	// Create channels
+	jobChan := make(chan midFlowItemJob, totalItems)
+	resultChan := make(chan midFlowItemResult, totalItems)
+
+	// Start workers
+	var wg sync.WaitGroup
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go sp.midFlowWorker(ctx, &wg, startIndex, preIterStore, iter, jobChan, resultChan)
+	}
+
+	// Submit all jobs
+	go func() {
+		for itemIdx := 0; itemIdx < totalItems; itemIdx++ {
+			currentItem := iter.Items[itemIdx]
+			currentItemMap, ok := currentItem.(map[string]interface{})
+			if !ok {
+				currentItemMap = map[string]interface{}{"value": currentItem}
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case jobChan <- midFlowItemJob{itemIndex: itemIdx, itemData: currentItemMap}:
+			}
+		}
+		close(jobChan)
+	}()
+
+	// Wait for workers in separate goroutine and close results
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	var firstError error
+	received := 0
+	for result := range resultChan {
+		if result.err != nil && firstError == nil {
+			firstError = result.err
+		}
+		if result.itemIndex >= 0 && result.itemIndex < totalItems {
+			// Merge item output into res.Items[itemIndex]
+			if result.itemOutput != nil {
+				MergeMaps(res.Items[result.itemIndex], result.itemOutput)
+			}
+			// Merge shared output (with index notation) into res.Output
+			if result.sharedMerge != nil {
+				MergeMaps(res.Output, result.sharedMerge)
+			}
+		}
+		received++
+		if received >= totalItems {
+			break
+		}
+	}
+
+	return firstError
+}
+
+// midFlowWorker is a worker goroutine for processing mid-flow items.
+func (sp *SubflowProcessor) midFlowWorker(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	startIndex int,
+	preIterStore *NodeOutputStore,
+	iter IterationState,
+	jobs <-chan midFlowItemJob,
+	results chan<- midFlowItemResult,
+) {
+	defer wg.Done()
+
+	for job := range jobs {
+		select {
+		case <-ctx.Done():
+			results <- midFlowItemResult{
+				itemIndex: job.itemIndex,
+				err:       ctx.Err(),
+			}
+			return
+		default:
+		}
+
+		// Acquire from limiter if available
+		if sp.workerPoolConfig.UseLimiter && sp.limiter != nil {
+			if err := sp.limiter.Acquire(ctx); err != nil {
+				results <- midFlowItemResult{
+					itemIndex: job.itemIndex,
+					err:       err,
+				}
+				continue
+			}
+		}
+
+		// Process this item
+		result := sp.processOneMidFlowItem(ctx, startIndex, preIterStore, iter, job.itemIndex, job.itemData)
+
+		// Release limiter
+		if sp.workerPoolConfig.UseLimiter && sp.limiter != nil {
+			sp.limiter.Release()
+		}
+
+		results <- result
+	}
+}
+
+// processOneMidFlowItem processes a single mid-flow item through the subflow.
+// Returns the item's output and any shared output to merge.
+func (sp *SubflowProcessor) processOneMidFlowItem(
+	ctx context.Context,
+	startIndex int,
+	preIterStore *NodeOutputStore,
+	iter IterationState,
+	itemIndex int,
+	itemData map[string]interface{},
+) midFlowItemResult {
+	result := midFlowItemResult{
+		itemIndex:   itemIndex,
+		itemOutput:  make(map[string]interface{}),
+		sharedMerge: make(map[string]interface{}),
+	}
+
+	// Create isolated store for this item
+	itemStore := sp.createItemStore(preIterStore, itemData, iter, itemIndex)
+
+	sp.logger.Debug("processing mid-flow item",
+		Field{Key: "item_index", Value: itemIndex},
+		Field{Key: "start_node_index", Value: startIndex},
+		Field{Key: "total_nodes", Value: len(sp.nodes) - startIndex},
+	)
+
+	// Process all subflow nodes for this item
+	for i := startIndex; i < len(sp.nodes); i++ {
+		select {
+		case <-ctx.Done():
+			result.err = ctx.Err()
+			return result
+		default:
+		}
+
+		node := sp.nodes[i]
+		config := sp.nodeConfigs[i]
+
+		// Check event triggers for this item
+		if sp.shouldSkipNodeForItem(config, itemStore, iter, itemIndex) {
+			sp.logger.Debug("skipping node for item due to event trigger",
+				Field{Key: "node_id", Value: config.NodeId},
+				Field{Key: "item_index", Value: itemIndex},
+			)
+			continue
+		}
+
+		// Build input for this node
+		input := sp.buildItemInput(config, itemStore, iter, itemIndex)
+
+		procInput := ProcessInput{
+			Ctx:           ctx,
+			Data:          input,
+			Config:        nil,
+			RawConfig:     config.NodeConfig.Config,
+			NodeId:        config.NodeId,
+			PluginType:    config.PluginType,
+			Label:         config.Label,
+			ItemIndex:     itemIndex,
+			TotalItems:    iter.TotalItems,
+			IsIteration:   true,
+			IterationPath: iter.ArrayPath,
+		}
+
+		start := time.Now()
+		out := node.Process(procInput)
+		dur := time.Since(start).Nanoseconds()
+
+		if out.Error != nil {
+			sp.metrics.RecordError()
+			result.err = fmt.Errorf("node %s failed at item %d: %w", config.Label, itemIndex, out.Error)
+			return result
+		}
+
+		if out.Skipped {
+			sp.metrics.RecordSkipped()
+			sp.logger.Debug("node skipped for item",
+				Field{Key: "node_id", Value: config.NodeId},
+				Field{Key: "item_index", Value: itemIndex},
+				Field{Key: "reason", Value: out.SkipReason},
+			)
+			continue
+		}
+
+		sp.metrics.RecordProcessed(dur)
+
+		// Store output in item store for downstream nodes in this item's subflow
+		itemStore.SetSingleOutput(config.NodeId, out.Data)
+
+		// Flatten with index notation for shared output
+		flatWithIndex := FlattenMapWithIndex(out.Data, config.NodeId, "", itemIndex)
+		MergeMaps(result.sharedMerge, flatWithIndex)
+
+		// Flatten without index for this item's output
+		flatItem := FlattenMap(out.Data, config.NodeId, "")
+		MergeMaps(result.itemOutput, flatItem)
+	}
+
+	return result
 }
 
 // analyzeNodeIteration determines if a node should start iterating.
@@ -269,94 +510,6 @@ func (sp *SubflowProcessor) createItemStore(
 	itemStore.SetCurrentIterationItem(iter.SourceNodeId, currentItem, itemIndex)
 
 	return itemStore
-}
-
-// processSubflowForItem processes ALL subflow nodes (from startIndex to end) for ONE item.
-// This ensures the entire subflow runs per-item rather than per-node.
-func (sp *SubflowProcessor) processSubflowForItem(
-	ctx context.Context,
-	startIndex int,
-	itemStore *NodeOutputStore,
-	iter IterationState,
-	itemIndex int,
-	res *BatchResult,
-) error {
-	sp.logger.Debug("processing subflow for item",
-		Field{Key: "item_index", Value: itemIndex},
-		Field{Key: "start_node_index", Value: startIndex},
-		Field{Key: "total_nodes", Value: len(sp.nodes) - startIndex},
-	)
-
-	for i := startIndex; i < len(sp.nodes); i++ {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		node := sp.nodes[i]
-		config := sp.nodeConfigs[i]
-
-		// Check event triggers for this item
-		if sp.shouldSkipNodeForItem(config, itemStore, iter, itemIndex) {
-			sp.logger.Debug("skipping node for item due to event trigger",
-				Field{Key: "node_id", Value: config.NodeId},
-				Field{Key: "item_index", Value: itemIndex},
-			)
-			continue
-		}
-
-		// Build input for this node using current item context
-		input := sp.buildItemInput(config, itemStore, iter, itemIndex)
-
-		procInput := ProcessInput{
-			Ctx:           ctx,
-			Data:          input,
-			Config:        nil,
-			RawConfig:     config.NodeConfig.Config,
-			NodeId:        config.NodeId,
-			PluginType:    config.PluginType,
-			Label:         config.Label,
-			ItemIndex:     itemIndex,
-			TotalItems:    iter.TotalItems,
-			IsIteration:   true,
-			IterationPath: iter.ArrayPath,
-		}
-
-		start := time.Now()
-		out := node.Process(procInput)
-		dur := time.Since(start).Nanoseconds()
-
-		if out.Error != nil {
-			sp.metrics.RecordError()
-			return fmt.Errorf("node %s failed at item %d: %w", config.Label, itemIndex, out.Error)
-		}
-
-		if out.Skipped {
-			sp.metrics.RecordSkipped()
-			sp.logger.Debug("node skipped for item",
-				Field{Key: "node_id", Value: config.NodeId},
-				Field{Key: "item_index", Value: itemIndex},
-				Field{Key: "reason", Value: out.SkipReason},
-			)
-			continue
-		}
-
-		sp.metrics.RecordProcessed(dur)
-
-		// Store output in item store for downstream nodes in this item's subflow
-		itemStore.SetSingleOutput(config.NodeId, out.Data)
-
-		// Flatten and merge to shared result with index notation
-		flat := FlattenMapWithIndex(out.Data, config.NodeId, "", itemIndex)
-		MergeMaps(res.Output, flat)
-
-		// Also merge to this item's entry in res.Items
-		itemFlat := FlattenMap(out.Data, config.NodeId, "")
-		MergeMaps(res.Items[itemIndex], itemFlat)
-	}
-
-	return nil
 }
 
 // buildItemInput builds input for a node processing a specific item.

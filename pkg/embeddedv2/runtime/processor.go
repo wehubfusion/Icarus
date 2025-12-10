@@ -52,7 +52,21 @@ func NewEmbeddedProcessorWithLimiter(
 }
 
 // ProcessEmbeddedNodes processes all embedded nodes for a unit.
-// It handles both single object and array iteration cases.
+// It handles two iteration scenarios:
+//
+// 1. Parent-level iteration:
+//   - Parent node outputs an array (e.g., {data: [...]})
+//   - First embedded node has iterate:true from parent's array
+//   - processWithConcurrency() handles parallel processing of array items
+//   - Single contains parent's non-array fields (metadata, status, etc.)
+//   - Array contains per-item results from all embedded nodes
+//
+// 2. Mid-flow iteration:
+//   - Parent node outputs a single object
+//   - Some embedded node mid-flow produces an array
+//   - Later embedded node has iterate:true from that array
+//   - processSingleObject() handles this via SubflowProcessor
+//   - SubflowProcessor internally handles the per-item subflow execution
 func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 	ctx context.Context,
 	parentOutput map[string]interface{},
@@ -83,7 +97,14 @@ func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 	return p.processSingleObject(ctx, parentOutput, unit)
 }
 
-// analyzeIterationContext determines if array iteration is needed.
+// analyzeIterationContext determines if parent-level array iteration is needed.
+// This only detects iteration that starts from the parent node's output.
+// Mid-flow iteration (where an embedded node produces an array) is handled
+// separately by SubflowProcessor during processSingleObject().
+//
+// Returns IterationContext with:
+// - IsArrayIteration: true if any embedded node has iterate:true from parent's array
+// - ArrayPath: the path to the array in parent output (e.g., "data" from "/data//field")
 func (p *EmbeddedProcessor) analyzeIterationContext(unit ExecutionUnit) IterationContext {
 	ctx := IterationContext{}
 
@@ -113,13 +134,15 @@ func (p *EmbeddedProcessor) processSingleObject(
 	parentOutput map[string]interface{},
 	unit ExecutionUnit,
 ) (*StandardUnitOutput, error) {
-	// Create subflow processor
+	// Create subflow processor with concurrency support for mid-flow iteration
 	subflowCfg := SubflowConfig{
-		ParentNodeId: unit.NodeId,
-		NodeConfigs:  unit.EmbeddedNodes,
-		Factory:      p.factory,
-		ArrayPath:    "",
-		Logger:       p.logger,
+		ParentNodeId:     unit.NodeId,
+		NodeConfigs:      unit.EmbeddedNodes,
+		Factory:          p.factory,
+		ArrayPath:        "",
+		Logger:           p.logger,
+		Limiter:          p.limiter,
+		WorkerPoolConfig: p.config.WorkerPool,
 	}
 	subflow, err := NewSubflowProcessor(subflowCfg)
 	if err != nil {
@@ -142,7 +165,18 @@ func (p *EmbeddedProcessor) processSingleObject(
 	}, nil
 }
 
-// processWithConcurrency handles array iteration with worker pool.
+// processWithConcurrency handles parent-level array iteration with worker pool.
+// This is used when the parent node's output contains an array and embedded nodes
+// have iterate:true mappings from that array.
+//
+// The function:
+// 1. Extracts the array from parentOutput at iterCtx.ArrayPath
+// 2. Preserves non-array fields from parent for the Single output
+// 3. Creates a SubflowProcessor to run all embedded nodes for each item
+// 4. Uses a worker pool for concurrent processing
+// 5. Returns StandardUnitOutput where:
+//   - Single contains parent's non-array fields (shared across all items)
+//   - Array contains per-item outputs from embedded nodes
 func (p *EmbeddedProcessor) processWithConcurrency(
 	ctx context.Context,
 	parentOutput map[string]interface{},
@@ -170,8 +204,11 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 
 	if len(items) == 0 {
 		p.logger.Debug("empty array, returning empty result")
+		// Extract and flatten parent's non-array fields for Single output
+		nonArrayFields := p.extractNonArrayFields(parentOutput, iterCtx.ArrayPath)
+		flatSingle := FlattenMap(nonArrayFields, unit.NodeId, "")
 		return &StandardUnitOutput{
-			Single: map[string]interface{}{},
+			Single: flatSingle,
 			Array:  []map[string]interface{}{},
 		}, nil
 	}
@@ -181,13 +218,15 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 		Field{Key: "workers", Value: p.config.WorkerPool.NumWorkers},
 	)
 
-	// Create subflow processor (implements ItemProcessor)
+	// Create subflow processor (implements ItemProcessor) with concurrency support
 	subflowCfg := SubflowConfig{
-		ParentNodeId: unit.NodeId,
-		NodeConfigs:  unit.EmbeddedNodes,
-		Factory:      p.factory,
-		ArrayPath:    iterCtx.ArrayPath,
-		Logger:       p.logger,
+		ParentNodeId:     unit.NodeId,
+		NodeConfigs:      unit.EmbeddedNodes,
+		Factory:          p.factory,
+		ArrayPath:        iterCtx.ArrayPath,
+		Logger:           p.logger,
+		Limiter:          p.limiter,
+		WorkerPoolConfig: p.config.WorkerPool,
 	}
 	subflow, err := NewSubflowProcessor(subflowCfg)
 	if err != nil {
@@ -239,13 +278,19 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 		finalItems[i] = results[i]
 	}
 
+	// Extract and flatten parent's non-array fields for Single output
+	nonArrayFields := p.extractNonArrayFields(parentOutput, iterCtx.ArrayPath)
+	flatSingle := FlattenMap(nonArrayFields, unit.NodeId, "")
+
 	return &StandardUnitOutput{
-		Single: map[string]interface{}{},
+		Single: flatSingle,
 		Array:  finalItems,
 	}, nil
 }
 
 // flattenParentOnly handles case with no embedded nodes.
+// If parent has an array, it flattens the array items into Array and non-array fields into Single.
+// If parent is a single object, it flattens everything into Single.
 func (p *EmbeddedProcessor) flattenParentOnly(
 	parentOutput map[string]interface{},
 	parentNodeId string,
@@ -253,6 +298,7 @@ func (p *EmbeddedProcessor) flattenParentOnly(
 	// Check for array at top level
 	for key, value := range parentOutput {
 		if arr, ok := value.([]interface{}); ok {
+			// Flatten array items into Array
 			results := make([]map[string]interface{}, 0, len(arr))
 			for _, item := range arr {
 				if itemMap, ok := item.(map[string]interface{}); ok {
@@ -260,13 +306,29 @@ func (p *EmbeddedProcessor) flattenParentOnly(
 					results = append(results, flat)
 				}
 			}
-			return &StandardUnitOutput{Single: map[string]interface{}{}, Array: results}, nil
+			// Extract and flatten non-array fields into Single
+			nonArrayFields := p.extractNonArrayFields(parentOutput, key)
+			flatSingle := FlattenMap(nonArrayFields, parentNodeId, "")
+			return &StandardUnitOutput{Single: flatSingle, Array: results}, nil
 		}
 	}
 
-	// Single object
+	// Single object - all goes to Single
 	flat := FlattenMap(parentOutput, parentNodeId, "")
 	return &StandardUnitOutput{Single: flat, Array: []map[string]interface{}{}}, nil
+}
+
+// extractNonArrayFields returns a copy of parentOutput without the specified array field.
+// This preserves metadata and other shared fields when the parent outputs an array.
+func (p *EmbeddedProcessor) extractNonArrayFields(parentOutput map[string]interface{}, arrayPath string) map[string]interface{} {
+	result := make(map[string]interface{})
+	for key, value := range parentOutput {
+		if key == arrayPath {
+			continue // Skip the array being iterated
+		}
+		result[key] = value
+	}
+	return result
 }
 
 // Config returns the processor configuration.
