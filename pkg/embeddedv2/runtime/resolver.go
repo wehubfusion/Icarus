@@ -21,9 +21,9 @@ func (r *DefaultOutputResolver) ResolveValue(
 ) (interface{}, error) {
 	key := sourceNodeId + "-" + sourceEndpoint
 	// If there are per-item results, collect values from all items
-	if len(output.Items) > 0 {
-		values := make([]interface{}, 0, len(output.Items))
-		for _, item := range output.Items {
+	if len(output.Array) > 0 {
+		values := make([]interface{}, 0, len(output.Array))
+		for _, item := range output.Array {
 			if val, exists := item[key]; exists {
 				values = append(values, val)
 			}
@@ -35,8 +35,8 @@ func (r *DefaultOutputResolver) ResolveValue(
 	}
 
 	// Single object
-	if output.Data != nil {
-		if val, exists := output.Data[key]; exists {
+	if output.Single != nil {
+		if val, exists := output.Single[key]; exists {
 			return val, nil
 		}
 	}
@@ -111,7 +111,7 @@ func (r *DefaultOutputResolver) buildArrayInput(
 	destStructure DestinationStructure,
 ) (map[string]interface{}, error) {
 	// If there are no per-item results, wrap the single object into an array
-	if len(output.Items) == 0 {
+	if len(output.Array) == 0 {
 		single, err := r.buildSingleInput(output, unit)
 		if err != nil {
 			return nil, err
@@ -122,7 +122,7 @@ func (r *DefaultOutputResolver) buildArrayInput(
 	}
 
 	// Build array of objects matching source items length
-	resultArray := make([]map[string]interface{}, len(output.Items))
+	resultArray := make([]map[string]interface{}, len(output.Array))
 	for i := range resultArray {
 		resultArray[i] = make(map[string]interface{})
 	}
@@ -135,7 +135,7 @@ func (r *DefaultOutputResolver) buildArrayInput(
 		sourceKey := mapping.SourceNodeId + "-" + mapping.SourceEndpoint
 
 		// Get value from each item
-		for i, item := range output.Items {
+		for i, item := range output.Array {
 			if val, exists := item[sourceKey]; exists {
 				for _, dest := range mapping.DestinationEndpoints {
 					fieldName := ExtractFieldFromDestination(dest)
@@ -161,15 +161,15 @@ func (r *DefaultOutputResolver) GetAllKeysForNode(output *StandardUnitOutput, no
 	prefix := nodeId + "-"
 	var keys []string
 
-	if len(output.Items) > 0 {
+	if len(output.Array) > 0 {
 		// Get keys from first item (all items have same structure)
-		for key := range output.Items[0] {
+		for key := range output.Array[0] {
 			if strings.HasPrefix(key, prefix) {
 				keys = append(keys, key)
 			}
 		}
-	} else if output.Data != nil {
-		for key := range output.Data {
+	} else if output.Single != nil {
+		for key := range output.Single {
 			if strings.HasPrefix(key, prefix) {
 				keys = append(keys, key)
 			}
@@ -189,14 +189,14 @@ func (r *DefaultOutputResolver) GetNodeIdsInOutput(output *StandardUnitOutput) [
 		}
 	}
 
-	if len(output.Items) > 0 {
-		for _, item := range output.Items {
+	if len(output.Array) > 0 {
+		for _, item := range output.Array {
 			for key := range item {
 				extractNodeId(key)
 			}
 		}
-	} else if output.Data != nil {
-		for key := range output.Data {
+	} else if output.Single != nil {
+		for key := range output.Single {
 			extractNodeId(key)
 		}
 	}

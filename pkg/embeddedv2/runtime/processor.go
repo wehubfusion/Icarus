@@ -137,8 +137,8 @@ func (p *EmbeddedProcessor) processSingleObject(
 	}
 
 	return &StandardUnitOutput{
-		Data:  result.Output,
-		Items: result.Items,
+		Single: result.Output,
+		Array:  result.Items,
 	}, nil
 }
 
@@ -171,8 +171,8 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 	if len(items) == 0 {
 		p.logger.Debug("empty array, returning empty result")
 		return &StandardUnitOutput{
-			Data:  map[string]interface{}{},
-			Items: []map[string]interface{}{},
+			Single: map[string]interface{}{},
+			Array:  []map[string]interface{}{},
 		}, nil
 	}
 
@@ -240,8 +240,8 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 	}
 
 	return &StandardUnitOutput{
-		Data:  map[string]interface{}{},
-		Items: finalItems,
+		Single: map[string]interface{}{},
+		Array:  finalItems,
 	}, nil
 }
 
@@ -260,13 +260,13 @@ func (p *EmbeddedProcessor) flattenParentOnly(
 					results = append(results, flat)
 				}
 			}
-			return &StandardUnitOutput{Data: map[string]interface{}{}, Items: results}, nil
+			return &StandardUnitOutput{Single: map[string]interface{}{}, Array: results}, nil
 		}
 	}
 
 	// Single object
 	flat := FlattenMap(parentOutput, parentNodeId, "")
-	return &StandardUnitOutput{Data: flat, Items: []map[string]interface{}{}}, nil
+	return &StandardUnitOutput{Single: flat, Array: []map[string]interface{}{}}, nil
 }
 
 // Config returns the processor configuration.

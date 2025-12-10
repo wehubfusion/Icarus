@@ -150,14 +150,14 @@ type ExecutionUnit struct {
 // StandardUnitOutput represents the flattened output of a unit.
 // Keys are formatted as "nodeId-/path" for objects or "nodeId-/arrayPath//field" for array items.
 type StandardUnitOutput struct {
-	// Data contains non-iterated node outputs (always populated)
+	// Single contains non-iterated node outputs (always populated)
 	// For non-iteration: contains all outputs
 	// For iteration: contains pre-iteration (shared) outputs only
-	Data map[string]interface{} `json:"data"`
+	Single map[string]interface{} `json:"single"`
 
-	// Items contains per-iteration outputs (empty slice if no iteration)
+	// Array contains per-iteration outputs (empty slice if no iteration)
 	// Each item contains outputs from nodes that ran in iteration
-	Items []map[string]interface{} `json:"items"`
+	Array []map[string]interface{} `json:"array"`
 }
 
 // NewSingleOutput creates output for non-iterated processing
@@ -166,8 +166,8 @@ func NewSingleOutput(data map[string]interface{}) *StandardUnitOutput {
 		data = make(map[string]interface{})
 	}
 	return &StandardUnitOutput{
-		Data:  data,
-		Items: []map[string]interface{}{},
+		Single: data,
+		Array:  []map[string]interface{}{},
 	}
 }
 
@@ -180,88 +180,88 @@ func NewIteratedOutput(data map[string]interface{}, items []map[string]interface
 		items = []map[string]interface{}{}
 	}
 	return &StandardUnitOutput{
-		Data:  data,
-		Items: items,
+		Single: data,
+		Array:  items,
 	}
 }
 
 // HasIteration returns true if iteration occurred
 func (o *StandardUnitOutput) HasIteration() bool {
-	return len(o.Items) > 0
+	return len(o.Array) > 0
 }
 
 // Len returns the number of items (1 if no iteration)
 func (o *StandardUnitOutput) Len() int {
 	if o.HasIteration() {
-		return len(o.Items)
+		return len(o.Array)
 	}
 	return 1
 }
 
-// GetValue retrieves a value by key, checking both Data and Items[index]
+// GetValue retrieves a value by key, checking both Single and Array[index]
 func (o *StandardUnitOutput) GetValue(key string, index int) (interface{}, bool) {
 	if o.HasIteration() {
 		// Check item first
-		if index >= 0 && index < len(o.Items) {
-			if val, ok := o.Items[index][key]; ok {
+		if index >= 0 && index < len(o.Array) {
+			if val, ok := o.Array[index][key]; ok {
 				return val, true
 			}
 		}
 	}
-	// Fallback to Data
-	if val, ok := o.Data[key]; ok {
+	// Fallback to Single
+	if val, ok := o.Single[key]; ok {
 		return val, true
 	}
 	return nil, false
 }
 
-// GetItem returns merged Data + Items[index]
+// GetItem returns merged Single + Array[index]
 func (o *StandardUnitOutput) GetItem(index int) map[string]interface{} {
 	if !o.HasIteration() {
-		return o.Data
+		return o.Single
 	}
 
-	if index < 0 || index >= len(o.Items) {
+	if index < 0 || index >= len(o.Array) {
 		return nil
 	}
 
-	result := make(map[string]interface{}, len(o.Data)+len(o.Items[index]))
-	for k, v := range o.Data {
+	result := make(map[string]interface{}, len(o.Single)+len(o.Array[index]))
+	for k, v := range o.Single {
 		result[k] = v
 	}
-	for k, v := range o.Items[index] {
+	for k, v := range o.Array[index] {
 		result[k] = v
 	}
 	return result
 }
 
-// GetAllItems returns all items with Data merged in
+// GetAllItems returns all items with Single merged in
 func (o *StandardUnitOutput) GetAllItems() []map[string]interface{} {
 	if !o.HasIteration() {
-		if o.Data != nil {
-			return []map[string]interface{}{o.Data}
+		if o.Single != nil {
+			return []map[string]interface{}{o.Single}
 		}
 		return nil
 	}
 
-	result := make([]map[string]interface{}, len(o.Items))
-	for i := range o.Items {
+	result := make([]map[string]interface{}, len(o.Array))
+	for i := range o.Array {
 		result[i] = o.GetItem(i)
 	}
 	return result
 }
 
-// GetAllValues collects all values for a key across Items
+// GetAllValues collects all values for a key across Array
 func (o *StandardUnitOutput) GetAllValues(key string) []interface{} {
 	if !o.HasIteration() {
-		if val, ok := o.Data[key]; ok {
+		if val, ok := o.Single[key]; ok {
 			return []interface{}{val}
 		}
 		return nil
 	}
 
-	values := make([]interface{}, 0, len(o.Items))
-	for _, item := range o.Items {
+	values := make([]interface{}, 0, len(o.Array))
+	for _, item := range o.Array {
 		if val, ok := item[key]; ok {
 			values = append(values, val)
 		}
