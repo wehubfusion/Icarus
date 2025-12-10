@@ -14,11 +14,13 @@ import (
 // SubflowProcessor processes embedded nodes for a single parent item.
 // It supports mid-flow iteration by detecting mappings with iterate:true
 // and running nodes per-item when necessary.
+// Nodes are processed by depth level, with parallel execution within each depth.
 // Mid-flow iteration uses concurrent processing when a limiter is provided.
 type SubflowProcessor struct {
 	parentNodeId     string
 	nodes            []EmbeddedNode
 	nodeConfigs      []EmbeddedNodeConfig
+	depthGroups      [][]int // indices grouped by depth
 	arrayPath        string
 	logger           Logger
 	metrics          MetricsCollector
@@ -32,10 +34,13 @@ func NewSubflowProcessor(config SubflowConfig) (*SubflowProcessor, error) {
 		return nil, fmt.Errorf("factory is required")
 	}
 
-	// Sort by execution order
+	// Sort by depth (primary), then execution order (secondary for determinism)
 	sortedConfigs := make([]EmbeddedNodeConfig, len(config.NodeConfigs))
 	copy(sortedConfigs, config.NodeConfigs)
 	sort.Slice(sortedConfigs, func(i, j int) bool {
+		if sortedConfigs[i].Depth != sortedConfigs[j].Depth {
+			return sortedConfigs[i].Depth < sortedConfigs[j].Depth
+		}
 		return sortedConfigs[i].ExecutionOrder < sortedConfigs[j].ExecutionOrder
 	})
 
@@ -48,6 +53,9 @@ func NewSubflowProcessor(config SubflowConfig) (*SubflowProcessor, error) {
 		}
 		nodes = append(nodes, n)
 	}
+
+	// Group nodes by depth for parallel processing
+	depthGroups := groupNodesByDepth(sortedConfigs)
 
 	logger := config.Logger
 	if logger == nil {
@@ -66,12 +74,40 @@ func NewSubflowProcessor(config SubflowConfig) (*SubflowProcessor, error) {
 		parentNodeId:     config.ParentNodeId,
 		nodes:            nodes,
 		nodeConfigs:      sortedConfigs,
+		depthGroups:      depthGroups,
 		arrayPath:        config.ArrayPath,
 		logger:           logger,
 		metrics:          metrics,
 		limiter:          config.Limiter,
 		workerPoolConfig: workerPoolCfg,
 	}, nil
+}
+
+// groupNodesByDepth groups node indices by their depth level.
+// Returns slice where index is depth level, value is slice of node indices at that depth.
+func groupNodesByDepth(configs []EmbeddedNodeConfig) [][]int {
+	if len(configs) == 0 {
+		return nil
+	}
+
+	// Find max depth
+	maxDepth := 0
+	for _, c := range configs {
+		if c.Depth > maxDepth {
+			maxDepth = c.Depth
+		}
+	}
+
+	// Group indices by depth
+	groups := make([][]int, maxDepth+1)
+	for i := range groups {
+		groups[i] = []int{}
+	}
+	for i, c := range configs {
+		groups[c.Depth] = append(groups[c.Depth], i)
+	}
+
+	return groups
 }
 
 // SubflowConfig holds configuration for creating a SubflowProcessor
@@ -87,9 +123,10 @@ type SubflowConfig struct {
 }
 
 // ProcessItem processes a single parent item through all embedded nodes.
+// Nodes are processed by depth level with parallel execution within each depth.
 // It handles mid-flow iteration by:
-// Phase 1: Process all nodes before iteration starts (pre-iteration)
-// Phase 2: For each array item, process ALL remaining subflow nodes
+// Phase 1: Process depth levels until we find one that starts iteration (parallel within depth)
+// Phase 2: For each array item, process ALL remaining depth levels (parallel within depth)
 func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) BatchResult {
 	start := time.Now()
 	res := BatchResult{
@@ -118,11 +155,11 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 		MergeMaps(res.Output, parentFlat)
 	}
 
-	// Phase 1: Process nodes until we find one that starts iteration
-	var iterStartIndex int = -1
+	// Phase 1: Process depth levels until we find one that starts iteration
+	var iterStartDepth int = -1
 	var iterState IterationState
 
-	for i, node := range sp.nodes {
+	for depth, nodeIndices := range sp.depthGroups {
 		select {
 		case <-ctx.Done():
 			res.Error = ctx.Err()
@@ -130,34 +167,32 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 		default:
 		}
 
-		config := sp.nodeConfigs[i]
-
-		// Should we skip due to event mapping?
-		if sp.shouldSkipNode(config, preIterStore) {
-			sp.logger.Debug("skipping node due to event trigger",
-				Field{Key: "node_id", Value: config.NodeId},
-				Field{Key: "node_label", Value: config.Label},
-				Field{Key: "item_index", Value: item.Index},
-			)
+		if len(nodeIndices) == 0 {
 			continue
 		}
 
-		// Check if this node starts iteration
-		needsIter, state := sp.analyzeNodeIteration(config, preIterStore, nil)
-		if needsIter {
-			iterStartIndex = i
-			iterState = state
-			sp.logger.Debug("iteration detected, starting per-item subflow processing",
-				Field{Key: "node_id", Value: config.NodeId},
-				Field{Key: "node_label", Value: config.Label},
-				Field{Key: "total_items", Value: state.TotalItems},
-				Field{Key: "start_index", Value: i},
-			)
+		// Check if any node at this depth starts iteration
+		for _, idx := range nodeIndices {
+			config := sp.nodeConfigs[idx]
+			needsIter, state := sp.analyzeNodeIteration(config, preIterStore, nil)
+			if needsIter {
+				iterStartDepth = depth
+				iterState = state
+				sp.logger.Debug("iteration detected at depth, starting per-item subflow processing",
+					Field{Key: "node_id", Value: config.NodeId},
+					Field{Key: "depth", Value: depth},
+					Field{Key: "total_items", Value: state.TotalItems},
+				)
+				break
+			}
+		}
+
+		if iterStartDepth >= 0 {
 			break
 		}
 
-		// Normal single execution (pre-iteration)
-		err := sp.processNodeSingle(ctx, node, config, preIterStore, res.Output)
+		// Process all nodes at this depth in parallel
+		err := sp.processDepthLevelParallel(ctx, depth, nodeIndices, preIterStore, res.Output, nil, -1)
 		if err != nil {
 			res.Error = err
 			return res
@@ -165,7 +200,7 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 	}
 
 	// Phase 2: If iteration found, process entire subflow for each item concurrently
-	if iterStartIndex >= 0 {
+	if iterStartDepth >= 0 {
 		// Prepare res.Items with empty maps for each iteration
 		res.Items = make([]map[string]interface{}, iterState.TotalItems)
 		for i := range res.Items {
@@ -173,7 +208,7 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 		}
 
 		// Process items concurrently using worker pool pattern
-		err := sp.processMidFlowConcurrently(ctx, iterStartIndex, preIterStore, iterState, &res)
+		err := sp.processMidFlowConcurrently(ctx, iterStartDepth, preIterStore, iterState, &res)
 		if err != nil {
 			res.Error = err
 			return res
@@ -182,6 +217,252 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 
 	sp.metrics.RecordProcessed(time.Since(start).Nanoseconds())
 	return res
+}
+
+// depthNodeResult holds the result of processing a single node at a depth level
+type depthNodeResult struct {
+	nodeIndex int
+	output    map[string]interface{}
+	err       error
+	skipped   bool
+}
+
+// processDepthLevelParallel processes all nodes at a depth level in parallel.
+// For iteration context, pass iter and itemIndex; otherwise pass nil and -1.
+func (sp *SubflowProcessor) processDepthLevelParallel(
+	ctx context.Context,
+	depth int,
+	nodeIndices []int,
+	store *NodeOutputStore,
+	shared map[string]interface{},
+	iter *IterationState,
+	itemIndex int,
+) error {
+	if len(nodeIndices) == 0 {
+		return nil
+	}
+
+	// Single node - process directly without goroutine overhead
+	if len(nodeIndices) == 1 {
+		idx := nodeIndices[0]
+		return sp.processSingleNodeAtDepth(ctx, idx, store, shared, iter, itemIndex)
+	}
+
+	sp.logger.Debug("processing depth level in parallel",
+		Field{Key: "depth", Value: depth},
+		Field{Key: "node_count", Value: len(nodeIndices)},
+		Field{Key: "item_index", Value: itemIndex},
+	)
+
+	// Multiple nodes - process in parallel
+	var wg sync.WaitGroup
+	resultChan := make(chan depthNodeResult, len(nodeIndices))
+
+	for _, idx := range nodeIndices {
+		wg.Add(1)
+		go func(nodeIdx int) {
+			defer wg.Done()
+
+			result := depthNodeResult{nodeIndex: nodeIdx}
+
+			// Acquire limiter if available
+			if sp.workerPoolConfig.UseLimiter && sp.limiter != nil {
+				if err := sp.limiter.Acquire(ctx); err != nil {
+					result.err = err
+					resultChan <- result
+					return
+				}
+				defer sp.limiter.Release()
+			}
+
+			node := sp.nodes[nodeIdx]
+			config := sp.nodeConfigs[nodeIdx]
+
+			// Check if should skip
+			var shouldSkip bool
+			if iter != nil && itemIndex >= 0 {
+				shouldSkip = sp.shouldSkipNodeForItem(config, store, *iter, itemIndex)
+			} else {
+				shouldSkip = sp.shouldSkipNode(config, store)
+			}
+
+			if shouldSkip {
+				sp.logger.Debug("skipping node at depth",
+					Field{Key: "node_id", Value: config.NodeId},
+					Field{Key: "depth", Value: depth},
+				)
+				result.skipped = true
+				resultChan <- result
+				return
+			}
+
+			// Build input
+			var input map[string]interface{}
+			if iter != nil && itemIndex >= 0 {
+				input = sp.buildItemInput(config, store, *iter, itemIndex)
+			} else {
+				input = sp.buildSingleNodeInput(config, store)
+			}
+
+			procInput := ProcessInput{
+				Ctx:           ctx,
+				Data:          input,
+				Config:        nil,
+				RawConfig:     config.NodeConfig.Config,
+				NodeId:        config.NodeId,
+				PluginType:    config.PluginType,
+				Label:         config.Label,
+				ItemIndex:     itemIndex,
+				TotalItems:    0,
+				IsIteration:   iter != nil,
+				IterationPath: "",
+			}
+			if iter != nil {
+				procInput.TotalItems = iter.TotalItems
+				procInput.IterationPath = iter.ArrayPath
+			}
+
+			startTime := time.Now()
+			out := node.Process(procInput)
+			dur := time.Since(startTime).Nanoseconds()
+
+			if out.Error != nil {
+				sp.metrics.RecordError()
+				result.err = fmt.Errorf("node %s failed: %w", config.Label, out.Error)
+				resultChan <- result
+				return
+			}
+
+			if out.Skipped {
+				sp.metrics.RecordSkipped()
+				result.skipped = true
+				resultChan <- result
+				return
+			}
+
+			sp.metrics.RecordProcessed(dur)
+			result.output = out.Data
+			resultChan <- result
+		}(idx)
+	}
+
+	// Wait and close
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results and update store/shared
+	var firstErr error
+	for result := range resultChan {
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+			continue
+		}
+		if result.skipped || result.output == nil {
+			continue
+		}
+
+		config := sp.nodeConfigs[result.nodeIndex]
+
+		// Store output for downstream nodes
+		store.SetSingleOutput(config.NodeId, result.output)
+
+		// Flatten and merge to shared
+		if iter != nil && itemIndex >= 0 {
+			flat := FlattenMapWithIndex(result.output, config.NodeId, "", itemIndex)
+			MergeMaps(shared, flat)
+		} else {
+			flat := FlattenMap(result.output, config.NodeId, "")
+			MergeMaps(shared, flat)
+		}
+	}
+
+	return firstErr
+}
+
+// processSingleNodeAtDepth processes a single node (optimization for depth with one node)
+func (sp *SubflowProcessor) processSingleNodeAtDepth(
+	ctx context.Context,
+	nodeIdx int,
+	store *NodeOutputStore,
+	shared map[string]interface{},
+	iter *IterationState,
+	itemIndex int,
+) error {
+	node := sp.nodes[nodeIdx]
+	config := sp.nodeConfigs[nodeIdx]
+
+	// Check if should skip
+	var shouldSkip bool
+	if iter != nil && itemIndex >= 0 {
+		shouldSkip = sp.shouldSkipNodeForItem(config, store, *iter, itemIndex)
+	} else {
+		shouldSkip = sp.shouldSkipNode(config, store)
+	}
+
+	if shouldSkip {
+		sp.logger.Debug("skipping single node at depth",
+			Field{Key: "node_id", Value: config.NodeId},
+		)
+		return nil
+	}
+
+	// Build input
+	var input map[string]interface{}
+	if iter != nil && itemIndex >= 0 {
+		input = sp.buildItemInput(config, store, *iter, itemIndex)
+	} else {
+		input = sp.buildSingleNodeInput(config, store)
+	}
+
+	procInput := ProcessInput{
+		Ctx:           ctx,
+		Data:          input,
+		Config:        nil,
+		RawConfig:     config.NodeConfig.Config,
+		NodeId:        config.NodeId,
+		PluginType:    config.PluginType,
+		Label:         config.Label,
+		ItemIndex:     itemIndex,
+		TotalItems:    0,
+		IsIteration:   iter != nil,
+		IterationPath: "",
+	}
+	if iter != nil {
+		procInput.TotalItems = iter.TotalItems
+		procInput.IterationPath = iter.ArrayPath
+	}
+
+	startTime := time.Now()
+	out := node.Process(procInput)
+	dur := time.Since(startTime).Nanoseconds()
+
+	if out.Error != nil {
+		sp.metrics.RecordError()
+		return fmt.Errorf("node %s failed: %w", config.Label, out.Error)
+	}
+
+	if out.Skipped {
+		sp.metrics.RecordSkipped()
+		return nil
+	}
+
+	sp.metrics.RecordProcessed(dur)
+
+	// Store output for downstream nodes
+	store.SetSingleOutput(config.NodeId, out.Data)
+
+	// Flatten and merge to shared
+	if iter != nil && itemIndex >= 0 {
+		flat := FlattenMapWithIndex(out.Data, config.NodeId, "", itemIndex)
+		MergeMaps(shared, flat)
+	} else {
+		flat := FlattenMap(out.Data, config.NodeId, "")
+		MergeMaps(shared, flat)
+	}
+
+	return nil
 }
 
 // midFlowItemJob represents a job for processing one mid-flow item
@@ -202,7 +483,7 @@ type midFlowItemResult struct {
 // It uses a worker pool pattern similar to parent-level iteration.
 func (sp *SubflowProcessor) processMidFlowConcurrently(
 	ctx context.Context,
-	startIndex int,
+	startDepth int,
 	preIterStore *NodeOutputStore,
 	iter IterationState,
 	res *BatchResult,
@@ -222,7 +503,7 @@ func (sp *SubflowProcessor) processMidFlowConcurrently(
 	sp.logger.Debug("starting concurrent mid-flow processing",
 		Field{Key: "total_items", Value: totalItems},
 		Field{Key: "workers", Value: numWorkers},
-		Field{Key: "start_index", Value: startIndex},
+		Field{Key: "start_depth", Value: startDepth},
 	)
 
 	// Create channels
@@ -233,7 +514,7 @@ func (sp *SubflowProcessor) processMidFlowConcurrently(
 	var wg sync.WaitGroup
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
-		go sp.midFlowWorker(ctx, &wg, startIndex, preIterStore, iter, jobChan, resultChan)
+		go sp.midFlowWorker(ctx, &wg, startDepth, preIterStore, iter, jobChan, resultChan)
 	}
 
 	// Submit all jobs
@@ -290,7 +571,7 @@ func (sp *SubflowProcessor) processMidFlowConcurrently(
 func (sp *SubflowProcessor) midFlowWorker(
 	ctx context.Context,
 	wg *sync.WaitGroup,
-	startIndex int,
+	startDepth int,
 	preIterStore *NodeOutputStore,
 	iter IterationState,
 	jobs <-chan midFlowItemJob,
@@ -309,7 +590,7 @@ func (sp *SubflowProcessor) midFlowWorker(
 		default:
 		}
 
-		// Acquire from limiter if available
+		// Acquire from limiter if available (for overall item processing)
 		if sp.workerPoolConfig.UseLimiter && sp.limiter != nil {
 			if err := sp.limiter.Acquire(ctx); err != nil {
 				results <- midFlowItemResult{
@@ -320,8 +601,8 @@ func (sp *SubflowProcessor) midFlowWorker(
 			}
 		}
 
-		// Process this item
-		result := sp.processOneMidFlowItem(ctx, startIndex, preIterStore, iter, job.itemIndex, job.itemData)
+		// Process this item through depth levels
+		result := sp.processOneMidFlowItem(ctx, startDepth, preIterStore, iter, job.itemIndex, job.itemData)
 
 		// Release limiter
 		if sp.workerPoolConfig.UseLimiter && sp.limiter != nil {
@@ -332,11 +613,11 @@ func (sp *SubflowProcessor) midFlowWorker(
 	}
 }
 
-// processOneMidFlowItem processes a single mid-flow item through the subflow.
-// Returns the item's output and any shared output to merge.
+// processOneMidFlowItem processes a single mid-flow item through remaining depth levels.
+// Uses parallel processing within each depth level.
 func (sp *SubflowProcessor) processOneMidFlowItem(
 	ctx context.Context,
-	startIndex int,
+	startDepth int,
 	preIterStore *NodeOutputStore,
 	iter IterationState,
 	itemIndex int,
@@ -351,14 +632,14 @@ func (sp *SubflowProcessor) processOneMidFlowItem(
 	// Create isolated store for this item
 	itemStore := sp.createItemStore(preIterStore, itemData, iter, itemIndex)
 
-	sp.logger.Debug("processing mid-flow item",
+	sp.logger.Debug("processing mid-flow item by depth",
 		Field{Key: "item_index", Value: itemIndex},
-		Field{Key: "start_node_index", Value: startIndex},
-		Field{Key: "total_nodes", Value: len(sp.nodes) - startIndex},
+		Field{Key: "start_depth", Value: startDepth},
+		Field{Key: "total_depths", Value: len(sp.depthGroups) - startDepth},
 	)
 
-	// Process all subflow nodes for this item
-	for i := startIndex; i < len(sp.nodes); i++ {
+	// Process remaining depth levels (from startDepth to end)
+	for depth := startDepth; depth < len(sp.depthGroups); depth++ {
 		select {
 		case <-ctx.Done():
 			result.err = ctx.Err()
@@ -366,70 +647,217 @@ func (sp *SubflowProcessor) processOneMidFlowItem(
 		default:
 		}
 
-		node := sp.nodes[i]
-		config := sp.nodeConfigs[i]
-
-		// Check event triggers for this item
-		if sp.shouldSkipNodeForItem(config, itemStore, iter, itemIndex) {
-			sp.logger.Debug("skipping node for item due to event trigger",
-				Field{Key: "node_id", Value: config.NodeId},
-				Field{Key: "item_index", Value: itemIndex},
-			)
+		nodeIndices := sp.depthGroups[depth]
+		if len(nodeIndices) == 0 {
 			continue
 		}
 
-		// Build input for this node
-		input := sp.buildItemInput(config, itemStore, iter, itemIndex)
-
-		procInput := ProcessInput{
-			Ctx:           ctx,
-			Data:          input,
-			Config:        nil,
-			RawConfig:     config.NodeConfig.Config,
-			NodeId:        config.NodeId,
-			PluginType:    config.PluginType,
-			Label:         config.Label,
-			ItemIndex:     itemIndex,
-			TotalItems:    iter.TotalItems,
-			IsIteration:   true,
-			IterationPath: iter.ArrayPath,
-		}
-
-		start := time.Now()
-		out := node.Process(procInput)
-		dur := time.Since(start).Nanoseconds()
-
-		if out.Error != nil {
-			sp.metrics.RecordError()
-			result.err = fmt.Errorf("node %s failed at item %d: %w", config.Label, itemIndex, out.Error)
+		// Process all nodes at this depth in parallel
+		// Note: We don't use the limiter here since we already acquired it for this item
+		err := sp.processDepthLevelForItem(ctx, depth, nodeIndices, itemStore, &iter, itemIndex, &result)
+		if err != nil {
+			result.err = err
 			return result
 		}
-
-		if out.Skipped {
-			sp.metrics.RecordSkipped()
-			sp.logger.Debug("node skipped for item",
-				Field{Key: "node_id", Value: config.NodeId},
-				Field{Key: "item_index", Value: itemIndex},
-				Field{Key: "reason", Value: out.SkipReason},
-			)
-			continue
-		}
-
-		sp.metrics.RecordProcessed(dur)
-
-		// Store output in item store for downstream nodes in this item's subflow
-		itemStore.SetSingleOutput(config.NodeId, out.Data)
-
-		// Flatten with index notation for shared output
-		flatWithIndex := FlattenMapWithIndex(out.Data, config.NodeId, "", itemIndex)
-		MergeMaps(result.sharedMerge, flatWithIndex)
-
-		// Flatten without index for this item's output
-		flatItem := FlattenMap(out.Data, config.NodeId, "")
-		MergeMaps(result.itemOutput, flatItem)
 	}
 
 	return result
+}
+
+// processDepthLevelForItem processes all nodes at a depth level for a specific item.
+// Outputs are merged into the result's itemOutput and sharedMerge.
+func (sp *SubflowProcessor) processDepthLevelForItem(
+	ctx context.Context,
+	depth int,
+	nodeIndices []int,
+	itemStore *NodeOutputStore,
+	iter *IterationState,
+	itemIndex int,
+	result *midFlowItemResult,
+) error {
+	if len(nodeIndices) == 0 {
+		return nil
+	}
+
+	// Single node - process directly
+	if len(nodeIndices) == 1 {
+		idx := nodeIndices[0]
+		return sp.processSingleNodeForItem(ctx, idx, itemStore, iter, itemIndex, result)
+	}
+
+	sp.logger.Debug("processing depth level in parallel for item",
+		Field{Key: "depth", Value: depth},
+		Field{Key: "node_count", Value: len(nodeIndices)},
+		Field{Key: "item_index", Value: itemIndex},
+	)
+
+	// Multiple nodes - process in parallel
+	var wg sync.WaitGroup
+	resultChan := make(chan depthNodeResult, len(nodeIndices))
+
+	for _, idx := range nodeIndices {
+		wg.Add(1)
+		go func(nodeIdx int) {
+			defer wg.Done()
+
+			nodeResult := depthNodeResult{nodeIndex: nodeIdx}
+
+			node := sp.nodes[nodeIdx]
+			config := sp.nodeConfigs[nodeIdx]
+
+			// Check if should skip
+			if sp.shouldSkipNodeForItem(config, itemStore, *iter, itemIndex) {
+				sp.logger.Debug("skipping node at depth for item",
+					Field{Key: "node_id", Value: config.NodeId},
+					Field{Key: "depth", Value: depth},
+					Field{Key: "item_index", Value: itemIndex},
+				)
+				nodeResult.skipped = true
+				resultChan <- nodeResult
+				return
+			}
+
+			// Build input
+			input := sp.buildItemInput(config, itemStore, *iter, itemIndex)
+
+			procInput := ProcessInput{
+				Ctx:           ctx,
+				Data:          input,
+				Config:        nil,
+				RawConfig:     config.NodeConfig.Config,
+				NodeId:        config.NodeId,
+				PluginType:    config.PluginType,
+				Label:         config.Label,
+				ItemIndex:     itemIndex,
+				TotalItems:    iter.TotalItems,
+				IsIteration:   true,
+				IterationPath: iter.ArrayPath,
+			}
+
+			startTime := time.Now()
+			out := node.Process(procInput)
+			dur := time.Since(startTime).Nanoseconds()
+
+			if out.Error != nil {
+				sp.metrics.RecordError()
+				nodeResult.err = fmt.Errorf("node %s failed at item %d: %w", config.Label, itemIndex, out.Error)
+				resultChan <- nodeResult
+				return
+			}
+
+			if out.Skipped {
+				sp.metrics.RecordSkipped()
+				nodeResult.skipped = true
+				resultChan <- nodeResult
+				return
+			}
+
+			sp.metrics.RecordProcessed(dur)
+			nodeResult.output = out.Data
+			resultChan <- nodeResult
+		}(idx)
+	}
+
+	// Wait and close
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	var firstErr error
+	for nodeResult := range resultChan {
+		if nodeResult.err != nil && firstErr == nil {
+			firstErr = nodeResult.err
+			continue
+		}
+		if nodeResult.skipped || nodeResult.output == nil {
+			continue
+		}
+
+		config := sp.nodeConfigs[nodeResult.nodeIndex]
+
+		// Store output for downstream nodes
+		itemStore.SetSingleOutput(config.NodeId, nodeResult.output)
+
+		// Flatten with index notation for shared output
+		flatWithIndex := FlattenMapWithIndex(nodeResult.output, config.NodeId, "", itemIndex)
+		MergeMaps(result.sharedMerge, flatWithIndex)
+
+		// Flatten without index for this item's output
+		flatItem := FlattenMap(nodeResult.output, config.NodeId, "")
+		MergeMaps(result.itemOutput, flatItem)
+	}
+
+	return firstErr
+}
+
+// processSingleNodeForItem processes a single node for a specific item (optimization)
+func (sp *SubflowProcessor) processSingleNodeForItem(
+	ctx context.Context,
+	nodeIdx int,
+	itemStore *NodeOutputStore,
+	iter *IterationState,
+	itemIndex int,
+	result *midFlowItemResult,
+) error {
+	node := sp.nodes[nodeIdx]
+	config := sp.nodeConfigs[nodeIdx]
+
+	// Check if should skip
+	if sp.shouldSkipNodeForItem(config, itemStore, *iter, itemIndex) {
+		sp.logger.Debug("skipping single node for item",
+			Field{Key: "node_id", Value: config.NodeId},
+			Field{Key: "item_index", Value: itemIndex},
+		)
+		return nil
+	}
+
+	// Build input
+	input := sp.buildItemInput(config, itemStore, *iter, itemIndex)
+
+	procInput := ProcessInput{
+		Ctx:           ctx,
+		Data:          input,
+		Config:        nil,
+		RawConfig:     config.NodeConfig.Config,
+		NodeId:        config.NodeId,
+		PluginType:    config.PluginType,
+		Label:         config.Label,
+		ItemIndex:     itemIndex,
+		TotalItems:    iter.TotalItems,
+		IsIteration:   true,
+		IterationPath: iter.ArrayPath,
+	}
+
+	startTime := time.Now()
+	out := node.Process(procInput)
+	dur := time.Since(startTime).Nanoseconds()
+
+	if out.Error != nil {
+		sp.metrics.RecordError()
+		return fmt.Errorf("node %s failed at item %d: %w", config.Label, itemIndex, out.Error)
+	}
+
+	if out.Skipped {
+		sp.metrics.RecordSkipped()
+		return nil
+	}
+
+	sp.metrics.RecordProcessed(dur)
+
+	// Store output for downstream nodes
+	itemStore.SetSingleOutput(config.NodeId, out.Data)
+
+	// Flatten with index notation for shared output
+	flatWithIndex := FlattenMapWithIndex(out.Data, config.NodeId, "", itemIndex)
+	MergeMaps(result.sharedMerge, flatWithIndex)
+
+	// Flatten without index for this item's output
+	flatItem := FlattenMap(out.Data, config.NodeId, "")
+	MergeMaps(result.itemOutput, flatItem)
+
+	return nil
 }
 
 // analyzeNodeIteration determines if a node should start iterating.
@@ -604,55 +1032,6 @@ func (sp *SubflowProcessor) shouldSkipNodeForItem(
 	}
 
 	return false
-}
-
-// processNodeSingle processes a node without iteration.
-func (sp *SubflowProcessor) processNodeSingle(
-	ctx context.Context,
-	node EmbeddedNode,
-	config EmbeddedNodeConfig,
-	store *NodeOutputStore,
-	shared map[string]interface{},
-) error {
-	// build input
-	input := sp.buildSingleNodeInput(config, store)
-
-	procInput := ProcessInput{
-		Ctx:         ctx,
-		Data:        input,
-		Config:      nil,
-		RawConfig:   config.NodeConfig.Config,
-		NodeId:      config.NodeId,
-		PluginType:  config.PluginType,
-		Label:       config.Label,
-		ItemIndex:   -1,
-		IsIteration: false,
-	}
-
-	start := time.Now()
-	out := node.Process(procInput)
-	dur := time.Since(start).Nanoseconds()
-	if out.Error != nil {
-		sp.metrics.RecordError()
-		return fmt.Errorf("node %s failed: %w", config.Label, out.Error)
-	}
-
-	if out.Skipped {
-		sp.metrics.RecordSkipped()
-		sp.logger.Debug("node skipped", Field{Key: "node_id", Value: config.NodeId}, Field{Key: "reason", Value: out.SkipReason})
-		return nil
-	}
-
-	sp.metrics.RecordProcessed(dur)
-
-	// store single output
-	store.SetSingleOutput(config.NodeId, out.Data)
-
-	// flatten and merge into shared
-	flat := FlattenMap(out.Data, config.NodeId, "")
-	MergeMaps(shared, flat)
-
-	return nil
 }
 
 // buildSingleNodeInput builds input for a non-iterated node.
