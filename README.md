@@ -851,28 +851,6 @@ The embedded processor has been modularized into focused runtime packages to sim
 
 Import paths that previously referenced `github.com/wehubfusion/Icarus/pkg/embedded` continue to work unchanged because the top-level package re-exports the runtime APIs.
 
-### Usage with Iterator
-
-Control array iteration concurrency:
-
-```go
-import (
-    "github.com/wehubfusion/Icarus/pkg/iteration"
-    "github.com/wehubfusion/Icarus/pkg/concurrency"
-)
-
-// Create iterator with limiter
-iterator := iteration.NewIteratorWithLimiter(
-    iteration.Config{
-        Strategy: iteration.StrategyParallel,
-    },
-    limiter,
-)
-
-// Process items - worker goroutines are automatically limited
-results, err := iterator.Process(ctx, items, processFn)
-```
-
 ### Observability
 
 The runner logs concurrency metrics every 30 seconds:
