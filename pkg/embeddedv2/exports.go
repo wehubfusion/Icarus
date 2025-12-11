@@ -8,6 +8,7 @@
 package embeddedv2
 
 import (
+	"github.com/wehubfusion/Icarus/pkg/embeddedv2/processors"
 	"github.com/wehubfusion/Icarus/pkg/embeddedv2/runtime"
 )
 
@@ -81,6 +82,9 @@ type (
 var (
 	// NewDefaultNodeFactory creates a new default node factory.
 	NewDefaultNodeFactory = runtime.NewDefaultNodeFactory
+
+	// NewProcessorRegistry creates and configures a processor registry with all available processors.
+	NewProcessorRegistry = processors.NewProcessorRegistry
 
 	// NewEmbeddedProcessor creates a new embedded processor.
 	NewEmbeddedProcessor = runtime.NewEmbeddedProcessor
