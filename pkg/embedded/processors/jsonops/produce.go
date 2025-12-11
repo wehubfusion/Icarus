@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/wehubfusion/Icarus/pkg/embeddedv2/runtime"
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime"
 	"github.com/wehubfusion/Icarus/pkg/schema"
 )
 

@@ -1,66 +1,40 @@
 package dateformatter
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
-	"github.com/wehubfusion/Icarus/pkg/embedded"
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime"
 )
 
-// Executor implements NodeExecutor for date formatting operations
-type Executor struct{}
-
-// NewExecutor creates a new date formatter executor
-func NewExecutor() *Executor {
-	return &Executor{}
+// DateFormatterNode implements date formatting for embedded.
+type DateFormatterNode struct {
+	runtime.BaseNode
 }
 
-// Execute executes a date formatting operation
-func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]byte, error) {
-	// Parse configuration
-	var dateConfig Config
-	if err := json.Unmarshal(config.Configuration, &dateConfig); err != nil {
-		return nil, fmt.Errorf("failed to parse dateformatter configuration: %w", err)
+// NewDateFormatterNode creates a new date formatter node.
+func NewDateFormatterNode(config runtime.EmbeddedNodeConfig) (runtime.EmbeddedNode, error) {
+	if config.PluginType != "plugin-date-formatter" {
+		return nil, fmt.Errorf("invalid plugin type: expected 'plugin-date-formatter', got '%s'", config.PluginType)
 	}
-
-	// Validate configuration
-	if err := dateConfig.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid dateformatter configuration: %w", err)
-	}
-
-	// Route to appropriate operation handler
-	switch dateConfig.Operation {
-	case "format":
-		return e.executeFormatOperation(config.Input, dateConfig.Params)
-
-	default:
-		return nil, fmt.Errorf("unknown operation: %s", dateConfig.Operation)
-	}
+	return &DateFormatterNode{BaseNode: runtime.NewBaseNode(config)}, nil
 }
 
-// executeFormatOperation executes the format operation
-func (e *Executor) executeFormatOperation(input []byte, paramsRaw json.RawMessage) ([]byte, error) {
-	var params FormatParams
-	if err := json.Unmarshal(paramsRaw, &params); err != nil {
-		return nil, fmt.Errorf("failed to parse format params: %w", err)
+// Process formats dates according to config and input.
+func (n *DateFormatterNode) Process(input runtime.ProcessInput) runtime.ProcessOutput {
+	var cfg Config
+	if err := json.Unmarshal(input.RawConfig, &cfg); err != nil {
+		return runtime.ErrorOutput(NewConfigError(n.NodeId(), "configuration", fmt.Sprintf("failed to parse configuration: %v", err)))
 	}
 
-	// Validate params
-	if err := params.Validate(); err != nil {
-		return nil, err
+	if err := cfg.Validate(n.NodeId()); err != nil {
+		return runtime.ErrorOutput(err)
 	}
 
-	// Execute format operation
-	result, err := executeFormat(input, params)
+	result, err := executeFormat(n.NodeId(), input.ItemIndex, input.Data, cfg)
 	if err != nil {
-		return nil, err
+		return runtime.ErrorOutput(err)
 	}
 
-	return result, nil
-}
-
-// PluginType returns the plugin type this executor handles
-func (e *Executor) PluginType() string {
-	return "plugin-date-formatter"
+	return runtime.SuccessOutput(result)
 }

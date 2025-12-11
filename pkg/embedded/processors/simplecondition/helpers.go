@@ -4,28 +4,37 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-
-	"github.com/tidwall/gjson"
+	"strings"
 )
 
-// getValueFromPath extracts a value from a JSON object using a path
-// Supports dot notation, array indexing, and other gjson syntax
-func getValueFromPath(data []byte, path string) (interface{}, bool) {
-	result := gjson.GetBytes(data, path)
-	if !result.Exists() {
+// getValueFromPath extracts a value from a map using dot notation path.
+func getValueFromPath(data map[string]interface{}, path string) (interface{}, bool) {
+	if path == "" {
 		return nil, false
 	}
-
-	return result.Value(), true
+	parts := strings.Split(path, ".")
+	current := interface{}(data)
+	for i, part := range parts {
+		if m, ok := current.(map[string]interface{}); ok {
+			val, exists := m[part]
+			if !exists {
+				return nil, false
+			}
+			current = val
+			continue
+		}
+		if i < len(parts)-1 {
+			return nil, false
+		}
+	}
+	return current, true
 }
 
-// isEmptyValue checks if a value is considered empty
-// Empty means: nil, empty string, empty array, empty object, or false
+// isEmptyValue checks if a value is considered empty.
 func isEmptyValue(value interface{}) bool {
 	if value == nil {
 		return true
 	}
-
 	switch v := value.(type) {
 	case string:
 		return v == ""
@@ -46,8 +55,7 @@ func isEmptyValue(value interface{}) bool {
 	}
 }
 
-// toFloat64 converts a value to float64
-// Handles int, int64, float64, and string representations of numbers
+// toFloat64 converts a value to float64.
 func toFloat64(value interface{}) (float64, error) {
 	switch v := value.(type) {
 	case float64:
@@ -67,17 +75,15 @@ func toFloat64(value interface{}) (float64, error) {
 	}
 }
 
-// toString converts a value to string
+// toString converts a value to string.
 func toString(value interface{}) string {
 	if value == nil {
 		return ""
 	}
-
 	switch v := value.(type) {
 	case string:
 		return v
 	case float64:
-		// Remove trailing zeros for cleaner display
 		return strconv.FormatFloat(v, 'f', -1, 64)
 	case int:
 		return strconv.Itoa(v)
@@ -86,7 +92,6 @@ func toString(value interface{}) string {
 	case bool:
 		return strconv.FormatBool(v)
 	default:
-		// For complex types, use JSON representation
 		b, err := json.Marshal(v)
 		if err != nil {
 			return fmt.Sprintf("%v", v)
@@ -95,7 +100,7 @@ func toString(value interface{}) string {
 	}
 }
 
-// toSlice converts a value to a slice
+// toSlice converts a value to a slice.
 func toSlice(value interface{}) ([]interface{}, error) {
 	switch v := value.(type) {
 	case []interface{}:
@@ -123,69 +128,40 @@ func toSlice(value interface{}) ([]interface{}, error) {
 	}
 }
 
-// countMetConditions counts how many conditions were met
-func countMetConditions(results map[string]ConditionResult) int {
-	count := 0
-	for _, result := range results {
-		if result.Met {
-			count++
-		}
-	}
-	return count
-}
-
-// countUnmetConditions counts how many conditions were not met
-func countUnmetConditions(results map[string]ConditionResult) int {
-	count := 0
-	for _, result := range results {
-		if !result.Met {
-			count++
-		}
-	}
-	return count
-}
-
-// mustMarshalJSON marshals a value to JSON, panicking on error
-// Used for internal data that should always marshal successfully
-func mustMarshalJSON(v interface{}) []byte {
-	b, err := json.Marshal(v)
-	if err != nil {
-		panic(fmt.Sprintf("failed to marshal JSON: %v", err))
-	}
-	return b
-}
-
-// valuesEqual checks if two values are equal
-func valuesEqual(a, b interface{}, caseInsensitive bool) bool {
-	// Handle nil cases
-	if a == nil && b == nil {
+// valuesEqual checks if two values are equal, with optional case-insensitive comparison.
+func valuesEqual(actualValue, expectedValue interface{}, caseInsensitive bool) bool {
+	if actualValue == nil && expectedValue == nil {
 		return true
 	}
-	if a == nil || b == nil {
+	if actualValue == nil || expectedValue == nil {
 		return false
 	}
-
-	// Try string comparison first if case insensitive
+	actualStr := toString(actualValue)
+	expectedStr := toString(expectedValue)
 	if caseInsensitive {
-		aStr := toString(a)
-		bStr := toString(b)
-		return normalizeString(aStr, true) == normalizeString(bStr, true)
+		return strings.EqualFold(actualStr, expectedStr)
 	}
+	return actualStr == expectedStr
+}
 
-	// Try numeric comparison
-	aFloat, aErr := toFloat64(a)
-	bFloat, bErr := toFloat64(b)
-	if aErr == nil && bErr == nil {
-		return aFloat == bFloat
+// countMetConditions counts how many conditions were met.
+func countMetConditions(results map[string]bool) int {
+	count := 0
+	for _, met := range results {
+		if met {
+			count++
+		}
 	}
+	return count
+}
 
-	// Try string comparison
-	aStr := toString(a)
-	bStr := toString(b)
-	if aStr == bStr {
-		return true
+// countUnmetConditions counts how many conditions were not met.
+func countUnmetConditions(results map[string]bool) int {
+	count := 0
+	for _, met := range results {
+		if !met {
+			count++
+		}
 	}
-
-	// Direct comparison
-	return a == b
+	return count
 }

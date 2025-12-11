@@ -6,9 +6,55 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/wehubfusion/Icarus/pkg/embedded"
+	embeddedv2 "github.com/wehubfusion/Icarus/pkg/embedded"
 	"github.com/wehubfusion/Icarus/pkg/embedded/processors/jsrunner"
 )
+
+// executor is a lightweight helper for the examples, using the embedded
+// runtime factory and the jsrunner node directly.
+type executor struct {
+	factory embeddedv2.EmbeddedNodeFactory
+}
+
+func newExecutor() *executor {
+	return &executor{factory: embeddedv2.NewProcessorRegistry()}
+}
+
+func (e *executor) Close() {}
+
+func (e *executor) ExecuteScript(ctx context.Context, script string, input map[string]interface{}) (map[string]interface{}, error) {
+	cfg := jsrunner.Config{Script: script}
+	return e.ExecuteWithConfig(ctx, cfg, input)
+}
+
+func (e *executor) ExecuteWithConfig(ctx context.Context, cfg jsrunner.Config, input map[string]interface{}) (map[string]interface{}, error) {
+	cfg.ApplyDefaults()
+	rawCfg, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	node, err := e.factory.Create(embeddedv2.EmbeddedNodeConfig{
+		NodeId:     "example-node",
+		PluginType: "plugin-js",
+		Label:      "example",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	processOutput := node.Process(embeddedv2.ProcessInput{
+		Ctx:       ctx,
+		Data:      input,
+		RawConfig: rawCfg,
+		ItemIndex: -1,
+	})
+
+	if processOutput.Error != nil {
+		return nil, processOutput.Error
+	}
+	return processOutput.Data, nil
+}
 
 func main() {
 	fmt.Println("=== JavaScript Runner Examples ===")
@@ -43,7 +89,7 @@ func example1() {
 	fmt.Println("Example 1: Basic Execution")
 	fmt.Println("--------------------------")
 
-	executor := jsrunner.NewExecutor()
+	executor := newExecutor()
 	defer executor.Close()
 
 	script := `
@@ -65,7 +111,7 @@ func example2() {
 	fmt.Println("Example 2: Working with Input")
 	fmt.Println("------------------------------")
 
-	executor := jsrunner.NewExecutor()
+	executor := newExecutor()
 	defer executor.Close()
 
 	script := `
@@ -103,7 +149,7 @@ func example3() {
 	fmt.Println("Example 3: Using JSON Utility")
 	fmt.Println("-----------------------------")
 
-	executor := jsrunner.NewExecutor()
+	executor := newExecutor()
 	defer executor.Close()
 
 	config := jsrunner.Config{
@@ -121,29 +167,17 @@ func example3() {
 		`,
 		EnabledUtilities: []string{"json"},
 	}
-	config.ApplyDefaults()
 
-	configJSON, _ := json.Marshal(config)
-	inputData := map[string]interface{}{
+	input := map[string]interface{}{
 		"jsonString": `{"name":"Alice","age":30}`,
 	}
-	inputJSON, _ := json.Marshal(inputData)
 
-	nodeConfig := embedded.NodeConfig{
-		NodeID:        "example-node",
-		PluginType:    "plugin-js",
-		Configuration: configJSON,
-		Input:         inputJSON,
-	}
-
-	output, err := executor.Execute(context.Background(), nodeConfig)
+	result, err := executor.ExecuteWithConfig(context.Background(), config, input)
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
 	}
 
-	var result map[string]interface{}
-	json.Unmarshal(output, &result)
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	fmt.Printf("Result:\n%s\n\n", resultJSON)
 }
@@ -152,7 +186,7 @@ func example4() {
 	fmt.Println("Example 4: Using Console Utility")
 	fmt.Println("--------------------------------")
 
-	executor := jsrunner.NewExecutor()
+	executor := newExecutor()
 	defer executor.Close()
 
 	script := `
@@ -175,26 +209,13 @@ func example4() {
 		Script:           script,
 		EnabledUtilities: []string{"console"},
 	}
-	config.ApplyDefaults()
 
-	configJSON, _ := json.Marshal(config)
-	inputJSON, _ := json.Marshal(map[string]interface{}{})
-
-	nodeConfig := embedded.NodeConfig{
-		NodeID:        "example-node",
-		PluginType:    "plugin-js",
-		Configuration: configJSON,
-		Input:         inputJSON,
-	}
-
-	output, err := executor.Execute(context.Background(), nodeConfig)
+	result, err := executor.ExecuteWithConfig(context.Background(), config, map[string]interface{}{})
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
 	}
 
-	var result map[string]interface{}
-	json.Unmarshal(output, &result)
 	fmt.Printf("Result: %v\n\n", result["result"])
 }
 
@@ -202,7 +223,7 @@ func example5() {
 	fmt.Println("Example 5: Complex Calculation")
 	fmt.Println("------------------------------")
 
-	executor := jsrunner.NewExecutor()
+	executor := newExecutor()
 	defer executor.Close()
 
 	script := `
@@ -245,7 +266,7 @@ func example6() {
 	fmt.Println("Example 6: Error Handling")
 	fmt.Println("-------------------------")
 
-	executor := jsrunner.NewExecutor()
+	executor := newExecutor()
 	defer executor.Close()
 
 	script := `
@@ -257,38 +278,16 @@ func example6() {
 	config := jsrunner.Config{
 		Script: script,
 	}
-	config.ApplyDefaults()
 
-	configJSON, _ := json.Marshal(config)
-	inputJSON, _ := json.Marshal(map[string]interface{}{})
-
-	nodeConfig := embedded.NodeConfig{
-		NodeID:        "example-node",
-		PluginType:    "plugin-js",
-		Configuration: configJSON,
-		Input:         inputJSON,
-	}
-
-	output, err := executor.Execute(context.Background(), nodeConfig)
-
-	fmt.Printf("Execution Error: %v\n", err)
-
-	if output != nil {
-		var result map[string]interface{}
-		json.Unmarshal(output, &result)
-		if errInfo, ok := result["error"].(map[string]interface{}); ok {
-			fmt.Printf("Error Type: %v\n", errInfo["type"])
-			fmt.Printf("Error Message: %v\n", errInfo["message"])
-		}
-	}
-	fmt.Println()
+	_, err := executor.ExecuteWithConfig(context.Background(), config, map[string]interface{}{})
+	fmt.Printf("Execution Error: %v\n\n", err)
 }
 
 func example7() {
 	fmt.Println("Example 7: Timeout Handling")
 	fmt.Println("---------------------------")
 
-	executor := jsrunner.NewExecutor()
+	executor := newExecutor()
 	defer executor.Close()
 
 	script := `
@@ -305,19 +304,8 @@ func example7() {
 		Script:  script,
 		Timeout: 500, // 500ms timeout
 	}
-	config.ApplyDefaults()
 
-	configJSON, _ := json.Marshal(config)
-	inputJSON, _ := json.Marshal(map[string]interface{}{})
-
-	nodeConfig := embedded.NodeConfig{
-		NodeID:        "example-node",
-		PluginType:    "plugin-js",
-		Configuration: configJSON,
-		Input:         inputJSON,
-	}
-
-	_, err := executor.Execute(context.Background(), nodeConfig)
+	_, err := executor.ExecuteWithConfig(context.Background(), config, map[string]interface{}{})
 
 	if err != nil {
 		fmt.Printf("Expected timeout error: %v\n\n", err)
@@ -328,7 +316,7 @@ func example8() {
 	fmt.Println("Example 8: Pool Statistics")
 	fmt.Println("--------------------------")
 
-	executor := jsrunner.NewExecutor()
+	executor := newExecutor()
 	defer executor.Close()
 
 	script := `42`
@@ -341,16 +329,6 @@ func example8() {
 		}
 	}
 
-	stats := executor.GetPoolStats()
-	if stats != nil {
-		fmt.Printf("Pool Statistics:\n")
-		fmt.Printf("  Current Size: %d\n", stats.CurrentSize)
-		fmt.Printf("  Min Size: %d\n", stats.MinSize)
-		fmt.Printf("  Max Size: %d\n", stats.MaxSize)
-		fmt.Printf("  Total Created: %d\n", stats.TotalCreated)
-		fmt.Printf("  Total Acquired: %d\n", stats.TotalAcquired)
-		fmt.Printf("  Total Released: %d\n", stats.TotalReleased)
-		fmt.Printf("  Available: %d\n", stats.Available)
-	}
+	fmt.Println("Pool statistics not available in this simplified executor.")
 	fmt.Println()
 }

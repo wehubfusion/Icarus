@@ -1,154 +1,114 @@
 package simplecondition
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
-	"github.com/wehubfusion/Icarus/pkg/embedded"
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime"
 )
 
-// Executor implements NodeExecutor for simple condition evaluation
-type Executor struct{}
-
-// NewExecutor creates a new simple condition executor
-func NewExecutor() *Executor {
-	return &Executor{}
+// SimpleConditionNode implements conditional logic evaluation for embeddedv2.
+type SimpleConditionNode struct {
+	runtime.BaseNode
 }
 
-// Execute executes the simple condition processor
-// It evaluates conditions on the input and outputs event flags for routing
-// When used in iteration, receives single items and outputs single results
-func (e *Executor) Execute(ctx context.Context, config embedded.NodeConfig) ([]byte, error) {
-	// Parse configuration
+// NewSimpleConditionNode creates a new simple condition node.
+func NewSimpleConditionNode(config runtime.EmbeddedNodeConfig) (runtime.EmbeddedNode, error) {
+	if config.PluginType != "plugin-simple-condition" {
+		return nil, fmt.Errorf("invalid plugin type: expected 'plugin-simple-condition', got '%s'", config.PluginType)
+	}
+	return &SimpleConditionNode{
+		BaseNode: runtime.NewBaseNode(config),
+	}, nil
+}
+
+// Process evaluates conditions and returns event-based routing output.
+func (n *SimpleConditionNode) Process(input runtime.ProcessInput) runtime.ProcessOutput {
 	var cfg Config
-	if err := json.Unmarshal(config.Configuration, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse configuration: %w", err)
+	if err := json.Unmarshal(input.RawConfig, &cfg); err != nil {
+		return runtime.ErrorOutput(NewConfigError(n.NodeId(), "configuration", fmt.Sprintf("failed to parse configuration: %v", err)))
 	}
 
-	// Validate configuration
 	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid configuration: %w", err)
+		return runtime.ErrorOutput(NewConfigError(n.NodeId(), "configuration", fmt.Sprintf("invalid configuration: %v", err)))
 	}
 
-	// Parse input data
-	var inputData interface{}
-	if err := json.Unmarshal(config.Input, &inputData); err != nil {
-		return nil, fmt.Errorf("failed to parse input: %w", err)
-	}
-
-	// Evaluate all conditions on the input
-	results := make(map[string]ConditionResult)
+	results := make(map[string]bool)
 	for _, condition := range cfg.Conditions {
-		result := e.evaluateCondition(condition, config.Input)
-		results[condition.Name] = result
+		met, err := n.evaluateCondition(input, condition)
+		if err != nil {
+			return runtime.ErrorOutput(err)
+		}
+		results[condition.Name] = met
 	}
 
-	// Calculate overall result based on logic operator
-	overallResult := e.calculateOverallResult(results, cfg.LogicOperator)
+	overallResult := n.calculateOverallResult(results, cfg.LogicOperator)
 
-	// Build output with event endpoints for conditional routing
-	// The "true" and "false" endpoints contain the input data when their condition is met
-	// This allows downstream nodes to receive the data through event-based routing
-	output := map[string]interface{}{
-		"result":     overallResult,
-		"conditions": results,
-		"summary": Summary{
-			TotalConditions: len(cfg.Conditions),
-			MetConditions:   countMetConditions(results),
-			UnmetConditions: countUnmetConditions(results),
-			LogicOperator:   cfg.LogicOperator,
-		},
-		// Pass input data through on the matching event path
-		// This enables downstream nodes to receive filtered data
-		"data": inputData,
-	}
-
-	// Set event outputs - the matching event gets the input data, the other is null
-	// This enables event-based routing in the runtime
+	output := make(map[string]interface{})
 	if overallResult {
-		output["true"] = inputData // Condition matched - pass data to "true" consumers
-		output["false"] = nil      // Condition matched - "false" consumers get nothing
+		output["true"] = input.Data
+		output["false"] = nil
 	} else {
-		output["true"] = nil        // Condition not matched - "true" consumers get nothing
-		output["false"] = inputData // Condition not matched - pass data to "false" consumers
+		output["true"] = nil
+		output["false"] = input.Data
 	}
 
-	return json.Marshal(output)
+	return runtime.SuccessOutput(output)
 }
 
-// evaluateCondition evaluates a single condition
-func (e *Executor) evaluateCondition(condition Condition, input []byte) ConditionResult {
-	result := ConditionResult{
-		Name:          condition.Name,
-		Operator:      condition.Operator,
-		ExpectedValue: condition.ExpectedValue,
-		Met:           false,
-	}
+func (n *SimpleConditionNode) evaluateCondition(input runtime.ProcessInput, condition Condition) (bool, error) {
+	actualValue, exists := getValueFromPath(input.Data, condition.FieldPath)
 
-	// Extract value from input
-	actualValue, exists := getValueFromPath(input, condition.FieldPath)
-	result.ActualValue = actualValue
-
-	// Handle non-existent fields
 	if !exists {
-		// For existence operators, non-existent means empty
 		if condition.Operator == OpIsEmpty {
-			result.Met = true
-			return result
+			return true, nil
 		}
 		if condition.Operator == OpIsNotEmpty {
-			result.Met = false
-			return result
+			return false, nil
 		}
-
-		// For other operators, non-existent field is an error
-		result.Error = fmt.Sprintf("field '%s' not found in input", condition.FieldPath)
-		return result
+		return false, NewEvaluationError(
+			n.NodeId(),
+			input.ItemIndex,
+			condition.Name,
+			fmt.Sprintf("field '%s' not found in input", condition.FieldPath),
+		)
 	}
 
-	// Perform comparison
-	met, err := compareValues(actualValue, condition.ExpectedValue, condition.Operator, condition.CaseInsensitive)
+	met, err := compareValues(
+		n.NodeId(),
+		input.ItemIndex,
+		actualValue,
+		condition.ExpectedValue,
+		condition.Operator,
+		condition.CaseInsensitive,
+	)
 	if err != nil {
-		result.Error = err.Error()
-		return result
+		return false, err
 	}
 
-	result.Met = met
-	return result
+	return met, nil
 }
 
-// calculateOverallResult calculates the overall result based on logic operator
-func (e *Executor) calculateOverallResult(results map[string]ConditionResult, logicOp LogicOperator) bool {
+func (n *SimpleConditionNode) calculateOverallResult(results map[string]bool, logicOp LogicOperator) bool {
 	if len(results) == 0 {
 		return false
 	}
-
 	switch logicOp {
 	case LogicAnd:
-		// All conditions must be met
-		for _, result := range results {
-			if !result.Met {
+		for _, met := range results {
+			if !met {
 				return false
 			}
 		}
 		return true
-
 	case LogicOr:
-		// At least one condition must be met
-		for _, result := range results {
-			if result.Met {
+		for _, met := range results {
+			if met {
 				return true
 			}
 		}
 		return false
-
 	default:
 		return false
 	}
-}
-
-// PluginType returns the plugin type this executor handles
-func (e *Executor) PluginType() string {
-	return "plugin-simple-condition"
 }

@@ -1,185 +1,98 @@
 package dateformatter
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 )
 
-// executeFormat performs date format conversion with optional timezone transformation
-func executeFormat(input []byte, params FormatParams) ([]byte, error) {
-	// Parse input JSON to extract date string
-	var inputData map[string]interface{}
-	if err := json.Unmarshal(input, &inputData); err != nil {
-		return nil, NewInputError("", fmt.Sprintf("failed to parse input JSON: %v", err))
+// executeFormat performs date format conversion with optional timezone transformation.
+func executeFormat(nodeID string, itemIndex int, input map[string]interface{}, cfg Config) (map[string]interface{}, error) {
+	// Gracefully handle missing input map.
+	if input == nil {
+		return map[string]interface{}{"result": nil}, nil
 	}
 
-	// Check if input is empty - return empty result gracefully (upstream data may be missing)
-	if len(inputData) == 0 {
-		return json.Marshal(map[string]interface{}{"data": nil})
+	val, exists := input["date"]
+	if !exists || val == nil {
+		return map[string]interface{}{"result": nil}, nil
 	}
 
-	// Extract date string from "data" field
-	dateStr, ok := inputData["data"].(string)
+	dateStr, ok := val.(string)
 	if !ok {
-		// Check if "data" field exists but is not a string
-		if dataVal, exists := inputData["data"]; exists {
-			// Handle nil or empty data gracefully - return null result
-			if dataVal == nil {
-				return json.Marshal(map[string]interface{}{"data": nil})
-			}
-			return nil, NewInputError("data", fmt.Sprintf("'data' field must be a string value, got: %T", inputData["data"]))
-		}
-		// No data field - return empty result gracefully
-		return json.Marshal(map[string]interface{}{"data": nil})
+		return nil, NewInputError(nodeID, itemIndex, "date", fmt.Sprintf("expected string, got %T", val))
 	}
 
-	if dateStr == "" {
-		// Empty date string - return null result gracefully
-		return json.Marshal(map[string]interface{}{"data": nil})
+	if strings.TrimSpace(dateStr) == "" {
+		return map[string]interface{}{"result": nil}, nil
 	}
 
-	// Normalize input date string (handle partial DateTime inputs)
-	normalizedDateStr := normalizeInputDate(dateStr, TimeFormat(params.InFormat))
+	// Normalize input date string (handle partial DateTime and compact DateOnly).
+	normalized := normalizeInputDate(dateStr, TimeFormat(cfg.InFormat))
 
-	// Get input and output layouts
-	inputLayout := params.GetInputLayout()
-	outputLayout := params.GetOutputLayout()
+	inputLayout := cfg.GetInputLayout()
+	outputLayout := cfg.GetOutputLayout()
 
-	// Parse the date with timezone handling
-	parsedTime, err := parseDateTime(normalizedDateStr, inputLayout, params.InTimezone)
+	parsedTime, err := parseDateTime(nodeID, itemIndex, normalized, inputLayout, cfg.InTimezone)
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert to output timezone if specified
-	if params.OutTimezone != "" {
-		location, err := time.LoadLocation(params.OutTimezone)
-		if err != nil {
-			return nil, NewTimezoneError(params.OutTimezone, "invalid output timezone", err)
+	// Convert to output timezone if specified.
+	if cfg.OutTimezone != "" {
+		location, tzErr := time.LoadLocation(cfg.OutTimezone)
+		if tzErr != nil {
+			return nil, NewTimezoneError(nodeID, itemIndex, cfg.OutTimezone, "invalid output timezone", tzErr)
 		}
 		parsedTime = parsedTime.In(location)
 	}
 
-	// Format the date using output layout
-	formattedDate := parsedTime.Format(outputLayout)
+	// Format the date using output layout.
+	formatted := parsedTime.Format(outputLayout)
 
-	// Build output JSON
-	output := map[string]interface{}{
-		"result": formattedDate,
-	}
-
-	result, err := json.Marshal(output)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal output: %w", err)
-	}
-
-	return result, nil
+	return map[string]interface{}{"result": formatted}, nil
 }
 
-// parseDateTime parses a date string with timezone support
-func parseDateTime(dateStr, layout, timezone string) (time.Time, error) {
-	var parsedTime time.Time
+// parseDateTime parses a date string with timezone support.
+func parseDateTime(nodeID string, itemIndex int, dateStr, layout, timezone string) (time.Time, error) {
+	var parsed time.Time
 	var err error
 
 	if timezone != "" {
-		// Parse with specific timezone
 		location, locErr := time.LoadLocation(timezone)
 		if locErr != nil {
-			return time.Time{}, NewTimezoneError(timezone, "invalid input timezone", locErr)
+			return time.Time{}, NewTimezoneError(nodeID, itemIndex, timezone, "invalid input timezone", locErr)
 		}
-		parsedTime, err = time.ParseInLocation(layout, dateStr, location)
+		parsed, err = time.ParseInLocation(layout, dateStr, location)
 	} else {
-		// Parse without specific timezone (use timezone from string or local)
-		parsedTime, err = time.Parse(layout, dateStr)
+		parsed, err = time.Parse(layout, dateStr)
 	}
 
 	if err != nil {
-		return time.Time{}, NewParseError(dateStr, layout, "invalid date format", err)
+		return time.Time{}, NewParseError(nodeID, itemIndex, dateStr, layout, "invalid date format", err)
 	}
 
-	return parsedTime, nil
+	return parsed, nil
 }
 
-// normalizeInputDate handles partial DateTime inputs and format-specific normalization
+// normalizeInputDate handles partial DateTime inputs and format-specific normalization.
 func normalizeInputDate(dateStr string, format TimeFormat) string {
-	// Handle partial DateTime inputs (add missing time components)
+	// Handle partial DateTime inputs (add missing time components).
 	if format == FormatDateTime {
-		// "2006-01-02" → "2006-01-02 00:00:00"
 		if len(dateStr) == 10 && strings.Count(dateStr, "-") == 2 {
 			return dateStr + " 00:00:00"
 		}
-		// "2006-01-02 15:04" → "2006-01-02 15:04:00"
 		if len(dateStr) == 16 && strings.Count(dateStr, ":") == 1 {
 			return dateStr + ":00"
 		}
 	}
 
-	// Handle DateOnly format normalization
+	// Handle DateOnly compact format (YYYYMMDD -> YYYY-MM-DD).
 	if format == FormatDateOnly {
-		// "20060102" (YYYYMMDD) → "2006-01-02"
 		if len(dateStr) == 8 && !strings.Contains(dateStr, "-") && !strings.Contains(dateStr, "/") {
 			return dateStr[:4] + "-" + dateStr[4:6] + "-" + dateStr[6:8]
 		}
 	}
 
-	// Return unchanged if no normalization needed
 	return dateStr
-}
-
-// Additional helper functions for common operations
-
-// FormatDateWithTimezone is a convenience function for format operations
-func FormatDateWithTimezone(dateStr, inFormat, inTZ, outFormat, outTZ string) (string, error) {
-	params := FormatParams{
-		InFormat:    inFormat,
-		InTimezone:  inTZ,
-		OutFormat:   outFormat,
-		OutTimezone: outTZ,
-	}
-
-	if err := params.Validate(); err != nil {
-		return "", err
-	}
-
-	input := map[string]interface{}{
-		"data": dateStr,
-	}
-
-	inputJSON, err := json.Marshal(input)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal input: %w", err)
-	}
-
-	output, err := executeFormat(inputJSON, params)
-	if err != nil {
-		return "", err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(output, &result); err != nil {
-		return "", fmt.Errorf("failed to unmarshal output: %w", err)
-	}
-
-	formattedDate, ok := result["result"].(string)
-	if !ok {
-		return "", fmt.Errorf("unexpected output format")
-	}
-
-	return formattedDate, nil
-}
-
-// ValidateTimezone checks if a timezone string is valid
-func ValidateTimezone(tz string) error {
-	if tz == "" {
-		return nil // Empty timezone is valid
-	}
-
-	_, err := time.LoadLocation(tz)
-	if err != nil {
-		return NewTimezoneError(tz, "invalid timezone", err)
-	}
-
-	return nil
 }

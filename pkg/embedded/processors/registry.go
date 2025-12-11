@@ -1,12 +1,12 @@
 package processors
 
 import (
-	"github.com/wehubfusion/Icarus/pkg/embeddedv2/processors/dateformatter"
-	"github.com/wehubfusion/Icarus/pkg/embeddedv2/processors/jsonops"
-	"github.com/wehubfusion/Icarus/pkg/embeddedv2/processors/jsrunner"
-	"github.com/wehubfusion/Icarus/pkg/embeddedv2/processors/simplecondition"
-	"github.com/wehubfusion/Icarus/pkg/embeddedv2/processors/strings"
-	"github.com/wehubfusion/Icarus/pkg/embeddedv2/runtime"
+	"github.com/wehubfusion/Icarus/pkg/embedded/processors/dateformatter"
+	"github.com/wehubfusion/Icarus/pkg/embedded/processors/jsonops"
+	"github.com/wehubfusion/Icarus/pkg/embedded/processors/jsrunner"
+	"github.com/wehubfusion/Icarus/pkg/embedded/processors/simplecondition"
+	"github.com/wehubfusion/Icarus/pkg/embedded/processors/strings"
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime"
 )
 
 // NewProcessorRegistry creates and configures a new processor registry

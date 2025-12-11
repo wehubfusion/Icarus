@@ -2,44 +2,102 @@ package jsonops
 
 import "fmt"
 
-// OperationError represents an error that occurred during a JSON operation
-type OperationError struct {
+// ProcessingError represents an error that occurred during JSON processing
+// It includes context from the embedded runtime
+type ProcessingError struct {
+	NodeId    string
 	Operation string
 	Message   string
-	Path      string
+	ItemIndex int // -1 if not in iteration
 	Cause     error
 }
 
-func (e *OperationError) Error() string {
-	if e.Path != "" && e.Cause != nil {
-		return fmt.Sprintf("%s operation failed at path '%s': %s: %v", e.Operation, e.Path, e.Message, e.Cause)
+func (e *ProcessingError) Error() string {
+	base := fmt.Sprintf("jsonops node '%s' operation '%s': %s", e.NodeId, e.Operation, e.Message)
+
+	if e.ItemIndex >= 0 {
+		base = fmt.Sprintf("%s (item %d)", base, e.ItemIndex)
 	}
-	if e.Path != "" {
-		return fmt.Sprintf("%s operation failed at path '%s': %s", e.Operation, e.Path, e.Message)
-	}
+
 	if e.Cause != nil {
-		return fmt.Sprintf("%s operation failed: %s: %v", e.Operation, e.Message, e.Cause)
+		return fmt.Sprintf("%s: %v", base, e.Cause)
 	}
-	return fmt.Sprintf("%s operation failed: %s", e.Operation, e.Message)
+
+	return base
 }
 
-func (e *OperationError) Unwrap() error {
+func (e *ProcessingError) Unwrap() error {
 	return e.Cause
 }
 
-// ValidationError represents an error that occurred during schema validation
+// NewProcessingError creates a new processing error
+func NewProcessingError(nodeId, operation, message string, itemIndex int, cause error) *ProcessingError {
+	return &ProcessingError{
+		NodeId:    nodeId,
+		Operation: operation,
+		Message:   message,
+		ItemIndex: itemIndex,
+		Cause:     cause,
+	}
+}
+
+// ValidationError represents a schema validation failure
 type ValidationError struct {
-	Path    string
-	Message string
-	Errors  []string
+	NodeId    string
+	Operation string
+	Message   string
+	ItemIndex int
+	Errors    []string
 }
 
 func (e *ValidationError) Error() string {
+	base := fmt.Sprintf("jsonops node '%s' validation failed: %s", e.NodeId, e.Message)
+
+	if e.ItemIndex >= 0 {
+		base = fmt.Sprintf("%s (item %d)", base, e.ItemIndex)
+	}
+
 	if len(e.Errors) > 0 {
-		return fmt.Sprintf("validation failed: %s (errors: %v)", e.Message, e.Errors)
+		return fmt.Sprintf("%s - errors: %v", base, e.Errors)
 	}
-	if e.Path != "" {
-		return fmt.Sprintf("validation failed at path '%s': %s", e.Path, e.Message)
+
+	return base
+}
+
+// NewValidationError creates a new validation error
+func NewValidationError(nodeId, operation, message string, itemIndex int, errors []string) *ValidationError {
+	return &ValidationError{
+		NodeId:    nodeId,
+		Operation: operation,
+		Message:   message,
+		ItemIndex: itemIndex,
+		Errors:    errors,
 	}
-	return fmt.Sprintf("validation failed: %s", e.Message)
+}
+
+// ConfigError represents a configuration error
+type ConfigError struct {
+	NodeId  string
+	Message string
+	Cause   error
+}
+
+func (e *ConfigError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("jsonops node '%s' config error: %s: %v", e.NodeId, e.Message, e.Cause)
+	}
+	return fmt.Sprintf("jsonops node '%s' config error: %s", e.NodeId, e.Message)
+}
+
+func (e *ConfigError) Unwrap() error {
+	return e.Cause
+}
+
+// NewConfigError creates a new config error
+func NewConfigError(nodeId, message string, cause error) *ConfigError {
+	return &ConfigError{
+		NodeId:  nodeId,
+		Message: message,
+		Cause:   cause,
+	}
 }
