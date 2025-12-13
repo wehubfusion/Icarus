@@ -18,11 +18,17 @@ type Config struct {
 	// Script is the JavaScript code to execute
 	Script string `json:"script"`
 
-	// SchemaID is the ID of the output schema from the schema engine
-	SchemaID string `json:"schema_id,omitempty"`
+	// InputSchemaID is the ID of the input schema (enriched to inputSchema by Elysium)
+	InputSchemaID string `json:"inputSchemaID,omitempty"`
 
-	// Schema is the inline JSON schema for output validation
-	Schema map[string]interface{} `json:"schema,omitempty"`
+	// InputSchema is the inline JSON schema for input validation (enriched from inputSchemaID)
+	InputSchema map[string]interface{} `json:"inputSchema,omitempty"`
+
+	// OutputSchemaID is the ID of the output schema (enriched to outputSchema by Elysium)
+	OutputSchemaID string `json:"outputSchemaID,omitempty"`
+
+	// OutputSchema is the inline JSON schema for output validation (enriched from outputSchemaID)
+	OutputSchema map[string]interface{} `json:"outputSchema,omitempty"`
 
 	// ManualInputs allows manually specifying inputs instead of using ProcessInput.Data
 	ManualInputs map[string]interface{} `json:"manual_inputs,omitempty"`
@@ -84,9 +90,30 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// HasInputSchema returns true if an input schema is configured
+func (c *Config) HasInputSchema() bool {
+	return c.InputSchemaID != "" || len(c.InputSchema) > 0
+}
+
 // HasOutputSchema returns true if an output schema is configured
 func (c *Config) HasOutputSchema() bool {
-	return c.SchemaID != "" || len(c.Schema) > 0
+	return c.OutputSchemaID != "" || len(c.OutputSchema) > 0
+}
+
+// GetInputSchema returns the input schema, preferring enriched schema over ID
+func (c *Config) GetInputSchema() map[string]interface{} {
+	if len(c.InputSchema) > 0 {
+		return c.InputSchema
+	}
+	return nil
+}
+
+// GetOutputSchema returns the output schema, preferring enriched schema over ID
+func (c *Config) GetOutputSchema() map[string]interface{} {
+	if len(c.OutputSchema) > 0 {
+		return c.OutputSchema
+	}
+	return nil
 }
 
 // DefaultUtilitiesByLevel defines default utilities for each security level

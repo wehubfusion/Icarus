@@ -52,13 +52,13 @@ func TestConfigHasOutputSchema(t *testing.T) {
 	if cfg.HasOutputSchema() {
 		t.Fatalf("expected HasOutputSchema false by default")
 	}
-	cfg.SchemaID = "id"
+	cfg.OutputSchemaID = "id"
 	if !cfg.HasOutputSchema() {
-		t.Fatalf("expected HasOutputSchema true when SchemaID set")
+		t.Fatalf("expected HasOutputSchema true when OutputSchemaID set")
 	}
-	cfg = jsrunner.Config{Schema: map[string]interface{}{"type": "object"}}
+	cfg = jsrunner.Config{OutputSchema: map[string]interface{}{"type": "object"}}
 	if !cfg.HasOutputSchema() {
-		t.Fatalf("expected HasOutputSchema true when Schema set")
+		t.Fatalf("expected HasOutputSchema true when OutputSchema set")
 	}
 }
 

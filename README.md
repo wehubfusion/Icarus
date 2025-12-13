@@ -1534,6 +1534,41 @@ if result.Valid {
 }
 ```
 
+### CSV Schema Support (typed CSV)
+
+Icarus also understands the typed CSV schema format described in `Olympus/csv.md`. Provide a CSV schema (with `columnHeaders`, optional `delimiter`, and basic validation) plus a JSON array of row objects, and run them through the CSV helpers:
+
+```go
+csvSchema := []byte(`{
+  "name": "User Array - v3.0",
+  "delimiter": ",",
+  "columnHeaders": {
+    "username": { "type": "STRING", "required": true },
+    "email": { "type": "STRING", "required": true, "validation": { "format": "email" } },
+    "employeeno": { "type": "NUMBER", "validation": { "minimum": 0, "maximum": 999999 } }
+  }
+}`)
+
+rows := []byte(`[
+  {"username": "jdoe", "email": "jdoe@example.com", "employeeno": 42},
+  {"username": "asmith", "email": "asmith@example.com"}
+]`)
+
+result, err := engine.ProcessCSVWithSchema(
+  rows,
+  csvSchema,
+  schema.ProcessOptions{
+    ApplyDefaults:    true,  // fill missing defaults
+    StructureData:    true,  // drop columns not in schema
+    StrictValidation: true,  // fail fast on validation errors
+  },
+)
+```
+
+- CSV column order from the schema is preserved in `ColumnOrder` metadata for downstream CSV emitters.
+- Supported CSV column types: `STRING`, `NUMBER`, `DATE` (uses `format: "date"` validation).
+- Validators reuse the same format rules (`email`, `uri`, `uuid`, `date`, `datetime`), enums, lengths, and number min/max as JSON schemas.
+
 ### Schema Types
 
 The schema package supports the following data types:

@@ -55,6 +55,35 @@ func (v *Validator) Validate(data interface{}, schema *Schema) *ValidationResult
 	return result
 }
 
+// ValidateCSVRows validates a JSON array of row objects against a CSV schema
+func (v *Validator) ValidateCSVRows(rows []map[string]interface{}, schema *CSVSchema) *ValidationResult {
+	result := &ValidationResult{
+		Valid:  true,
+		Errors: []ValidationError{},
+	}
+
+	if schema == nil {
+		return result
+	}
+
+	// Reuse object validation against generated schema properties
+	prop := &Property{
+		Type:       TypeObject,
+		Properties: schema.ToObjectSchema().Properties,
+	}
+
+	for i, row := range rows {
+		rowPath := fmt.Sprintf("rows[%d]", i)
+		result.Errors = append(result.Errors, v.validateValue(row, prop, rowPath)...)
+	}
+
+	if len(result.Errors) > 0 {
+		result.Valid = false
+	}
+
+	return result
+}
+
 // validateValue validates a value against a property definition
 func (v *Validator) validateValue(value interface{}, prop *Property, path string) []ValidationError {
 	var errors []ValidationError

@@ -4,9 +4,86 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/wehubfusion/Icarus/pkg/concurrency"
 )
+
+// collectResult holds the results from CollectResults for channel communication
+type collectResult struct {
+	results     []map[string]interface{}
+	resultItems [][]map[string]interface{}
+	err         error
+}
+
+// collectResultsWithContext collects results with context cancellation support
+// It will return when all results are received, the channel is closed, or context is cancelled
+func collectResultsWithContext(ctx context.Context, resultChan <-chan BatchResult, count int) ([]map[string]interface{}, [][]map[string]interface{}, error) {
+	results := make([]map[string]interface{}, count)
+	items := make([][]map[string]interface{}, count)
+	var firstError error
+
+	received := 0
+	// Track which indices we've received to detect if we're stuck
+	receivedIndices := make(map[int]bool)
+
+	// Add a "no progress" timeout - fires if we don't receive a result for 30 seconds
+	// This catches hangs even if we've received some results
+	noProgressTimeout := time.NewTimer(30 * time.Second)
+	defer noProgressTimeout.Stop()
+	lastResultTime := time.Now()
+
+	// Overall timeout - maximum time to wait for all results (2 minutes)
+	overallTimeout := time.NewTimer(2 * time.Minute)
+	defer overallTimeout.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Context cancelled - return partial results
+			return results, items, fmt.Errorf("context cancelled during result collection: %w", ctx.Err())
+		case <-overallTimeout.C:
+			// Overall timeout - we've been waiting too long total
+			return results, items, fmt.Errorf("overall timeout waiting for results: received %d/%d results", received, count)
+		case <-noProgressTimeout.C:
+			// No progress timeout - no results received for 30 seconds
+			timeSinceLastResult := time.Since(lastResultTime)
+			return results, items, fmt.Errorf("no progress timeout: received %d/%d results, last result %v ago", received, count, timeSinceLastResult)
+		case result, ok := <-resultChan:
+			if !ok {
+				// Channel closed - return what we have
+				if received < count {
+					// We didn't get all results, but channel is closed
+					return results, items, fmt.Errorf("result channel closed prematurely: received %d/%d results", received, count)
+				}
+				return results, items, firstError
+			}
+			if result.Error != nil && firstError == nil {
+				firstError = result.Error
+			}
+			if result.Index >= 0 && result.Index < count {
+				if result.Output != nil {
+					results[result.Index] = result.Output
+				}
+				if len(result.Items) > 0 {
+					items[result.Index] = result.Items
+				}
+				receivedIndices[result.Index] = true
+			}
+			received++
+			lastResultTime = time.Now()
+			// Reset no-progress timeout on each result
+			if !noProgressTimeout.Stop() {
+				<-noProgressTimeout.C
+			}
+			noProgressTimeout.Reset(30 * time.Second)
+
+			if received >= count {
+				return results, items, firstError
+			}
+		}
+	}
+}
 
 // EmbeddedProcessor handles processing of embedded nodes with concurrency support.
 // It integrates with the concurrency package's Limiter for rate limiting.
@@ -213,7 +290,7 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 		}, nil
 	}
 
-	p.logger.Debug("processing array items",
+	p.logger.Info("processing array items",
 		Field{Key: "item_count", Value: len(items)},
 		Field{Key: "workers", Value: p.config.WorkerPool.NumWorkers},
 	)
@@ -235,18 +312,169 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 
 	// Create worker pool
 	pool := NewWorkerPool(p.config.WorkerPool, subflow, p.limiter, p.logger)
+	p.logger.Info("created worker pool", Field{Key: "num_workers", Value: p.config.WorkerPool.NumWorkers})
 
 	// Start workers
 	pool.Start(ctx)
+	p.logger.Info("started worker pool")
 
 	// Create batch items
 	batchItems := CreateBatchItems(items)
+	p.logger.Info("created batch items", Field{Key: "batch_count", Value: len(batchItems)})
 
-	// Submit items in a goroutine
-	go pool.SubmitAll(ctx, batchItems)
+	// Submit items and wait for completion in a goroutine
+	// Use a separate context for the submission goroutine to ensure it completes
+	submitDone := make(chan struct{})
+	resultChanClosed := make(chan struct{}) // Track if result channel is closed
+	go func() {
+		defer close(submitDone)
+		p.logger.Info("submitting batch items to worker pool")
+		pool.SubmitAll(ctx, batchItems)
+		p.logger.Info("submitted all batch items, waiting for workers to complete")
+		// Wait for all workers to finish and close the result channel
+		// This must happen after SubmitAll closes the job channel
+		// Use a timeout to prevent indefinite blocking
+		waitDone := make(chan struct{})
+		go func() {
+			defer close(waitDone)
+			pool.Wait()
+			close(resultChanClosed) // Signal that result channel is now closed
+		}()
+		// Wait with timeout - if context is cancelled or workers are stuck, don't wait forever
+		waitTimeout := 1 * time.Minute // Match the result collection timeout
+		select {
+		case <-waitDone:
+			// Pool wait completed normally
+			p.logger.Info("pool.Wait() completed normally")
+			p.logger.Info("pool.Wait() completed normally")
+		case <-ctx.Done():
+			// Context cancelled - workers should exit when they check context
+			// Give them a short time to finish, then continue
+			select {
+			case <-waitDone:
+			case <-time.After(5 * time.Second):
+				// Workers didn't finish in time, but we continue anyway
+				// Force close result channel if pool.Wait() is stuck
+				select {
+				case <-resultChanClosed:
+					// Already closed
+				default:
+					// Force close by calling pool.Close() in a goroutine with timeout
+					go func() {
+						pool.Close()
+					}()
+				}
+			}
+		case <-time.After(waitTimeout):
+			// Workers are taking too long - something is stuck
+			p.logger.Warn("pool.Wait() timeout - workers may be stuck", Field{Key: "timeout", Value: waitTimeout})
+			// Force close result channel if not already closed
+			select {
+			case <-resultChanClosed:
+				// Already closed
+			default:
+				// Force close by calling pool.Close() in a goroutine
+				// This will close the job channel and wait for workers, then close result channel
+				go func() {
+					pool.Close()
+				}()
+			}
+		}
+	}()
 
-	// Collect results
-	results, resultItems, err := CollectResults(pool.Results(), len(items))
+	// Collect results with context cancellation support
+	// Use a select to handle both context cancellation and result collection
+	p.logger.Info("starting result collection")
+	resultsChan := make(chan collectResult, 1)
+	collectDone := make(chan struct{})
+	go func() {
+		defer close(collectDone)
+		p.logger.Info("collecting results from worker pool", Field{Key: "expected_count", Value: len(items)})
+		collectedResults, collectedItems, collectErr := collectResultsWithContext(ctx, pool.Results(), len(items))
+		p.logger.Info("finished collecting results",
+			Field{Key: "results_count", Value: len(collectedResults)},
+			Field{Key: "error", Value: collectErr != nil},
+		)
+		resultsChan <- collectResult{results: collectedResults, resultItems: collectedItems, err: collectErr}
+	}()
+
+	var results []map[string]interface{}
+	var resultItems [][]map[string]interface{}
+	var processErr error
+
+	// Add overall timeout to prevent indefinite hanging
+	overallTimeout := 2 * time.Minute
+	overallTimer := time.NewTimer(overallTimeout)
+	defer overallTimer.Stop()
+	p.logger.Info("waiting for results or timeout", Field{Key: "overall_timeout", Value: overallTimeout})
+
+	select {
+	case <-ctx.Done():
+		// Context cancelled - close the pool and return error
+		pool.Close()
+		// Wait for both goroutines to finish with timeout
+		select {
+		case <-submitDone:
+		case <-time.After(5 * time.Second):
+		}
+		select {
+		case <-collectDone:
+		case <-time.After(5 * time.Second):
+		}
+		return nil, fmt.Errorf("context cancelled during embedded node processing: %w", ctx.Err())
+	case <-overallTimer.C:
+		// Overall timeout - something is stuck, return error with partial results if available
+		p.logger.Error("overall timeout reached - workflow is hanging",
+			Field{Key: "timeout", Value: overallTimeout},
+		)
+		pool.Close()
+		// Try to get partial results if available
+		select {
+		case result := <-resultsChan:
+			results = result.results
+			resultItems = result.resultItems
+			if result.err != nil {
+				processErr = fmt.Errorf("overall timeout after %v: %w", overallTimeout, result.err)
+			} else {
+				processErr = fmt.Errorf("overall timeout after %v: processing incomplete", overallTimeout)
+			}
+		default:
+			// No results available yet
+			processErr = fmt.Errorf("overall timeout after %v: no results received", overallTimeout)
+		}
+		// Wait for goroutines with timeout
+		select {
+		case <-submitDone:
+		case <-time.After(2 * time.Second):
+		}
+		select {
+		case <-collectDone:
+		case <-time.After(2 * time.Second):
+		}
+		// Return partial results even on timeout so caller can see what was processed
+		if processErr != nil {
+			return nil, processErr
+		}
+	case result := <-resultsChan:
+		p.logger.Info("received results from collection goroutine",
+			Field{Key: "results_count", Value: len(result.results)},
+			Field{Key: "has_error", Value: result.err != nil},
+		)
+		results = result.results
+		resultItems = result.resultItems
+		processErr = result.err
+		// Ensure both goroutines complete with timeout
+		select {
+		case <-submitDone:
+		case <-time.After(10 * time.Second):
+			// Submit goroutine is taking too long, but continue anyway
+		}
+		select {
+		case <-collectDone:
+		case <-time.After(10 * time.Second):
+			// Collect goroutine is taking too long, but continue anyway
+		}
+	}
 
 	// Log stats
 	processed, errors := pool.Stats()
@@ -255,8 +483,8 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 		Field{Key: "errors", Value: errors},
 	)
 
-	if err != nil {
-		return nil, err
+	if processErr != nil {
+		return nil, processErr
 	}
 
 	// Build final items: if subflow produced per-item Items, prefer them; otherwise use results (per-item Output)

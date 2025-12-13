@@ -265,14 +265,29 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 
 			result := depthNodeResult{nodeIndex: nodeIdx}
 
+			// Check context cancellation before starting
+			select {
+			case <-ctx.Done():
+				result.err = ctx.Err()
+				resultChan <- result
+				return
+			default:
+			}
+
 			// Acquire limiter if available
+			limiterAcquired := false
 			if sp.workerPoolConfig.UseLimiter && sp.limiter != nil {
 				if err := sp.limiter.Acquire(ctx); err != nil {
 					result.err = err
 					resultChan <- result
 					return
 				}
-				defer sp.limiter.Release()
+				limiterAcquired = true
+				defer func() {
+					if limiterAcquired {
+						sp.limiter.Release()
+					}
+				}()
 			}
 
 			node := sp.nodes[nodeIdx]
@@ -322,9 +337,31 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 				procInput.IterationPath = iter.ArrayPath
 			}
 
-			startTime := time.Now()
-			out := node.Process(procInput)
-			dur := time.Since(startTime).Nanoseconds()
+			// Process node in a goroutine with timeout to prevent indefinite blocking
+			processDone := make(chan struct{})
+			var out ProcessOutput
+			var dur int64
+			go func() {
+				defer close(processDone)
+				startTime := time.Now()
+				out = node.Process(procInput)
+				dur = time.Since(startTime).Nanoseconds()
+			}()
+
+			// Wait for processing with context cancellation
+			select {
+			case <-ctx.Done():
+				// Context cancelled - release limiter immediately and exit
+				if limiterAcquired {
+					sp.limiter.Release()
+					limiterAcquired = false
+				}
+				result.err = fmt.Errorf("context cancelled while processing node %s: %w", config.Label, ctx.Err())
+				resultChan <- result
+				return
+			case <-processDone:
+				// Processing completed
+			}
 
 			if out.Error != nil {
 				sp.metrics.RecordError()
@@ -346,9 +383,24 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 		}(idx)
 	}
 
-	// Wait and close
+	// Wait and close with timeout to prevent indefinite blocking
+	// If goroutines are stuck, we timeout and close the channel anyway
 	go func() {
-		wg.Wait()
+		waitDone := make(chan struct{})
+		go func() {
+			defer close(waitDone)
+			wg.Wait()
+		}()
+
+		// Wait with timeout - if goroutines are stuck, close channel anyway
+		select {
+		case <-waitDone:
+			// All goroutines completed
+		case <-ctx.Done():
+			// Context cancelled - close channel even if some goroutines are stuck
+		case <-time.After(2 * time.Minute):
+			// Timeout - some goroutines are stuck, close channel anyway
+		}
 		close(resultChan)
 	}()
 
@@ -702,6 +754,15 @@ func (sp *SubflowProcessor) processDepthLevelForItem(
 
 			nodeResult := depthNodeResult{nodeIndex: nodeIdx}
 
+			// Check context cancellation before starting
+			select {
+			case <-ctx.Done():
+				nodeResult.err = ctx.Err()
+				resultChan <- nodeResult
+				return
+			default:
+			}
+
 			node := sp.nodes[nodeIdx]
 			config := sp.nodeConfigs[nodeIdx]
 
@@ -734,9 +795,26 @@ func (sp *SubflowProcessor) processDepthLevelForItem(
 				IterationPath: iter.ArrayPath,
 			}
 
-			startTime := time.Now()
-			out := node.Process(procInput)
-			dur := time.Since(startTime).Nanoseconds()
+			// Process node in a goroutine with timeout to prevent indefinite blocking
+			processDone := make(chan struct{})
+			var out ProcessOutput
+			var dur int64
+			go func() {
+				defer close(processDone)
+				startTime := time.Now()
+				out = node.Process(procInput)
+				dur = time.Since(startTime).Nanoseconds()
+			}()
+
+			// Wait for processing with context cancellation
+			select {
+			case <-ctx.Done():
+				nodeResult.err = fmt.Errorf("context cancelled while processing node %s at item %d: %w", config.Label, itemIndex, ctx.Err())
+				resultChan <- nodeResult
+				return
+			case <-processDone:
+				// Processing completed
+			}
 
 			if out.Error != nil {
 				sp.metrics.RecordError()
@@ -758,9 +836,24 @@ func (sp *SubflowProcessor) processDepthLevelForItem(
 		}(idx)
 	}
 
-	// Wait and close
+	// Wait and close with timeout to prevent indefinite blocking
+	// If goroutines are stuck, we timeout and close the channel anyway
 	go func() {
-		wg.Wait()
+		waitDone := make(chan struct{})
+		go func() {
+			defer close(waitDone)
+			wg.Wait()
+		}()
+
+		// Wait with timeout - if goroutines are stuck, close channel anyway
+		select {
+		case <-waitDone:
+			// All goroutines completed
+		case <-ctx.Done():
+			// Context cancelled - close channel even if some goroutines are stuck
+		case <-time.After(2 * time.Minute):
+			// Timeout - some goroutines are stuck, close channel anyway
+		}
 		close(resultChan)
 	}()
 

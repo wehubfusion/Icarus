@@ -10,9 +10,21 @@ import (
 )
 
 // executeProduce validates, structures, and base64-encodes JSON data
-// Input: Schema fields from entire ProcessInput.Data (e.g., {"name": "Alice", "age": 30})
-// Output: {"data": "base64encoded..."}
+// Input: ProcessInput.Data["data"] - can be base64 string or raw JSON
+// Output: {"encoded": "base64encoded..."}
 func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) runtime.ProcessOutput {
+	// Extract "data" field from ProcessInput.Data
+	dataField, hasData := input.Data["data"]
+	if !hasData {
+		return runtime.ErrorOutput(NewProcessingError(
+			n.NodeId(),
+			"produce",
+			"input must contain a 'data' field",
+			input.ItemIndex,
+			nil,
+		))
+	}
+
 	// Validate that schema is provided (enriched by Elysium)
 	if len(cfg.Schema) == 0 {
 		return runtime.ErrorOutput(NewConfigError(
@@ -22,16 +34,38 @@ func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) ru
 		))
 	}
 
-	// Marshal entire ProcessInput.Data to JSON bytes for schema processing
-	dataToProcess, err := json.Marshal(input.Data)
-	if err != nil {
-		return runtime.ErrorOutput(NewProcessingError(
-			n.NodeId(),
-			"produce",
-			"failed to marshal input data",
-			input.ItemIndex,
-			err,
-		))
+	// Convert data to []byte for processing
+	var dataToProcess []byte
+	var err error
+
+	switch v := dataField.(type) {
+	case string:
+		// Data is base64-encoded string - decode it
+		dataToProcess, err = base64.StdEncoding.DecodeString(v)
+		if err != nil {
+			return runtime.ErrorOutput(NewProcessingError(
+				n.NodeId(),
+				"produce",
+				"failed to decode base64 data",
+				input.ItemIndex,
+				err,
+			))
+		}
+	case []byte:
+		// Data is already bytes
+		dataToProcess = v
+	default:
+		// Data is JSON object/array - marshal it
+		dataToProcess, err = json.Marshal(v)
+		if err != nil {
+			return runtime.ErrorOutput(NewProcessingError(
+				n.NodeId(),
+				"produce",
+				"failed to marshal data field",
+				input.ItemIndex,
+				err,
+			))
+		}
 	}
 
 	// Create schema engine
@@ -103,8 +137,8 @@ func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) ru
 	// Encode to base64
 	encoded := base64.StdEncoding.EncodeToString(processedJSON)
 
-	// Return with "data" key containing base64-encoded JSON
+	// Return with "encoded" key containing base64-encoded JSON (matches schema output_fields)
 	return runtime.SuccessOutput(map[string]interface{}{
-		"data": encoded,
+		"encoded": encoded,
 	})
 }

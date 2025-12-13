@@ -37,6 +37,26 @@ func (t *Transformer) ApplyDefaults(data interface{}, schema *Schema) (interface
 	return t.applyDefaultsToValue(data, prop)
 }
 
+// ApplyCSVDefaults applies defaults to each CSV row using the CSV schema
+func (t *Transformer) ApplyCSVDefaults(rows []map[string]interface{}, schema *CSVSchema) ([]map[string]interface{}, error) {
+	if schema == nil {
+		return rows, nil
+	}
+	objSchema := schema.ToObjectSchema()
+
+	for i, row := range rows {
+		processed, err := t.ApplyDefaults(row, objSchema)
+		if err != nil {
+			return nil, err
+		}
+		if cast, ok := processed.(map[string]interface{}); ok {
+			rows[i] = cast
+		}
+	}
+
+	return rows, nil
+}
+
 // applyDefaultsToValue recursively applies defaults to a value
 func (t *Transformer) applyDefaultsToValue(data interface{}, prop *Property) (interface{}, error) {
 	switch prop.Type {
@@ -125,6 +145,26 @@ func (t *Transformer) StructureData(data interface{}, schema *Schema) (interface
 		Items:      schema.Items,
 	}
 	return t.structureValue(data, prop, true) // true = create missing structures
+}
+
+// StructureCSVRows removes fields not present in the CSV schema (when enabled)
+func (t *Transformer) StructureCSVRows(rows []map[string]interface{}, schema *CSVSchema) ([]map[string]interface{}, error) {
+	if schema == nil {
+		return rows, nil
+	}
+	objSchema := schema.ToObjectSchema()
+
+	for i, row := range rows {
+		structured, err := t.StructureData(row, objSchema)
+		if err != nil {
+			return nil, err
+		}
+		if cast, ok := structured.(map[string]interface{}); ok {
+			rows[i] = cast
+		}
+	}
+
+	return rows, nil
 }
 
 // structureValue recursively structures a value according to property definition

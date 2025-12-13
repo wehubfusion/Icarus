@@ -45,6 +45,16 @@ func (n *JSRunnerNode) Process(input runtime.ProcessInput) runtime.ProcessOutput
 		return runtime.ErrorOutput(NewConfigError(n.NodeId(), "invalid configuration", err))
 	}
 
+	// If input schema is configured, validate the input before executing script
+	if cfg.HasInputSchema() {
+		validatedInput, err := n.validateInput(input, &cfg)
+		if err != nil {
+			return runtime.ErrorOutput(err)
+		}
+		// Update input.Data with validated data
+		input.Data = validatedInput
+	}
+
 	// Execute JavaScript with timeout
 	ctx, cancel := context.WithTimeout(input.Ctx, time.Duration(cfg.Timeout)*time.Millisecond)
 	defer cancel()
@@ -94,14 +104,19 @@ func (n *JSRunnerNode) executeScript(ctx context.Context, input runtime.ProcessI
 		return nil, NewExecutionError(n.NodeId(), "failed to set input variable", input.ItemIndex, 0, 0, err)
 	}
 
-	// Inject schema if provided (for input validation in JS)
-	if len(cfg.Schema) > 0 {
-		vm.Set("schema", cfg.Schema)
+	// Inject input schema if provided (for reference in JS)
+	if inputSchema := cfg.GetInputSchema(); inputSchema != nil {
+		vm.Set("inputSchema", inputSchema)
+	}
+
+	// Inject output schema if provided (for reference in JS)
+	if outputSchema := cfg.GetOutputSchema(); outputSchema != nil {
+		vm.Set("outputSchema", outputSchema)
 	}
 
 	// Inject manual inputs if provided
 	if len(cfg.ManualInputs) > 0 {
-		vm.Set("inputSchema", cfg.ManualInputs)
+		vm.Set("manualInputs", cfg.ManualInputs)
 	}
 
 	// Wrap script for execution
@@ -169,13 +184,80 @@ func (n *JSRunnerNode) executeScript(ctx context.Context, input runtime.ProcessI
 	return resultMap, nil
 }
 
-// validateOutput validates the script result against the configured schema
-func (n *JSRunnerNode) validateOutput(result map[string]interface{}, cfg *Config, itemIndex int) (map[string]interface{}, error) {
-	// Validate that schema is provided (enriched by Elysium)
-	if len(cfg.Schema) == 0 {
+// validateInput validates the input data against the configured input schema
+func (n *JSRunnerNode) validateInput(input runtime.ProcessInput, cfg *Config) (map[string]interface{}, error) {
+	// Get input schema (enriched by Elysium)
+	inputSchema := cfg.GetInputSchema()
+	if inputSchema == nil {
 		return nil, NewConfigError(
 			n.NodeId(),
-			fmt.Sprintf("schema_id '%s' was not enriched - ensure Elysium enrichment is configured", cfg.SchemaID),
+			fmt.Sprintf("inputSchemaID '%s' was not enriched - ensure Elysium enrichment is configured", cfg.InputSchemaID),
+			nil,
+		)
+	}
+
+	// Marshal input data to JSON
+	inputJSON, err := json.Marshal(input.Data)
+	if err != nil {
+		return nil, NewExecutionError(n.NodeId(), "failed to marshal input data", input.ItemIndex, 0, 0, err)
+	}
+
+	// Marshal schema to JSON for ProcessWithSchema
+	schemaJSON, err := json.Marshal(inputSchema)
+	if err != nil {
+		return nil, NewExecutionError(n.NodeId(), "failed to marshal input schema", input.ItemIndex, 0, 0, err)
+	}
+
+	// Create schema engine
+	engine := schema.NewEngine()
+
+	// Process with schema (structure and validate)
+	schemaResult, err := engine.ProcessWithSchema(
+		inputJSON,
+		schemaJSON,
+		schema.ProcessOptions{
+			ApplyDefaults:    cfg.ApplySchemaDefaults,
+			StructureData:    cfg.StructureData,
+			StrictValidation: cfg.StrictValidation,
+		},
+	)
+	if err != nil {
+		return nil, NewExecutionError(n.NodeId(), "input schema processing failed", input.ItemIndex, 0, 0, err)
+	}
+
+	// Check validation result
+	if !schemaResult.Valid {
+		errorMessages := make([]string, len(schemaResult.Errors))
+		for i, err := range schemaResult.Errors {
+			errorMessages[i] = fmt.Sprintf("%s: %s", err.Path, err.Message)
+		}
+		return nil, NewExecutionError(
+			n.NodeId(),
+			fmt.Sprintf("input validation failed: %v", errorMessages),
+			input.ItemIndex,
+			0,
+			0,
+			nil,
+		)
+	}
+
+	// Unmarshal validated data
+	var validatedMap map[string]interface{}
+	if err := json.Unmarshal(schemaResult.Data, &validatedMap); err != nil {
+		return nil, NewExecutionError(n.NodeId(), "failed to unmarshal validated input data", input.ItemIndex, 0, 0, err)
+	}
+
+	return validatedMap, nil
+}
+
+// validateOutput validates the script result against the configured schema
+func (n *JSRunnerNode) validateOutput(result map[string]interface{}, cfg *Config, itemIndex int) (map[string]interface{}, error) {
+	// Get output schema (enriched by Elysium)
+	outputSchema := cfg.GetOutputSchema()
+	if outputSchema == nil {
+		return nil, NewConfigError(
+			n.NodeId(),
+			fmt.Sprintf("outputSchemaID '%s' was not enriched - ensure Elysium enrichment is configured", cfg.OutputSchemaID),
 			nil,
 		)
 	}
@@ -187,9 +269,9 @@ func (n *JSRunnerNode) validateOutput(result map[string]interface{}, cfg *Config
 	}
 
 	// Marshal schema to JSON for ProcessWithSchema
-	schemaJSON, err := json.Marshal(cfg.Schema)
+	schemaJSON, err := json.Marshal(outputSchema)
 	if err != nil {
-		return nil, NewExecutionError(n.NodeId(), "failed to marshal schema", itemIndex, 0, 0, err)
+		return nil, NewExecutionError(n.NodeId(), "failed to marshal output schema", itemIndex, 0, 0, err)
 	}
 
 	// Create schema engine
