@@ -517,22 +517,36 @@ func (sp *SubflowProcessor) processSingleNodeAtDepth(
 	return nil
 }
 
-// midFlowItemJob represents a job for processing one mid-flow item
-type midFlowItemJob struct {
-	itemIndex int
-	itemData  map[string]interface{}
+// midFlowItemProcessor implements ItemProcessor for mid-flow iteration.
+// It captures the context needed to process mid-flow items.
+type midFlowItemProcessor struct {
+	subflow      *SubflowProcessor
+	startDepth   int
+	preIterStore *NodeOutputStore
+	iter         IterationState
 }
 
-// midFlowItemResult represents the result of processing one mid-flow item
-type midFlowItemResult struct {
-	itemIndex   int
-	itemOutput  map[string]interface{} // flattened output for this item
-	sharedMerge map[string]interface{} // output to merge into shared (with index notation)
-	err         error
+// ProcessItem processes a single mid-flow item.
+func (p *midFlowItemProcessor) ProcessItem(ctx context.Context, item BatchItem) BatchResult {
+	return p.subflow.processOneMidFlowItem(ctx, item, p.startDepth, p.preIterStore, p.iter)
+}
+
+// newMidFlowItemProcessor creates an ItemProcessor for mid-flow iteration.
+func (sp *SubflowProcessor) newMidFlowItemProcessor(
+	startDepth int,
+	preIterStore *NodeOutputStore,
+	iter IterationState,
+) ItemProcessor {
+	return &midFlowItemProcessor{
+		subflow:      sp,
+		startDepth:   startDepth,
+		preIterStore: preIterStore,
+		iter:         iter,
+	}
 }
 
 // processMidFlowConcurrently processes mid-flow iteration items concurrently.
-// It uses a worker pool pattern similar to parent-level iteration.
+// It uses WorkerPool for consistent concurrency handling.
 func (sp *SubflowProcessor) processMidFlowConcurrently(
 	ctx context.Context,
 	startDepth int,
@@ -542,150 +556,109 @@ func (sp *SubflowProcessor) processMidFlowConcurrently(
 ) error {
 	totalItems := iter.TotalItems
 
-	// Determine number of workers
-	numWorkers := sp.workerPoolConfig.NumWorkers
-	if numWorkers <= 0 {
-		numWorkers = 4 // Default for mid-flow
-	}
-	// Don't use more workers than items
-	if numWorkers > totalItems {
-		numWorkers = totalItems
-	}
-
 	sp.logger.Debug("starting concurrent mid-flow processing",
 		Field{Key: "total_items", Value: totalItems},
-		Field{Key: "workers", Value: numWorkers},
+		Field{Key: "workers", Value: sp.workerPoolConfig.NumWorkers},
 		Field{Key: "start_depth", Value: startDepth},
 	)
 
-	// Create channels
-	jobChan := make(chan midFlowItemJob, totalItems)
-	resultChan := make(chan midFlowItemResult, totalItems)
+	// Create ItemProcessor for mid-flow items
+	processor := sp.newMidFlowItemProcessor(startDepth, preIterStore, iter)
+
+	// Create worker pool
+	pool := NewWorkerPool(sp.workerPoolConfig, processor, sp.limiter, sp.logger)
+	sp.logger.Debug("created worker pool for mid-flow", Field{Key: "num_workers", Value: sp.workerPoolConfig.NumWorkers})
 
 	// Start workers
-	var wg sync.WaitGroup
-	for w := 0; w < numWorkers; w++ {
-		wg.Add(1)
-		go sp.midFlowWorker(ctx, &wg, startDepth, preIterStore, iter, jobChan, resultChan)
+	pool.Start(ctx)
+	sp.logger.Debug("started worker pool for mid-flow")
+
+	// Convert iter.Items to BatchItems
+	batchItems := make([]BatchItem, 0, totalItems)
+	for itemIdx := 0; itemIdx < totalItems; itemIdx++ {
+		currentItem := iter.Items[itemIdx]
+		currentItemMap, ok := currentItem.(map[string]interface{})
+		if !ok {
+			currentItemMap = map[string]interface{}{"value": currentItem}
+		}
+		batchItems = append(batchItems, BatchItem{
+			Index: itemIdx,
+			Data:  currentItemMap,
+		})
 	}
 
-	// Submit all jobs
+	// Submit items and wait for completion in a goroutine
+	submitDone := make(chan struct{})
 	go func() {
-		for itemIdx := 0; itemIdx < totalItems; itemIdx++ {
-			currentItem := iter.Items[itemIdx]
-			currentItemMap, ok := currentItem.(map[string]interface{})
-			if !ok {
-				currentItemMap = map[string]interface{}{"value": currentItem}
-			}
-
-			select {
-			case <-ctx.Done():
-				return
-			case jobChan <- midFlowItemJob{itemIndex: itemIdx, itemData: currentItemMap}:
-			}
-		}
-		close(jobChan)
+		defer close(submitDone)
+		sp.logger.Debug("submitting batch items to worker pool")
+		pool.SubmitAll(ctx, batchItems)
+		sp.logger.Debug("submitted all batch items, waiting for workers to complete")
+		pool.Wait()
 	}()
 
-	// Wait for workers in separate goroutine and close results
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
+	// Collect results with context cancellation support
+	collectedResults, collectedItems, collectErr := collectResultsWithContext(ctx, pool.Results(), totalItems)
 
-	// Collect results
-	var firstError error
-	received := 0
-	for result := range resultChan {
-		if result.err != nil && firstError == nil {
-			firstError = result.err
-		}
-		if result.itemIndex >= 0 && result.itemIndex < totalItems {
-			// Merge item output into res.Items[itemIndex]
-			if result.itemOutput != nil {
-				MergeMaps(res.Items[result.itemIndex], result.itemOutput)
+	// Wait for submission to complete
+	select {
+	case <-submitDone:
+	case <-ctx.Done():
+		pool.Close()
+		return ctx.Err()
+	case <-time.After(10 * time.Second):
+		// Submission taking too long, but continue with results we have
+	}
+
+	if collectErr != nil {
+		return collectErr
+	}
+
+	// Merge results into res.Items and res.Output
+	// collectedResults[i] contains BatchResult.Output (sharedMerge with index notation)
+	// collectedItems[i] contains BatchResult.Items (where [0] is itemOutput)
+	for i := 0; i < totalItems && i < len(collectedResults); i++ {
+		// Merge item-specific output (Items[0] from BatchResult) into res.Items[i]
+		if i < len(res.Items) && len(collectedItems) > i && len(collectedItems[i]) > 0 {
+			// collectedItems[i] is []map[string]interface{} from BatchResult.Items
+			// Merge each item in the slice (typically just [0]) into res.Items[i]
+			for _, item := range collectedItems[i] {
+				MergeMaps(res.Items[i], item)
 			}
-			// Merge shared output (with index notation) into res.Output
-			if result.sharedMerge != nil {
-				MergeMaps(res.Output, result.sharedMerge)
-			}
 		}
-		received++
-		if received >= totalItems {
-			break
+		// Merge shared output (Output from BatchResult) into res.Output
+		if collectedResults[i] != nil {
+			// The Output contains sharedMerge with index notation - merge into res.Output
+			MergeMaps(res.Output, collectedResults[i])
 		}
 	}
 
-	return firstError
-}
-
-// midFlowWorker is a worker goroutine for processing mid-flow items.
-func (sp *SubflowProcessor) midFlowWorker(
-	ctx context.Context,
-	wg *sync.WaitGroup,
-	startDepth int,
-	preIterStore *NodeOutputStore,
-	iter IterationState,
-	jobs <-chan midFlowItemJob,
-	results chan<- midFlowItemResult,
-) {
-	defer wg.Done()
-
-	for job := range jobs {
-		select {
-		case <-ctx.Done():
-			results <- midFlowItemResult{
-				itemIndex: job.itemIndex,
-				err:       ctx.Err(),
-			}
-			return
-		default:
-		}
-
-		// Acquire from limiter if available (for overall item processing)
-		if sp.workerPoolConfig.UseLimiter && sp.limiter != nil {
-			if err := sp.limiter.Acquire(ctx); err != nil {
-				results <- midFlowItemResult{
-					itemIndex: job.itemIndex,
-					err:       err,
-				}
-				continue
-			}
-		}
-
-		// Process this item through depth levels
-		result := sp.processOneMidFlowItem(ctx, startDepth, preIterStore, iter, job.itemIndex, job.itemData)
-
-		// Release limiter
-		if sp.workerPoolConfig.UseLimiter && sp.limiter != nil {
-			sp.limiter.Release()
-		}
-
-		results <- result
-	}
+	return nil
 }
 
 // processOneMidFlowItem processes a single mid-flow item through remaining depth levels.
 // Uses parallel processing within each depth level.
+// Returns BatchResult where:
+//   - Output contains sharedMerge (output with index notation to merge into shared)
+//   - Items[0] contains itemOutput (flattened output for this specific item)
 func (sp *SubflowProcessor) processOneMidFlowItem(
 	ctx context.Context,
+	item BatchItem,
 	startDepth int,
 	preIterStore *NodeOutputStore,
 	iter IterationState,
-	itemIndex int,
-	itemData map[string]interface{},
-) midFlowItemResult {
-	result := midFlowItemResult{
-		itemIndex:   itemIndex,
-		itemOutput:  make(map[string]interface{}),
-		sharedMerge: make(map[string]interface{}),
+) BatchResult {
+	result := BatchResult{
+		Index:  item.Index,
+		Output: make(map[string]interface{}),                           // sharedMerge with index notation
+		Items:  []map[string]interface{}{make(map[string]interface{})}, // itemOutput
 	}
 
 	// Create isolated store for this item
-	itemStore := sp.createItemStore(preIterStore, itemData, iter, itemIndex)
+	itemStore := sp.createItemStore(preIterStore, item.Data, iter, item.Index)
 
 	sp.logger.Debug("processing mid-flow item by depth",
-		Field{Key: "item_index", Value: itemIndex},
+		Field{Key: "item_index", Value: item.Index},
 		Field{Key: "start_depth", Value: startDepth},
 		Field{Key: "total_depths", Value: len(sp.depthGroups) - startDepth},
 	)
@@ -694,7 +667,7 @@ func (sp *SubflowProcessor) processOneMidFlowItem(
 	for depth := startDepth; depth < len(sp.depthGroups); depth++ {
 		select {
 		case <-ctx.Done():
-			result.err = ctx.Err()
+			result.Error = ctx.Err()
 			return result
 		default:
 		}
@@ -706,9 +679,9 @@ func (sp *SubflowProcessor) processOneMidFlowItem(
 
 		// Process all nodes at this depth in parallel
 		// Note: We don't use the limiter here since we already acquired it for this item
-		err := sp.processDepthLevelForItem(ctx, depth, nodeIndices, itemStore, &iter, itemIndex, &result)
+		err := sp.processDepthLevelForItem(ctx, depth, nodeIndices, itemStore, &iter, item.Index, &result)
 		if err != nil {
-			result.err = err
+			result.Error = err
 			return result
 		}
 	}
@@ -717,7 +690,7 @@ func (sp *SubflowProcessor) processOneMidFlowItem(
 }
 
 // processDepthLevelForItem processes all nodes at a depth level for a specific item.
-// Outputs are merged into the result's itemOutput and sharedMerge.
+// Outputs are merged into the result's Items[0] (itemOutput) and Output (sharedMerge with index notation).
 func (sp *SubflowProcessor) processDepthLevelForItem(
 	ctx context.Context,
 	depth int,
@@ -725,7 +698,7 @@ func (sp *SubflowProcessor) processDepthLevelForItem(
 	itemStore *NodeOutputStore,
 	iter *IterationState,
 	itemIndex int,
-	result *midFlowItemResult,
+	result *BatchResult,
 ) error {
 	if len(nodeIndices) == 0 {
 		return nil
@@ -875,11 +848,14 @@ func (sp *SubflowProcessor) processDepthLevelForItem(
 
 		// Flatten with index notation for shared output
 		flatWithIndex := FlattenMapWithIndex(nodeResult.output, config.NodeId, "", itemIndex)
-		MergeMaps(result.sharedMerge, flatWithIndex)
+		MergeMaps(result.Output, flatWithIndex)
 
 		// Flatten without index for this item's output
 		flatItem := FlattenMap(nodeResult.output, config.NodeId, "")
-		MergeMaps(result.itemOutput, flatItem)
+		if len(result.Items) == 0 {
+			result.Items = []map[string]interface{}{make(map[string]interface{})}
+		}
+		MergeMaps(result.Items[0], flatItem)
 	}
 
 	return firstErr
@@ -892,7 +868,7 @@ func (sp *SubflowProcessor) processSingleNodeForItem(
 	itemStore *NodeOutputStore,
 	iter *IterationState,
 	itemIndex int,
-	result *midFlowItemResult,
+	result *BatchResult,
 ) error {
 	node := sp.nodes[nodeIdx]
 	config := sp.nodeConfigs[nodeIdx]
@@ -944,11 +920,14 @@ func (sp *SubflowProcessor) processSingleNodeForItem(
 
 	// Flatten with index notation for shared output
 	flatWithIndex := FlattenMapWithIndex(out.Data, config.NodeId, "", itemIndex)
-	MergeMaps(result.sharedMerge, flatWithIndex)
+	MergeMaps(result.Output, flatWithIndex)
 
 	// Flatten without index for this item's output
 	flatItem := FlattenMap(out.Data, config.NodeId, "")
-	MergeMaps(result.itemOutput, flatItem)
+	if len(result.Items) == 0 {
+		result.Items = []map[string]interface{}{make(map[string]interface{})}
+	}
+	MergeMaps(result.Items[0], flatItem)
 
 	return nil
 }
