@@ -341,7 +341,7 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 			close(resultChanClosed) // Signal that result channel is now closed
 		}()
 		// Wait with timeout - if context is cancelled or workers are stuck, don't wait forever
-		waitTimeout := 1 * time.Minute // Match the result collection timeout
+		waitTimeout := 5 * time.Minute // Match the result collection timeout
 		select {
 		case <-waitDone:
 			// Pool wait completed normally
