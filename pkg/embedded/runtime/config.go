@@ -1,9 +1,15 @@
 package runtime
 
+import (
+	"os"
+	"runtime"
+	"strconv"
+)
+
 // WorkerPoolConfig configures the worker pool for concurrent processing.
 type WorkerPoolConfig struct {
 	// NumWorkers is the number of concurrent workers.
-	// If 0, it will be determined from the limiter or defaults to runtime.NumCPU().
+	// If 0, it will be determined from env overrides or defaults to GOMAXPROCS.
 	NumWorkers int
 
 	// BatchSize is the number of items to group together.
@@ -15,26 +21,14 @@ type WorkerPoolConfig struct {
 	// Larger buffers allow more items to be queued but use more memory.
 	// Default: 100
 	BufferSize int
-
-	// UseLimiter determines if the global limiter should be used for rate limiting.
-	// When true, workers will acquire/release from the limiter before processing.
-	// Default: true
-	UseLimiter bool
-
-	// UseCircuitBreaker determines if circuit breaker should be used.
-	// When true, processing failures are recorded to the circuit breaker.
-	// Default: true
-	UseCircuitBreaker bool
 }
 
 // DefaultWorkerPoolConfig returns sensible defaults for the worker pool.
 func DefaultWorkerPoolConfig() WorkerPoolConfig {
 	return WorkerPoolConfig{
-		NumWorkers:        0,    // Will be determined at runtime
-		BatchSize:         10,   // Good balance for most workloads
-		BufferSize:        100,  // Allow queuing without blocking
-		UseLimiter:        true, // Use global limiter by default
-		UseCircuitBreaker: true, // Enable circuit breaker by default
+		NumWorkers: 0,   // Will be determined at runtime
+		BatchSize:  10,  // Good balance for most workloads
+		BufferSize: 100, // Allow queuing without blocking
 	}
 }
 
@@ -81,6 +75,7 @@ func (c *WorkerPoolConfig) Validate() {
 	if c.BufferSize <= 0 {
 		c.BufferSize = 100
 	}
+	c.NumWorkers = resolveWorkerCount(c.NumWorkers)
 }
 
 // Validate validates the configuration and applies defaults.
@@ -109,22 +104,51 @@ func (c WorkerPoolConfig) WithBufferSize(n int) WorkerPoolConfig {
 	return c
 }
 
-// WithLimiter sets whether to use the limiter.
-func (c WorkerPoolConfig) WithLimiter(use bool) WorkerPoolConfig {
-	c.UseLimiter = use
-	return c
-}
-
-// WithCircuitBreaker sets whether to use the circuit breaker.
-func (c WorkerPoolConfig) WithCircuitBreaker(use bool) WorkerPoolConfig {
-	c.UseCircuitBreaker = use
-	return c
-}
-
 // WithWorkerPool sets the worker pool config.
 func (c ProcessorConfig) WithWorkerPool(wp WorkerPoolConfig) ProcessorConfig {
 	c.WorkerPool = wp
 	return c
+}
+
+// resolveWorkerCount chooses the effective worker count using:
+// 1) Explicit configuration
+// 2) Environment overrides
+// 3) Runtime CPU count fallback
+func resolveWorkerCount(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+
+	// Environment overrides (direct or multiplier)
+	if v := getEnvInt("ICARUS_EMBEDDED_WORKERS", 0); v > 0 {
+		return v
+	}
+	if mult := getEnvInt("ICARUS_EMBEDDED_WORKER_MULTIPLIER", 0); mult > 0 {
+		workers := runtime.GOMAXPROCS(0) * mult
+		if workers > 0 {
+			return workers
+		}
+	}
+
+	// Fallback to CPU count (respecting cgroups)
+	workers := runtime.GOMAXPROCS(0)
+	if workers < 1 {
+		return 1
+	}
+	return workers
+}
+
+// getEnvInt retrieves an integer from environment variable with default fallback.
+func getEnvInt(key string, defaultValue int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return defaultValue
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return defaultValue
+	}
+	return value
 }
 
 // WithMetrics sets whether to enable metrics.

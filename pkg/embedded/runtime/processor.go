@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/wehubfusion/Icarus/pkg/concurrency"
 )
 
 // collectResult holds the results from CollectResults for channel communication
@@ -27,14 +25,46 @@ func collectResultsWithContext(ctx context.Context, resultChan <-chan BatchResul
 	// Track which indices we've received to detect if we're stuck
 	receivedIndices := make(map[int]bool)
 
-	// Add a "no progress" timeout - fires if we don't receive a result for 30 seconds
-	// This catches hangs even if we've received some results
-	noProgressTimeout := time.NewTimer(30 * time.Second)
+	// Add a "no progress" timeout - adaptive based on batch size and concurrent load
+	// For large batches or concurrent scenarios, allow more time before first result
+	// Base timeout: 1 minute, but scale up significantly for large batches
+	baseTimeout := 1 * time.Minute
+	if count > 10000 {
+		// For very large batches (10k+), allow up to 15 minutes before first result
+		// This accounts for worker startup delays and heavy concurrent load
+		baseTimeout = 15 * time.Minute
+	} else if count > 1000 {
+		// For medium batches (1k-10k), allow 10 minutes
+		baseTimeout = 10 * time.Minute
+	} else if count > 100 {
+		// For small-medium batches (100-1k), allow 5 minutes
+		baseTimeout = 5 * time.Minute
+	}
+	// After first result, use longer timeout (2 minutes) to detect stalls
+	// Increased from 30s to handle slower processing under concurrent load
+	initialTimeout := baseTimeout
+	progressTimeout := 2 * time.Minute
+
+	noProgressTimeout := time.NewTimer(initialTimeout)
 	defer noProgressTimeout.Stop()
 	lastResultTime := time.Now()
+	firstResultReceived := false
 
-	// Overall timeout - maximum time to wait for all results (2 minutes)
-	overallTimeout := time.NewTimer(2 * time.Minute)
+	// Overall timeout - maximum time to wait for all results
+	// Scale up significantly for large batches to account for processing time and concurrent load
+	overallTimeoutDuration := 10 * time.Minute
+	if count > 10000 {
+		// For very large batches, allow up to 60 minutes total
+		// This accounts for processing 10k+ items under heavy concurrent load
+		overallTimeoutDuration = 60 * time.Minute
+	} else if count > 1000 {
+		// For medium batches, allow 30 minutes
+		overallTimeoutDuration = 30 * time.Minute
+	} else if count > 100 {
+		// For small-medium batches, allow 20 minutes
+		overallTimeoutDuration = 20 * time.Minute
+	}
+	overallTimeout := time.NewTimer(overallTimeoutDuration)
 	defer overallTimeout.Stop()
 
 	for {
@@ -46,8 +76,11 @@ func collectResultsWithContext(ctx context.Context, resultChan <-chan BatchResul
 			// Overall timeout - we've been waiting too long total
 			return results, items, fmt.Errorf("overall timeout waiting for results: received %d/%d results", received, count)
 		case <-noProgressTimeout.C:
-			// No progress timeout - no results received for 30 seconds
+			// No progress timeout - no results received within timeout period
 			timeSinceLastResult := time.Since(lastResultTime)
+			if received == 0 {
+				return results, items, fmt.Errorf("no progress timeout: received 0/%d results, no results received within %v (workers may be resource constrained or blocked)", count, initialTimeout)
+			}
 			return results, items, fmt.Errorf("no progress timeout: received %d/%d results, last result %v ago", received, count, timeSinceLastResult)
 		case result, ok := <-resultChan:
 			if !ok {
@@ -73,10 +106,15 @@ func collectResultsWithContext(ctx context.Context, resultChan <-chan BatchResul
 			received++
 			lastResultTime = time.Now()
 			// Reset no-progress timeout on each result
+			// Use shorter timeout after first result is received
 			if !noProgressTimeout.Stop() {
 				<-noProgressTimeout.C
 			}
-			noProgressTimeout.Reset(30 * time.Second)
+			if !firstResultReceived {
+				firstResultReceived = true
+				// After first result, switch to shorter progress timeout
+			}
+			noProgressTimeout.Reset(progressTimeout)
 
 			if received >= count {
 				return results, items, firstError
@@ -86,11 +124,10 @@ func collectResultsWithContext(ctx context.Context, resultChan <-chan BatchResul
 }
 
 // EmbeddedProcessor handles processing of embedded nodes with concurrency support.
-// It integrates with the concurrency package's Limiter for rate limiting.
+// Concurrency is controlled via an internal worker pool (no external limiter).
 type EmbeddedProcessor struct {
 	factory EmbeddedNodeFactory
 	config  ProcessorConfig
-	limiter *concurrency.Limiter
 	logger  Logger
 }
 
@@ -98,7 +135,6 @@ type EmbeddedProcessor struct {
 func NewEmbeddedProcessor(
 	factory EmbeddedNodeFactory,
 	config ProcessorConfig,
-	limiter *concurrency.Limiter,
 ) *EmbeddedProcessor {
 	config.Validate()
 
@@ -110,22 +146,13 @@ func NewEmbeddedProcessor(
 	return &EmbeddedProcessor{
 		factory: factory,
 		config:  config,
-		limiter: limiter,
 		logger:  logger,
 	}
 }
 
 // NewEmbeddedProcessorWithDefaults creates a processor with default configuration.
 func NewEmbeddedProcessorWithDefaults(factory EmbeddedNodeFactory) *EmbeddedProcessor {
-	return NewEmbeddedProcessor(factory, DefaultProcessorConfig(), nil)
-}
-
-// NewEmbeddedProcessorWithLimiter creates a processor with a limiter.
-func NewEmbeddedProcessorWithLimiter(
-	factory EmbeddedNodeFactory,
-	limiter *concurrency.Limiter,
-) *EmbeddedProcessor {
-	return NewEmbeddedProcessor(factory, DefaultProcessorConfig(), limiter)
+	return NewEmbeddedProcessor(factory, DefaultProcessorConfig())
 }
 
 // ProcessEmbeddedNodes processes all embedded nodes for a unit.
@@ -218,7 +245,6 @@ func (p *EmbeddedProcessor) processSingleObject(
 		Factory:          p.factory,
 		ArrayPath:        "",
 		Logger:           p.logger,
-		Limiter:          p.limiter,
 		WorkerPoolConfig: p.config.WorkerPool,
 	}
 	subflow, err := NewSubflowProcessor(subflowCfg)
@@ -302,7 +328,6 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 		Factory:          p.factory,
 		ArrayPath:        iterCtx.ArrayPath,
 		Logger:           p.logger,
-		Limiter:          p.limiter,
 		WorkerPoolConfig: p.config.WorkerPool,
 	}
 	subflow, err := NewSubflowProcessor(subflowCfg)
@@ -311,7 +336,7 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 	}
 
 	// Create worker pool
-	pool := NewWorkerPool(p.config.WorkerPool, subflow, p.limiter, p.logger)
+	pool := NewWorkerPool(p.config.WorkerPool, subflow, p.logger)
 	p.logger.Info("created worker pool", Field{Key: "num_workers", Value: p.config.WorkerPool.NumWorkers})
 
 	// Start workers

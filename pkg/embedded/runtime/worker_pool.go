@@ -2,18 +2,13 @@ package runtime
 
 import (
 	"context"
-	"runtime"
 	"sync"
 	"sync/atomic"
-
-	"github.com/wehubfusion/Icarus/pkg/concurrency"
 )
 
 // WorkerPool manages concurrent processing of array items.
-// It integrates with the concurrency package's Limiter for rate limiting.
 type WorkerPool struct {
 	config     WorkerPoolConfig
-	limiter    *concurrency.Limiter
 	jobChan    chan workerJob
 	resultChan chan BatchResult
 	wg         sync.WaitGroup
@@ -32,22 +27,11 @@ type workerJob struct {
 }
 
 // NewWorkerPool creates a new worker pool.
-// If limiter is nil and config.UseLimiter is true, it will try to use a default limiter.
-func NewWorkerPool(config WorkerPoolConfig, processor ItemProcessor, limiter *concurrency.Limiter, logger Logger) *WorkerPool {
+func NewWorkerPool(config WorkerPoolConfig, processor ItemProcessor, logger Logger) *WorkerPool {
 	config.Validate()
 
 	// Determine number of workers
 	numWorkers := config.NumWorkers
-	if numWorkers <= 0 {
-		if limiter != nil {
-			numWorkers = int(limiter.CurrentActive()) + 1 // Use limiter as guide
-			if numWorkers < 1 {
-				numWorkers = runtime.NumCPU()
-			}
-		} else {
-			numWorkers = runtime.NumCPU()
-		}
-	}
 	config.NumWorkers = numWorkers
 
 	if logger == nil {
@@ -56,7 +40,6 @@ func NewWorkerPool(config WorkerPoolConfig, processor ItemProcessor, limiter *co
 
 	return &WorkerPool{
 		config:     config,
-		limiter:    limiter,
 		jobChan:    make(chan workerJob, config.BufferSize),
 		resultChan: make(chan BatchResult, config.BufferSize),
 		processor:  processor,
@@ -105,19 +88,6 @@ func (wp *WorkerPool) worker(ctx context.Context, id int) {
 
 // processJob processes a single job.
 func (wp *WorkerPool) processJob(job workerJob, workerId int) {
-	// Acquire from limiter if configured
-	if wp.config.UseLimiter && wp.limiter != nil {
-		if err := wp.limiter.Acquire(job.ctx); err != nil {
-			wp.errors.Add(1)
-			wp.resultChan <- BatchResult{
-				Index: job.item.Index,
-				Error: err,
-			}
-			return
-		}
-		defer wp.limiter.Release()
-	}
-
 	// Process the item
 	result := wp.processor.ProcessItem(job.ctx, job.item)
 
@@ -126,12 +96,6 @@ func (wp *WorkerPool) processJob(job workerJob, workerId int) {
 		wp.errors.Add(1)
 	} else {
 		wp.processed.Add(1)
-	}
-
-	// Record to circuit breaker if available
-	if wp.config.UseCircuitBreaker && wp.limiter != nil {
-		// The limiter's Go/GoSync methods handle circuit breaker recording
-		// For direct processing, we could add a method to record success/failure
 	}
 
 	wp.resultChan <- result

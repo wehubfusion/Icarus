@@ -7,15 +7,13 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/wehubfusion/Icarus/pkg/concurrency"
 )
 
 // SubflowProcessor processes embedded nodes for a single parent item.
 // It supports mid-flow iteration by detecting mappings with iterate:true
 // and running nodes per-item when necessary.
 // Nodes are processed by depth level, with parallel execution within each depth.
-// Mid-flow iteration uses concurrent processing when a limiter is provided.
+// Mid-flow iteration uses concurrent processing when configured workers are available.
 type SubflowProcessor struct {
 	parentNodeId     string
 	nodes            []EmbeddedNode
@@ -24,7 +22,6 @@ type SubflowProcessor struct {
 	arrayPath        string
 	logger           Logger
 	metrics          MetricsCollector
-	limiter          *concurrency.Limiter
 	workerPoolConfig WorkerPoolConfig
 }
 
@@ -78,7 +75,6 @@ func NewSubflowProcessor(config SubflowConfig) (*SubflowProcessor, error) {
 		arrayPath:        config.ArrayPath,
 		logger:           logger,
 		metrics:          metrics,
-		limiter:          config.Limiter,
 		workerPoolConfig: workerPoolCfg,
 	}, nil
 }
@@ -118,8 +114,7 @@ type SubflowConfig struct {
 	ArrayPath        string
 	Logger           Logger
 	Metrics          MetricsCollector
-	Limiter          *concurrency.Limiter // Optional: enables concurrent mid-flow iteration
-	WorkerPoolConfig WorkerPoolConfig     // Config for mid-flow worker pool
+	WorkerPoolConfig WorkerPoolConfig // Config for mid-flow worker pool
 }
 
 // ProcessItem processes a single parent item through all embedded nodes.
@@ -274,22 +269,6 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 			default:
 			}
 
-			// Acquire limiter if available
-			limiterAcquired := false
-			if sp.workerPoolConfig.UseLimiter && sp.limiter != nil {
-				if err := sp.limiter.Acquire(ctx); err != nil {
-					result.err = err
-					resultChan <- result
-					return
-				}
-				limiterAcquired = true
-				defer func() {
-					if limiterAcquired {
-						sp.limiter.Release()
-					}
-				}()
-			}
-
 			node := sp.nodes[nodeIdx]
 			config := sp.nodeConfigs[nodeIdx]
 
@@ -351,11 +330,6 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 			// Wait for processing with context cancellation
 			select {
 			case <-ctx.Done():
-				// Context cancelled - release limiter immediately and exit
-				if limiterAcquired {
-					sp.limiter.Release()
-					limiterAcquired = false
-				}
 				result.err = fmt.Errorf("context cancelled while processing node %s: %w", config.Label, ctx.Err())
 				resultChan <- result
 				return
@@ -383,24 +357,11 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 		}(idx)
 	}
 
-	// Wait and close with timeout to prevent indefinite blocking
-	// If goroutines are stuck, we timeout and close the channel anyway
+	// Wait for all goroutines to complete, then close channel
+	// The channel buffer size equals the number of goroutines, so all sends
+	// will succeed before the channel is closed
 	go func() {
-		waitDone := make(chan struct{})
-		go func() {
-			defer close(waitDone)
-			wg.Wait()
-		}()
-
-		// Wait with timeout - if goroutines are stuck, close channel anyway
-		select {
-		case <-waitDone:
-			// All goroutines completed
-		case <-ctx.Done():
-			// Context cancelled - close channel even if some goroutines are stuck
-		case <-time.After(2 * time.Minute):
-			// Timeout - some goroutines are stuck, close channel anyway
-		}
+		wg.Wait()
 		close(resultChan)
 	}()
 
@@ -566,7 +527,7 @@ func (sp *SubflowProcessor) processMidFlowConcurrently(
 	processor := sp.newMidFlowItemProcessor(startDepth, preIterStore, iter)
 
 	// Create worker pool
-	pool := NewWorkerPool(sp.workerPoolConfig, processor, sp.limiter, sp.logger)
+	pool := NewWorkerPool(sp.workerPoolConfig, processor, sp.logger)
 	sp.logger.Debug("created worker pool for mid-flow", Field{Key: "num_workers", Value: sp.workerPoolConfig.NumWorkers})
 
 	// Start workers
@@ -678,7 +639,6 @@ func (sp *SubflowProcessor) processOneMidFlowItem(
 		}
 
 		// Process all nodes at this depth in parallel
-		// Note: We don't use the limiter here since we already acquired it for this item
 		err := sp.processDepthLevelForItem(ctx, depth, nodeIndices, itemStore, &iter, item.Index, &result)
 		if err != nil {
 			result.Error = err
@@ -809,24 +769,11 @@ func (sp *SubflowProcessor) processDepthLevelForItem(
 		}(idx)
 	}
 
-	// Wait and close with timeout to prevent indefinite blocking
-	// If goroutines are stuck, we timeout and close the channel anyway
+	// Wait for all goroutines to complete, then close channel
+	// The channel buffer size equals the number of goroutines, so all sends
+	// will succeed before the channel is closed
 	go func() {
-		waitDone := make(chan struct{})
-		go func() {
-			defer close(waitDone)
-			wg.Wait()
-		}()
-
-		// Wait with timeout - if goroutines are stuck, close channel anyway
-		select {
-		case <-waitDone:
-			// All goroutines completed
-		case <-ctx.Done():
-			// Context cancelled - close channel even if some goroutines are stuck
-		case <-time.After(2 * time.Minute):
-			// Timeout - some goroutines are stuck, close channel anyway
-		}
+		wg.Wait()
 		close(resultChan)
 	}()
 

@@ -92,9 +92,6 @@ var (
 	// NewEmbeddedProcessorWithDefaults creates a processor with default configuration.
 	NewEmbeddedProcessorWithDefaults = runtime.NewEmbeddedProcessorWithDefaults
 
-	// NewEmbeddedProcessorWithLimiter creates a processor with a limiter.
-	NewEmbeddedProcessorWithLimiter = runtime.NewEmbeddedProcessorWithLimiter
-
 	// NewSubflowProcessor creates a new subflow processor.
 	NewSubflowProcessor = runtime.NewSubflowProcessor
 

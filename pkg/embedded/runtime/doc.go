@@ -2,7 +2,7 @@
 //
 // The runtime handles the execution of embedded nodes within execution units,
 // supporting concurrent processing at both parent-level and mid-flow iteration
-// with integration to the concurrency package's Limiter for rate limiting.
+// with a configurable worker pool for controlling concurrency.
 //
 // # Key Components
 //
@@ -16,7 +16,7 @@
 // Implements ItemProcessor for use with WorkerPool. Nodes are grouped by depth
 // and processed in parallel within each depth level.
 //
-// WorkerPool: Manages concurrent processing with integration to the limiter.
+// WorkerPool: Manages concurrent processing with configurable worker counts.
 //
 // OutputResolver: Resolves field mappings from StandardUnitOutput for subsequent units.
 //
@@ -80,7 +80,8 @@
 //   - All nodes at a depth level run in parallel
 //   - Both pre-iteration and per-item processing use this
 //
-// The shared limiter ensures total concurrency stays within configured limits.
+// Worker counts can be configured via WorkerPoolConfig (or env overrides
+// ICARUS_EMBEDDED_WORKERS / ICARUS_EMBEDDED_WORKER_MULTIPLIER).
 //
 // # Per-Item Subflow Processing
 //
@@ -99,9 +100,10 @@
 //	factory := runtime.NewDefaultNodeFactory()
 //	factory.Register("my-plugin", MyNodeCreator)
 //
-//	// Create processor with limiter
-//	limiter := concurrency.NewLimiter(10)
-//	processor := runtime.NewEmbeddedProcessorWithLimiter(factory, limiter)
+//	// Create processor with a tuned worker pool
+//	cfg := runtime.DefaultProcessorConfig()
+//	cfg.WorkerPool.NumWorkers = 16 // or rely on ICARUS_EMBEDDED_WORKERS/ICARUS_EMBEDDED_WORKER_MULTIPLIER
+//	processor := runtime.NewEmbeddedProcessor(factory, cfg)
 //
 //	// Process embedded nodes
 //	output, err := processor.ProcessEmbeddedNodes(ctx, parentOutput, unit)

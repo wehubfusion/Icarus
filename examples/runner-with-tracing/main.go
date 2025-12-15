@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/wehubfusion/Icarus/pkg/client"
-	"github.com/wehubfusion/Icarus/pkg/concurrency"
 	"github.com/wehubfusion/Icarus/pkg/message"
 	"github.com/wehubfusion/Icarus/pkg/runner"
 	"go.uber.org/zap"
@@ -154,33 +153,12 @@ func setupStreams(js nats.JetStreamContext, logger *zap.Logger) error {
 }
 
 func main() {
-	// Initialize concurrency system for Kubernetes-aware configuration
-	undoMaxprocs := concurrency.InitializeForKubernetes()
-	defer undoMaxprocs()
-
-	// Load concurrency configuration
-	config := concurrency.LoadConfig()
-
-	// Create concurrency limiter
-	limiter := concurrency.NewLimiter(config.MaxConcurrent)
-
 	// Create a logger (use Production for JSON format, Development for human-readable)
 	logger, err := zap.NewProduction()
 	if err != nil {
 		log.Fatalf("Failed to create logger: %v", err)
 	}
 	defer logger.Sync()
-
-	// Log concurrency configuration
-	logger.Info("Concurrency configuration loaded",
-		zap.Int("max_concurrent", config.MaxConcurrent),
-		zap.Int("runner_workers", config.RunnerWorkers),
-		zap.Int("gomaxprocs", config.EffectiveCPUs),
-		zap.String("processor_mode", string(config.ProcessorMode)),
-		zap.String("iterator_mode", string(config.IteratorMode)),
-		zap.String("config_source", string(config.Source)),
-		zap.Bool("is_kubernetes", config.IsKubernetes),
-	)
 
 	// NATS server URL
 	natsURL := "nats://localhost:4222"
@@ -222,17 +200,19 @@ func main() {
 	// Setup tracing configuration
 	tracingConfig := runner.JaegerTracingConfig("testSDK2")
 
+	cfg := runner.DefaultConfig()
+
 	// Create runner with built-in tracing
 	runnerInstance, err := runner.NewRunner(
 		icarusClient,
 		processor,
 		streamName,
 		consumerName,
-		10,                   // batch size
-		30*time.Second,       // process timeout
+		10,             // batch size
+		30*time.Second, // process timeout
 		logger,
 		&tracingConfig, // tracing configuration
-		limiter,        // concurrency limiter
+		&cfg,           // worker config (nil uses defaults/env)
 	)
 	if err != nil {
 		logger.Fatal("Failed to create runner", zap.Error(err))

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 )
 
 // FieldMapping represents the mapping configuration between nodes.
@@ -350,7 +351,9 @@ type IterationState struct {
 
 // NodeOutputStore stores outputs from executed nodes during subflow processing.
 // It tracks single outputs vs iterated outputs separately.
+// All map accesses are protected by a mutex for concurrent access safety.
 type NodeOutputStore struct {
+	mu sync.RWMutex
 	// SingleOutputs stores non-iterated node outputs
 	// Key: nodeId
 	SingleOutputs map[string]map[string]interface{}
@@ -382,17 +385,23 @@ func NewNodeOutputStore() *NodeOutputStore {
 
 // SetSingleOutput stores a single (non-iterated) output
 func (s *NodeOutputStore) SetSingleOutput(nodeId string, output map[string]interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.SingleOutputs[nodeId] = output
 }
 
 // SetIteratedOutputs stores all iterated outputs at once
 func (s *NodeOutputStore) SetIteratedOutputs(nodeId string, outputs []map[string]interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.IteratedOutputs[nodeId] = outputs
 }
 
 // GetOutput retrieves output for a node, optionally at a specific index
 // If index is -1, returns single output; otherwise returns iterated output at index
 func (s *NodeOutputStore) GetOutput(nodeId string, index int) (map[string]interface{}, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	// Check iterated outputs first if index >= 0
 	if index >= 0 {
 		if outputs, ok := s.IteratedOutputs[nodeId]; ok {
@@ -411,34 +420,51 @@ func (s *NodeOutputStore) GetOutput(nodeId string, index int) (map[string]interf
 
 // GetAllIteratedOutputs returns all outputs for a node that ran in iteration
 func (s *NodeOutputStore) GetAllIteratedOutputs(nodeId string) ([]map[string]interface{}, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	outputs, ok := s.IteratedOutputs[nodeId]
 	return outputs, ok
 }
 
 // HasIteratedOutput checks if a node has iterated outputs
 func (s *NodeOutputStore) HasIteratedOutput(nodeId string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	_, ok := s.IteratedOutputs[nodeId]
 	return ok
 }
 
 // SetIterationInfo stores iteration info for a node
 func (s *NodeOutputStore) SetIterationInfo(nodeId string, info IterationState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.IterationInfo[nodeId] = info
 }
 
 // GetIterationInfo retrieves iteration info for a node
 func (s *NodeOutputStore) GetIterationInfo(nodeId string) (IterationState, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	info, ok := s.IterationInfo[nodeId]
 	return info, ok
 }
 
 // GetAllSingleOutputs returns all single (non-iterated) outputs
+// Returns a copy to prevent external mutation of the internal map
 func (s *NodeOutputStore) GetAllSingleOutputs() map[string]map[string]interface{} {
-	return s.SingleOutputs
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make(map[string]map[string]interface{}, len(s.SingleOutputs))
+	for k, v := range s.SingleOutputs {
+		result[k] = v
+	}
+	return result
 }
 
 // SetCurrentIterationItem stores the current iteration item for a source node
 func (s *NodeOutputStore) SetCurrentIterationItem(sourceNodeId string, item map[string]interface{}, index int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.CurrentIterationItems[sourceNodeId] = currentIterationItem{
 		Item:  item,
 		Index: index,
@@ -447,6 +473,8 @@ func (s *NodeOutputStore) SetCurrentIterationItem(sourceNodeId string, item map[
 
 // GetCurrentIterationItem retrieves the current iteration item for a source node
 func (s *NodeOutputStore) GetCurrentIterationItem(sourceNodeId string) (map[string]interface{}, int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if ci, ok := s.CurrentIterationItems[sourceNodeId]; ok {
 		return ci.Item, ci.Index
 	}

@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/wehubfusion/Icarus/pkg/client"
-	"github.com/wehubfusion/Icarus/pkg/concurrency"
 	"github.com/wehubfusion/Icarus/pkg/message"
 	"github.com/wehubfusion/Icarus/pkg/runner"
 	"go.uber.org/zap"
@@ -88,16 +87,6 @@ func (p *SimpleProcessor) Process(ctx context.Context, msg *message.Message) (me
 }
 
 func main() {
-	// Initialize concurrency system for Kubernetes-aware configuration
-	undoMaxprocs := concurrency.InitializeForKubernetes()
-	defer undoMaxprocs()
-
-	// Load concurrency configuration
-	config := concurrency.LoadConfig()
-
-	// Create concurrency limiter
-	limiter := concurrency.NewLimiter(config.MaxConcurrent)
-
 	fmt.Println("=== Icarus Runner Example ===")
 	fmt.Println("This example demonstrates how to:")
 	fmt.Println("1. Set up NATS JetStream streams and consumers")
@@ -116,17 +105,6 @@ func main() {
 		log.Fatalf("Failed to create logger: %v", err)
 	}
 	defer logger.Sync()
-
-	// Log concurrency configuration
-	logger.Info("Concurrency configuration loaded",
-		zap.Int("max_concurrent", config.MaxConcurrent),
-		zap.Int("runner_workers", config.RunnerWorkers),
-		zap.Int("gomaxprocs", config.EffectiveCPUs),
-		zap.String("processor_mode", string(config.ProcessorMode)),
-		zap.String("iterator_mode", string(config.IteratorMode)),
-		zap.String("config_source", string(config.Source)),
-		zap.Bool("is_kubernetes", config.IsKubernetes),
-	)
 
 	if err := c.Connect(ctx); err != nil {
 		logger.Fatal("Failed to connect to NATS", zap.Error(err))
@@ -167,18 +145,19 @@ func main() {
 	// Create the runner
 	// - Pull from the "TASKS" stream using "task-processor" consumer
 	// - Process 5 messages at a time (batch size)
-	// - Use limiter for concurrent processing
+	// - Use worker pool for concurrent processing
 	// - Set 5 minute timeout for message processing
+	cfg := runner.DefaultConfig()
 	taskRunner, err := runner.NewRunner(
-		c,                    // client
-		processor,            // processor implementation
-		"TASKS",              // stream name
-		"task-processor",     // consumer name
-		5,                    // batch size
-		5*time.Minute,        // process timeout (5 minutes)
-		logger,               // zap logger
-		nil,                  // no tracing configuration
-		limiter,              // concurrency limiter
+		c,                // client
+		processor,        // processor implementation
+		"TASKS",          // stream name
+		"task-processor", // consumer name
+		5,                // batch size
+		5*time.Minute,    // process timeout (5 minutes)
+		logger,           // zap logger
+		nil,              // no tracing configuration
+		&cfg,             // worker config (nil uses defaults/env)
 	)
 	if err != nil {
 		log.Fatalf("Failed to create runner: %v", err)
