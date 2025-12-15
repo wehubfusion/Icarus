@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// Config defines the configuration for JSON operations
+// Config defines the configuration for JSON operations in embedded
 type Config struct {
 	// Operation specifies which JSON operation to perform
 	// Valid values: "parse", "produce"
@@ -29,11 +29,6 @@ type Config struct {
 	// Default: false for parse, true for produce
 	StrictValidation *bool `json:"strict_validation,omitempty"`
 
-	// AutoWrapForIteration automatically wraps OBJECT schemas in ARRAY when data is array
-	// This handles cases where schemas describe single items but data contains multiple items
-	// Default: true (enabled by default)
-	AutoWrapForIteration *bool `json:"auto_wrap_for_iteration,omitempty"`
-
 	// Pretty formats the JSON before base64 encoding (produce operation only)
 	// Default: false
 	Pretty bool `json:"pretty,omitempty"`
@@ -43,7 +38,7 @@ type Config struct {
 func (c *Config) Validate() error {
 	// Operation is required
 	if c.Operation == "" {
-		return fmt.Errorf("operation field is required in jsonops configuration")
+		return fmt.Errorf("operation field is required")
 	}
 
 	// Validate operation value
@@ -89,13 +84,4 @@ func (c *Config) GetStrictValidation() bool {
 	}
 	// Default to false for parse (lenient), true for produce (ensure valid output)
 	return c.Operation == "produce"
-}
-
-// GetAutoWrapForIteration returns the auto_wrap_for_iteration value with default
-// Default is true - automatically wrap OBJECT schemas when data is ARRAY
-func (c *Config) GetAutoWrapForIteration() bool {
-	if c.AutoWrapForIteration == nil {
-		return true // Default: enabled for convenience
-	}
-	return *c.AutoWrapForIteration
 }

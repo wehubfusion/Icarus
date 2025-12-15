@@ -1,5 +1,5 @@
 // Package runner provides a concurrent message processing framework using NATS JetStream.
-// It allows processing messages from a stream with configurable batch sizes and limiter-driven concurrency,
+// It allows processing messages from a stream with configurable batch sizes and worker-pool-based concurrency,
 // with built-in success and error reporting capabilities.
 package runner
 
@@ -7,12 +7,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
 	internaltracing "github.com/wehubfusion/Icarus/internal/tracing"
 	"github.com/wehubfusion/Icarus/pkg/client"
-	"github.com/wehubfusion/Icarus/pkg/concurrency"
 	"github.com/wehubfusion/Icarus/pkg/message"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -28,7 +30,7 @@ type Processor interface {
 }
 
 // Runner manages concurrent message processing from a NATS JetStream consumer.
-// It pulls messages in batches and dispatches them through the concurrency limiter for processing,
+// It pulls messages in batches and dispatches them through an internal worker pool for processing,
 // with automatic success and error reporting to the "result" subject.
 type Runner struct {
 	client          *client.Client
@@ -40,7 +42,79 @@ type Runner struct {
 	processTimeout  time.Duration
 	tracer          trace.Tracer
 	tracingShutdown func(context.Context) error
-	limiter         *concurrency.Limiter
+	config          Config
+	jobChan         chan *message.Message
+}
+
+// Config controls runner worker pool behavior.
+type Config struct {
+	// WorkerCount is the number of concurrent worker goroutines processing messages.
+	// If 0 or less, it will be resolved from env or CPU count.
+	WorkerCount int
+
+	// QueueSize controls the buffered job queue feeding workers.
+	// If 0 or less, it defaults to 4×WorkerCount (min WorkerCount, max 1000).
+	QueueSize int
+}
+
+// DefaultConfig provides baseline values resolved at runtime.
+func DefaultConfig() Config {
+	return Config{
+		WorkerCount: 0,
+		QueueSize:   0,
+	}
+}
+
+func (c Config) withDefaults() Config {
+	workers := resolveWorkerCount(c.WorkerCount)
+	queue := c.QueueSize
+	if queue <= 0 {
+		queue = workers * 4
+		if queue < workers {
+			queue = workers
+		}
+		if queue > 1000 {
+			queue = 1000
+		}
+	}
+	return Config{
+		WorkerCount: workers,
+		QueueSize:   queue,
+	}
+}
+
+func resolveWorkerCount(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+
+	if v := getEnvInt("ICARUS_RUNNER_WORKERS", 0); v > 0 {
+		return v
+	}
+	if mult := getEnvInt("ICARUS_RUNNER_WORKER_MULTIPLIER", 0); mult > 0 {
+		workers := runtime.GOMAXPROCS(0) * mult
+		if workers > 0 {
+			return workers
+		}
+	}
+
+	workers := runtime.GOMAXPROCS(0)
+	if workers < 1 {
+		return 1
+	}
+	return workers
+}
+
+func getEnvInt(key string, defaultValue int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultValue
+	}
+	parsed, err := strconv.Atoi(val)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
 }
 
 // NewRunner creates a new Runner instance with a connected client and stream/consumer configuration.
@@ -50,9 +124,9 @@ type Runner struct {
 // processTimeout specifies the maximum time allowed for processing a single message.
 // logger is the zap logger instance for structured logging.
 // tracingConfig is optional - if nil, no tracing will be set up. If provided, tracing will be automatically configured and cleaned up.
-// limiter is optional - if nil, no concurrency limiting will be applied beyond the pull loop.
+// cfg controls worker pool sizing; if nil, DefaultConfig() is used.
 // Returns an error if any of the parameters are invalid.
-func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, processTimeout time.Duration, logger *zap.Logger, tracingConfig *TracingConfig, limiter *concurrency.Limiter) (*Runner, error) {
+func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, processTimeout time.Duration, logger *zap.Logger, tracingConfig *TracingConfig, cfg *Config) (*Runner, error) {
 	if client == nil {
 		return nil, errors.New("client cannot be nil")
 	}
@@ -84,6 +158,12 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 		return nil, fmt.Errorf("failed to ensure consumer '%s' exists: %w", consumer, err)
 	}
 
+	config := DefaultConfig()
+	if cfg != nil {
+		config = *cfg
+	}
+	config = config.withDefaults()
+
 	runner := &Runner{
 		client:         client,
 		processor:      processor,
@@ -93,7 +173,8 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 		processTimeout: processTimeout,
 		logger:         logger,
 		tracer:         otel.Tracer("icarus/runner"),
-		limiter:        limiter,
+		config:         config,
+		jobChan:        make(chan *message.Message, config.QueueSize),
 	}
 
 	// Setup tracing if configuration is provided
@@ -130,7 +211,7 @@ func (r *Runner) Close() error {
 }
 
 // Run starts the message processing pipeline.
-// It pulls messages from the configured stream and processes them through the limiter.
+// It pulls messages from the configured stream and processes them through the internal worker pool.
 // The method blocks until the context is cancelled and all processing goroutines have finished.
 // Returns an error if there's a critical failure that prevents the runner from continuing.
 func (r *Runner) Run(ctx context.Context) error {
@@ -139,43 +220,20 @@ func (r *Runner) Run(ctx context.Context) error {
 		processWG    sync.WaitGroup
 	)
 
-	// Start concurrency stats logging if limiter is available
-	if r.limiter != nil {
-		backgroundWG.Add(1)
-		go func() {
-			defer backgroundWG.Done()
-			r.logConcurrencyStats(ctx)
-		}()
+	// Start workers
+	for i := 0; i < r.config.WorkerCount; i++ {
+		processWG.Add(1)
+		go func(id int) {
+			defer processWG.Done()
+			r.worker(ctx, id)
+		}(i)
 	}
 
 	dispatchMessage := func(msg *message.Message) {
-		if r.limiter == nil {
-			if err := r.processMessage(ctx, msg); err != nil {
-				r.logger.Error("Message processing failed without limiter",
-					zap.Error(err))
-			}
+		select {
+		case <-ctx.Done():
 			return
-		}
-
-		currentMsg := msg
-		processWG.Add(1)
-		err := r.limiter.Go(ctx, func() error {
-			defer processWG.Done()
-			return r.processMessage(ctx, currentMsg)
-		})
-		if err != nil {
-			processWG.Done()
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return
-			}
-			if errors.Is(err, concurrency.ErrCircuitOpen) {
-				r.logger.Warn("Limiter circuit open; applying backpressure")
-			} else {
-				r.logger.Error("Limiter rejected message", zap.Error(err))
-			}
-			if nakErr := msg.Nak(); nakErr != nil {
-				r.logger.Error("Failed to Nak message after limiter error", zap.Error(nakErr))
-			}
+		case r.jobChan <- msg:
 		}
 	}
 
@@ -225,7 +283,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				// Reset backoff on successful pull
 				backoffDelay = 100 * time.Millisecond
 
-				// Dispatch messages via limiter
+				// Dispatch messages via worker pool
 				for _, msg := range messages {
 					select {
 					case <-ctx.Done():
@@ -243,17 +301,42 @@ func (r *Runner) Run(ctx context.Context) error {
 	go func() {
 		defer close(done)
 		backgroundWG.Wait()
-		processWG.Wait()
 	}()
 
 	// Wait for completion or context cancellation
 	select {
 	case <-done:
+		close(r.jobChan)
+		processWG.Wait()
 		r.logger.Info("Runner completed successfully")
 		return nil
 	case <-ctx.Done():
+		backgroundWG.Wait()
+		// Stop accepting new messages and drain workers
+		close(r.jobChan)
+		processWG.Wait()
 		r.logger.Info("Runner stopped due to context cancellation")
 		return ctx.Err()
+	}
+}
+
+// worker executes messages from the job channel until context cancellation or channel close.
+func (r *Runner) worker(ctx context.Context, id int) {
+	r.logger.Debug("runner worker started", zap.Int("worker_id", id))
+	for {
+		select {
+		case <-ctx.Done():
+			r.logger.Debug("runner worker stopping due to context cancellation", zap.Int("worker_id", id))
+			return
+		case msg, ok := <-r.jobChan:
+			if !ok {
+				r.logger.Debug("runner worker stopping, job channel closed", zap.Int("worker_id", id))
+				return
+			}
+			if err := r.processMessage(ctx, msg); err != nil {
+				r.logger.Error("Message processing failed", zap.Error(err))
+			}
+		}
 	}
 }
 
@@ -481,34 +564,4 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 	}
 
 	return nil
-}
-
-// logConcurrencyStats periodically logs concurrency metrics for observability
-func (r *Runner) logConcurrencyStats(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			if r.limiter == nil {
-				return
-			}
-
-			metrics := r.limiter.GetMetrics()
-			avgWait := r.limiter.GetAverageWaitTime()
-			circuitState := r.limiter.GetCircuitBreakerState()
-
-			r.logger.Info("Concurrency metrics",
-				zap.Int64("active_goroutines", r.limiter.CurrentActive()),
-				zap.Int64("peak_concurrent", metrics.PeakConcurrent),
-				zap.Int64("total_acquired", metrics.TotalAcquired),
-				zap.Int64("total_released", metrics.TotalReleased),
-				zap.Duration("avg_wait_time", avgWait),
-				zap.String("circuit_breaker", circuitState),
-			)
-		case <-ctx.Done():
-			return
-		}
-	}
 }

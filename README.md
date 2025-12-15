@@ -121,7 +121,9 @@ func (p *MyProcessor) Process(ctx context.Context, msg *message.Message) (messag
 // Create and configure runner with tracing
 processor := &MyProcessor{}
 tracingConfig := tracing.JaegerConfig("my-service")
-limiter := concurrency.NewLimiter(10) // limit to 10 concurrent executions
+
+cfg := runner.DefaultConfig()
+cfg.WorkerCount = 10 // or rely on ICARUS_RUNNER_WORKERS / ICARUS_RUNNER_WORKER_MULTIPLIER
 
 runner, err := runner.NewRunner(
     c,                // client
@@ -132,7 +134,7 @@ runner, err := runner.NewRunner(
     5*time.Minute,    // process timeout
     logger,           // zap logger
     &tracingConfig,   // tracing configuration (optional)
-    limiter,          // concurrency limiter (nil for sequential)
+    &cfg,             // worker config (nil uses defaults/env)
 )
 if err != nil {
     log.Fatal(err)
@@ -146,7 +148,7 @@ if err := runner.Run(ctx); err != nil {
 ```
 
 The Runner provides:
-- Concurrent message processing with limiter-driven parallelism
+- Concurrent message processing with a bounded worker pool
 - Batch message pulling from JetStream consumers
 - Automatic success/error reporting to the "result" subject
 - Built-in OpenTelemetry tracing support
@@ -212,14 +214,14 @@ if js != nil {
 
 ## Runner Framework
 
-The Runner provides a powerful concurrent message processing framework that automatically handles batch processing, limiter-governed concurrency, success/error callbacks, and distributed tracing.
+The Runner provides a powerful concurrent message processing framework that automatically handles batch processing, bounded worker-pool concurrency, success/error callbacks, and distributed tracing.
 
 ### Runner Architecture
 
 The Runner consists of the following components:
 
 - **Processor Interface**: Defines how individual messages are processed
-- **Concurrency Limiter**: Governs how many messages are processed in parallel and tracks circuit-breaker metrics
+- **Worker Pool**: Governs how many messages are processed in parallel (config/env driven)
 - **Batch Puller**: Pulls messages in configurable batches from JetStream consumers
 - **Callback Reporter**: Automatically reports success/error results to the "result" subject
 - **Tracing Integration**: Built-in OpenTelemetry tracing with span propagation
@@ -264,6 +266,9 @@ func (p *MyProcessor) Process(ctx context.Context, msg *message.Message) (messag
 // Configure tracing (optional)
 tracingConfig := tracing.JaegerConfig("my-service")
 
+cfg := runner.DefaultConfig()
+cfg.WorkerCount = 5 // or rely on env: ICARUS_RUNNER_WORKERS / _WORKER_MULTIPLIER
+
 // Create runner
 runner, err := runner.NewRunner(
     client,           // Connected Icarus client
@@ -271,10 +276,10 @@ runner, err := runner.NewRunner(
     "TASKS",          // Stream name
     "task-consumer",  // Consumer name
     10,               // Batch size (messages per pull)
-    5,                // Number of worker goroutines
     5*time.Minute,    // Processing timeout per message
     logger,           // Zap logger
     &tracingConfig,   // Tracing configuration (nil to disable)
+    &cfg,             // Worker config (nil uses defaults/env)
 )
 if err != nil {
     log.Fatal(err)
@@ -488,10 +493,10 @@ runner, err := runner.NewRunner(
     "TASKS",
     "task-consumer",
     10,             // batch size
-    5,              // workers
     5*time.Minute,  // timeout
     logger,
     &tracingConfig, // Enable tracing
+    nil,            // worker config (nil uses defaults/env)
 )
 if err != nil {
     log.Fatal(err)
@@ -759,42 +764,28 @@ Icarus provides production-ready, Kubernetes-aware concurrency control that prev
 
 ```go
 import (
-    "github.com/wehubfusion/Icarus/pkg/concurrency"
     "github.com/wehubfusion/Icarus/pkg/runner"
 )
 
 func main() {
-    // Initialize Kubernetes-aware concurrency (respects cgroup CPU limits)
-    undoMaxprocs := concurrency.InitializeForKubernetes()
-    defer undoMaxprocs()
-    
-    // Load configuration (auto-detects environment)
-    config := concurrency.LoadConfig()
-    
-    // Create limiter with optimal settings
-    limiter := concurrency.NewLimiter(config.MaxConcurrent)
-    
-    // Log configuration for observability
-    logger.Info("Concurrency initialized",
-        zap.Int("max_concurrent", config.MaxConcurrent),
-        zap.Int("runner_workers", config.RunnerWorkers),
-        zap.Int("effective_cpus", config.EffectiveCPUs),
-        zap.Bool("is_kubernetes", config.IsKubernetes),
-    )
-    
-    // Pass limiter to runner and processor
-    runner, err := runner.NewRunner(
+    // Configure runner workers (env overrides are applied automatically)
+    cfg := runner.DefaultConfig() // respects ICARUS_RUNNER_WORKERS / _WORKER_MULTIPLIER
+
+    runnerInstance, err := runner.NewRunner(
         client,
         processor,
         "TASKS",
         "consumer",
-        10,                   // batch size
-        config.RunnerWorkers, // workers from config
-        5*time.Minute,
+        10,           // batch size
+        5*time.Minute, // process timeout
         logger,
-        nil,    // tracing
-        limiter, // concurrency limiter
+        nil,   // tracing config
+        &cfg,  // worker config (nil uses defaults/env)
     )
+    if err != nil {
+        logger.Fatal("failed to create runner", zap.Error(err))
+    }
+    defer runnerInstance.Close()
 }
 ```
 
@@ -806,7 +797,10 @@ Concurrency is configured through environment variables with intelligent default
 |----------|-------------|---------|
 | `ICARUS_MAX_CONCURRENT` | Explicit max concurrent goroutines | Auto-detected |
 | `ICARUS_CONCURRENCY_MULTIPLIER` | CPU × multiplier for max concurrent | K8s: 2, Bare: 4 |
-| `ICARUS_RUNNER_WORKERS` | Number of NATS consumer workers | max(CPU, 4) |
+| `ICARUS_RUNNER_WORKERS` | Number of NATS consumer workers | GOMAXPROCS |
+| `ICARUS_RUNNER_WORKER_MULTIPLIER` | CPU × multiplier for runner workers | 1× CPU when unset |
+| `ICARUS_EMBEDDED_WORKERS` | Worker count for embedded runtime pool | GOMAXPROCS |
+| `ICARUS_EMBEDDED_WORKER_MULTIPLIER` | CPU × multiplier for embedded workers | 1× CPU when unset |
 | `ICARUS_PROCESSOR_MODE` | `concurrent` or `sequential` processing | `concurrent` |
 | `ICARUS_ITERATOR_MODE` | `parallel` or `sequential` array iteration | `sequential` |
 
@@ -818,22 +812,20 @@ Concurrency is configured through environment variables with intelligent default
 
 ### Usage with Processor
 
-The limiter automatically controls goroutine creation in embedded node processing:
+The embedded runtime now uses an internal worker pool instead of the shared limiter. Configure workers via code or environment:
 
 ```go
 import (
     "github.com/wehubfusion/Icarus/pkg/embedded"
-    "github.com/wehubfusion/Icarus/pkg/concurrency"
 )
 
-// Create processor with limiter
-processor := embedded.NewProcessorWithLimiter(
-    registry,
-    true,    // concurrent mode
-    limiter, // concurrency limiter
-)
+// Configure worker pool (or rely on ICARUS_EMBEDDED_WORKERS / ICARUS_EMBEDDED_WORKER_MULTIPLIER)
+cfg := embedded.DefaultProcessorConfig()
+cfg.WorkerPool.NumWorkers = 16
 
-// Process embedded nodes - goroutines are automatically limited
+processor := embedded.NewEmbeddedProcessor(registry, cfg)
+
+// Process embedded nodes with the configured worker pool
 results, err := processor.ProcessEmbeddedNodes(ctx, msg, parentOutput)
 ```
 
@@ -850,28 +842,6 @@ The embedded processor has been modularized into focused runtime packages to sim
 - `pkg/embedded/processors/registry`: consolidated helper that wires up all built-in executors (formerly `pkg/embedded/all`).
 
 Import paths that previously referenced `github.com/wehubfusion/Icarus/pkg/embedded` continue to work unchanged because the top-level package re-exports the runtime APIs.
-
-### Usage with Iterator
-
-Control array iteration concurrency:
-
-```go
-import (
-    "github.com/wehubfusion/Icarus/pkg/iteration"
-    "github.com/wehubfusion/Icarus/pkg/concurrency"
-)
-
-// Create iterator with limiter
-iterator := iteration.NewIteratorWithLimiter(
-    iteration.Config{
-        Strategy: iteration.StrategyParallel,
-    },
-    limiter,
-)
-
-// Process items - worker goroutines are automatically limited
-results, err := iterator.Process(ctx, items, processFn)
-```
 
 ### Observability
 
@@ -974,10 +944,10 @@ resources:
 
 ### Best Practices
 
-1. **Always Initialize**: Call `concurrency.InitializeForKubernetes()` at the start of `main()`
-2. **Pass Limiter Through**: Pass the limiter to Runner, Processor, and Iterator
-3. **Monitor Metrics**: Watch for high `avg_wait_time` or `circuit_breaker: open`
-4. **Start Conservative**: Begin with default settings, scale up based on metrics
+1. **Initialize CPUs**: Call `concurrency.InitializeForKubernetes()` at the start of `main()` if you still use the concurrency package elsewhere
+2. **Configure Workers**: Set runner workers via `Runner.Config` or `ICARUS_RUNNER_WORKERS` / `_WORKER_MULTIPLIER`
+3. **Monitor Throughput**: Watch processing latency and adjust worker counts or batch size
+4. **Start Conservative**: Begin with defaults, scale up based on metrics
 5. **Set Resource Limits**: In Kubernetes, always set both requests and limits
 6. **Test Scaling**: Verify behavior under load before production deployment
 
@@ -1556,6 +1526,41 @@ if result.Valid {
 }
 ```
 
+### CSV Schema Support (typed CSV)
+
+Icarus also understands the typed CSV schema format described in `Olympus/csv.md`. Provide a CSV schema (with `columnHeaders`, optional `delimiter`, and basic validation) plus a JSON array of row objects, and run them through the CSV helpers:
+
+```go
+csvSchema := []byte(`{
+  "name": "User Array - v3.0",
+  "delimiter": ",",
+  "columnHeaders": {
+    "username": { "type": "STRING", "required": true },
+    "email": { "type": "STRING", "required": true, "validation": { "format": "email" } },
+    "employeeno": { "type": "NUMBER", "validation": { "minimum": 0, "maximum": 999999 } }
+  }
+}`)
+
+rows := []byte(`[
+  {"username": "jdoe", "email": "jdoe@example.com", "employeeno": 42},
+  {"username": "asmith", "email": "asmith@example.com"}
+]`)
+
+result, err := engine.ProcessCSVWithSchema(
+  rows,
+  csvSchema,
+  schema.ProcessOptions{
+    ApplyDefaults:    true,  // fill missing defaults
+    StructureData:    true,  // drop columns not in schema
+    StrictValidation: true,  // fail fast on validation errors
+  },
+)
+```
+
+- CSV column order from the schema is preserved in `ColumnOrder` metadata for downstream CSV emitters.
+- Supported CSV column types: `STRING`, `NUMBER`, `DATE` (uses `format: "date"` validation).
+- Validators reuse the same format rules (`email`, `uri`, `uuid`, `date`, `datetime`), enums, lengths, and number min/max as JSON schemas.
+
 ### Schema Types
 
 The schema package supports the following data types:
@@ -1924,7 +1929,9 @@ for _, msg := range messages {
 
 ```go
 // Define a message processor for concurrent processing
-processor := func(ctx context.Context, msg *message.Message) error {
+type RunnerProcessor struct{}
+
+func (RunnerProcessor) Process(ctx context.Context, msg *message.Message) (message.Message, error) {
     var content string
     if msg.Payload != nil {
         content = msg.Payload.Data
@@ -1932,16 +1939,38 @@ processor := func(ctx context.Context, msg *message.Message) error {
     fmt.Printf("Processing: %s (Workflow: %s)\n", content, msg.Workflow.WorkflowID)
     // Simulate processing work
     time.Sleep(100 * time.Millisecond)
-    return nil
+
+    result := message.NewMessage().WithPayload("processor", "ok", "result-ref")
+    if msg.Workflow != nil {
+        result.Workflow = msg.Workflow
+    }
+    return *result, nil
 }
 
+processor := &RunnerProcessor{}
+
 // Create and configure runner for concurrent processing
-runner := client.NewRunner(c, "EVENTS", "worker-consumer", 5, 3) // batchSize=5, numWorkers=3
-runner.RegisterProcessor(processor)
+cfg := runner.DefaultConfig()
+cfg.WorkerCount = 3
+
+runnerInstance, err := runner.NewRunner(
+    c,
+    runner.ProcessorFunc(processor), // wrap func to implement Processor
+    "EVENTS",
+    "worker-consumer",
+    5,               // batchSize
+    5*time.Minute,   // timeout per message
+    logger,
+    nil,             // tracing
+    &cfg,            // worker config (nil uses defaults/env)
+)
+if err != nil {
+    log.Fatalf("failed to create runner: %v", err)
+}
 
 // Start processing in background (blocks until context cancelled)
 go func() {
-    if err := runner.Run(ctx); err != nil {
+    if err := runnerInstance.Run(ctx); err != nil {
         log.Printf("Runner error: %v", err)
     }
 }()

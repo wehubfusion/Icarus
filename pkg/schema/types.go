@@ -10,6 +10,23 @@ type Schema struct {
 	Description string               `json:"description,omitempty"`
 }
 
+// CSVSchema represents a typed CSV schema definition
+type CSVSchema struct {
+	Name          string                `json:"name,omitempty"`
+	Delimiter     string                `json:"delimiter,omitempty"`
+	ColumnHeaders map[string]*CSVColumn `json:"columnHeaders"`
+	ColumnOrder   []string              `json:"-"` // preserves declared column order
+}
+
+// CSVColumn describes a single CSV column
+type CSVColumn struct {
+	Type        SchemaType       `json:"type"`
+	Required    bool             `json:"required,omitempty"`
+	Default     interface{}      `json:"default,omitempty"`
+	Description string           `json:"description,omitempty"`
+	Validation  *ValidationRules `json:"validation,omitempty"`
+}
+
 // Property represents a field property in a schema
 type Property struct {
 	Type        SchemaType           `json:"type"`
@@ -101,4 +118,31 @@ func ToJSON(v interface{}) ([]byte, error) {
 // FromJSON parses JSON bytes into a value
 func FromJSON(data []byte, v interface{}) error {
 	return json.Unmarshal(data, v)
+}
+
+// EffectiveDelimiter returns the configured delimiter or a default comma
+func (c *CSVSchema) EffectiveDelimiter() string {
+	if c == nil || c.Delimiter == "" {
+		return ","
+	}
+	return c.Delimiter
+}
+
+// ToObjectSchema converts a CSV schema into an object schema for reuse in validation/transformers
+func (c *CSVSchema) ToObjectSchema() *Schema {
+	props := make(map[string]*Property)
+	for name, col := range c.ColumnHeaders {
+		props[name] = &Property{
+			Type:        col.Type,
+			Required:    col.Required,
+			Default:     col.Default,
+			Description: col.Description,
+			Validation:  col.Validation,
+		}
+	}
+
+	return &Schema{
+		Type:       TypeObject,
+		Properties: props,
+	}
 }

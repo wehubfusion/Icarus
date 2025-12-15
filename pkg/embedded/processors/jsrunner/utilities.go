@@ -21,7 +21,7 @@ type Utility interface {
 	// AllowedSecurityLevels returns the security levels that allow this utility
 	AllowedSecurityLevels() []string
 
-	// Cleanup is called when the VM is being reset (optional)
+	// Cleanup is called when the VM is being cleaned up
 	Cleanup(vm *goja.Runtime) error
 }
 
@@ -38,7 +38,7 @@ func NewUtilityRegistry() *UtilityRegistry {
 	}
 
 	// Register built-in utilities
-	registry.Register(&ConsoleUtility{})
+	registry.Register(&ConsoleUtility{maxLogs: 1000, maxErrors: 1000})
 	registry.Register(&JSONUtility{})
 	registry.Register(&EncodingUtility{})
 	registry.Register(&TimersUtility{timers: make(map[int]*time.Timer)})
@@ -51,14 +51,6 @@ func (r *UtilityRegistry) Register(utility Utility) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.utilities[utility.Name()] = utility
-}
-
-// Get retrieves a utility by name
-func (r *UtilityRegistry) Get(name string) (Utility, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	utility, ok := r.utilities[name]
-	return utility, ok
 }
 
 // RegisterEnabled registers all enabled utilities in the VM
@@ -120,8 +112,8 @@ type ConsoleUtility struct {
 	logs      []string
 	errors    []string
 	mu        sync.Mutex
-	maxLogs   int // Maximum number of logs to keep
-	maxErrors int // Maximum number of errors to keep
+	maxLogs   int
+	maxErrors int
 }
 
 func (u *ConsoleUtility) Name() string { return "console" }
@@ -131,14 +123,6 @@ func (u *ConsoleUtility) AllowedSecurityLevels() []string {
 }
 
 func (u *ConsoleUtility) Register(vm *goja.Runtime) error {
-	// Set defaults if not set
-	if u.maxLogs == 0 {
-		u.maxLogs = 1000 // Default max 1000 log entries
-	}
-	if u.maxErrors == 0 {
-		u.maxErrors = 1000 // Default max 1000 error entries
-	}
-
 	console := vm.NewObject()
 
 	// console.log
@@ -149,7 +133,6 @@ func (u *ConsoleUtility) Register(vm *goja.Runtime) error {
 		}
 		u.mu.Lock()
 		u.logs = append(u.logs, fmt.Sprint(args...))
-		// Trim if exceeds max
 		if len(u.logs) > u.maxLogs {
 			u.logs = u.logs[len(u.logs)-u.maxLogs:]
 		}
@@ -165,7 +148,6 @@ func (u *ConsoleUtility) Register(vm *goja.Runtime) error {
 		}
 		u.mu.Lock()
 		u.errors = append(u.errors, fmt.Sprint(args...))
-		// Trim if exceeds max
 		if len(u.errors) > u.maxErrors {
 			u.errors = u.errors[len(u.errors)-u.maxErrors:]
 		}
@@ -189,20 +171,6 @@ func (u *ConsoleUtility) Cleanup(vm *goja.Runtime) error {
 	u.logs = nil
 	u.errors = nil
 	return nil
-}
-
-// GetLogs returns all console.log messages
-func (u *ConsoleUtility) GetLogs() []string {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	return append([]string{}, u.logs...)
-}
-
-// GetErrors returns all console.error messages
-func (u *ConsoleUtility) GetErrors() []string {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	return append([]string{}, u.errors...)
 }
 
 // JSONUtility provides JSON.parse and JSON.stringify
@@ -303,7 +271,7 @@ type TimersUtility struct {
 	timers map[int]*time.Timer
 	nextID int
 	mu     sync.Mutex
-	vmRef  *goja.Runtime // Keep reference to current VM to prevent stale callbacks
+	vmRef  *goja.Runtime
 }
 
 func (u *TimersUtility) Name() string { return "timers" }
@@ -336,18 +304,14 @@ func (u *TimersUtility) Register(vm *goja.Runtime) error {
 		currentVM := u.vmRef
 
 		timer := time.AfterFunc(time.Duration(delay)*time.Millisecond, func() {
-			// Check if the VM reference is still the same before executing callback
 			u.mu.Lock()
 			if u.vmRef == currentVM {
-				// VM is still the same, safe to execute
 				u.mu.Unlock()
 				callback(goja.Undefined())
 			} else {
-				// VM has been reset/changed, don't execute
 				u.mu.Unlock()
 			}
 
-			// Clean up timer reference
 			u.mu.Lock()
 			delete(u.timers, id)
 			u.mu.Unlock()
@@ -377,7 +341,7 @@ func (u *TimersUtility) Register(vm *goja.Runtime) error {
 		return goja.Undefined()
 	})
 
-	// setInterval - simplified (not a true interval, just repeated timeouts)
+	// setInterval - simplified (same as setTimeout)
 	vm.Set("setInterval", vm.Get("setTimeout"))
 
 	// clearInterval - same as clearTimeout
@@ -396,8 +360,6 @@ func (u *TimersUtility) Cleanup(vm *goja.Runtime) error {
 	}
 	u.timers = make(map[int]*time.Timer)
 	u.nextID = 0
-
-	// Clear VM reference to prevent stale callbacks from executing
 	u.vmRef = nil
 
 	return nil

@@ -2,167 +2,149 @@ package jsrunner
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
-// Config defines the configuration for JavaScript execution
-type Config struct {
-	// Script is the JavaScript code to execute
-	Script string `json:"script"`
-
-	// SchemaDefinition is the input schema (injected by Elysium enrichment)
-	// When provided, the schema is available in JS as a global variable
-	SchemaDefinition json.RawMessage `json:"schema,omitempty"`
-
-	// SchemaID is a reference to a schema in Morpheus (enriched by Elysium)
-	// This is only used as a reference - Elysium enriches it before execution
-	SchemaID string `json:"schema_id,omitempty"`
-
-	// ManualInputs defines input fields manually (alternative to schema)
-	// Each field should have "key" and "type"
-	ManualInputs []InputField `json:"inputs,omitempty"`
-
-	// Timeout is the maximum execution time in milliseconds
-	// Default: 5000ms (5 seconds)
-	Timeout int `json:"timeout,omitempty"`
-
-	// EnabledUtilities specifies which utilities are available in the script
-	// Available: "console", "json", "timers", "encoding", "fetch"
-	// Default: ["console", "json"]
-	EnabledUtilities []string `json:"enabled_utilities,omitempty"`
-
-	// SecurityLevel determines the level of sandboxing
-	// "strict": Maximum restrictions, minimal utilities
-	// "standard": Balanced security and functionality (default)
-	// "permissive": More utilities, less restrictions
-	SecurityLevel string `json:"security_level,omitempty"`
-
-	// MemoryLimitMB sets the memory limit for the VM (not enforced by goja itself)
-	// This is informational and can be used for monitoring
-	// Default: 50MB
-	MemoryLimitMB int `json:"memory_limit_mb,omitempty"`
-
-	// MaxStackDepth limits the call stack depth
-	// Default: 100
-	MaxStackDepth int `json:"max_stack_depth,omitempty"`
-
-	// AllowNetworkAccess enables network utilities (fetch)
-	// Only applies in "permissive" security level
-	// Default: false
-	AllowNetworkAccess bool `json:"allow_network_access,omitempty"`
-}
-
-// SecurityLevel constants
+// SecurityLevel defines the security restrictions for JavaScript execution
 const (
 	SecurityLevelStrict     = "strict"
 	SecurityLevelStandard   = "standard"
 	SecurityLevelPermissive = "permissive"
 )
 
-// Default configuration values
-const (
-	DefaultTimeout       = 5000 // 5 seconds
-	DefaultMemoryLimitMB = 50   // 50 MB
-	DefaultMaxStackDepth = 100  // 100 calls
-	DefaultSecurityLevel = SecurityLevelStandard
-)
+// Config represents the configuration for a JavaScript execution node
+type Config struct {
+	// Script is the JavaScript code to execute
+	Script string `json:"script"`
 
-// Default utilities per security level
-var DefaultUtilitiesByLevel = map[string][]string{
-	SecurityLevelStrict:     {"json"},
-	SecurityLevelStandard:   {"console", "json", "encoding"},
-	SecurityLevelPermissive: {"console", "json", "encoding", "timers"},
+	// InputSchemaID is the ID of the input schema (enriched to inputSchema by Elysium)
+	InputSchemaID string `json:"inputSchemaID,omitempty"`
+
+	// InputSchema is the inline JSON schema for input validation (enriched from inputSchemaID)
+	InputSchema map[string]interface{} `json:"inputSchema,omitempty"`
+
+	// OutputSchemaID is the ID of the output schema (enriched to outputSchema by Elysium)
+	OutputSchemaID string `json:"outputSchemaID,omitempty"`
+
+	// OutputSchema is the inline JSON schema for output validation (enriched from outputSchemaID)
+	OutputSchema map[string]interface{} `json:"outputSchema,omitempty"`
+
+	// ManualInputs allows manually specifying inputs instead of using ProcessInput.Data
+	ManualInputs map[string]interface{} `json:"manual_inputs,omitempty"`
+
+	// Timeout is the maximum execution time for the script
+	Timeout time.Duration `json:"timeout,omitempty"`
+
+	// SecurityLevel defines security restrictions (strict, standard, permissive)
+	SecurityLevel string `json:"security_level,omitempty"`
+
+	// EnabledUtilities is a list of utility modules to enable (console, json, encoding, timers)
+	EnabledUtilities []string `json:"enabled_utilities,omitempty"`
+
+	// ApplySchemaDefaults specifies whether to apply schema defaults
+	ApplySchemaDefaults bool `json:"apply_defaults,omitempty"`
+
+	// StructureData specifies whether to structure data according to schema
+	StructureData bool `json:"structure_data,omitempty"`
+
+	// StrictValidation specifies whether to use strict schema validation
+	StrictValidation bool `json:"strict_validation,omitempty"`
+
+	// MaxStackDepth is the maximum call stack depth
+	MaxStackDepth int `json:"max_stack_depth,omitempty"`
 }
 
-// ApplyDefaults applies default values to the configuration
+// ApplyDefaults sets default values for configuration fields
 func (c *Config) ApplyDefaults() {
-	if c.Timeout <= 0 {
-		c.Timeout = DefaultTimeout
+	if c.Timeout == 0 {
+		c.Timeout = 5 * time.Second
 	}
-
-	if c.MemoryLimitMB <= 0 {
-		c.MemoryLimitMB = DefaultMemoryLimitMB
-	}
-
-	if c.MaxStackDepth <= 0 {
-		c.MaxStackDepth = DefaultMaxStackDepth
-	}
-
 	if c.SecurityLevel == "" {
-		c.SecurityLevel = DefaultSecurityLevel
+		c.SecurityLevel = SecurityLevelStandard
 	}
-
 	if c.EnabledUtilities == nil {
 		c.EnabledUtilities = DefaultUtilitiesByLevel[c.SecurityLevel]
+	}
+	if c.MaxStackDepth == 0 {
+		c.MaxStackDepth = 100
 	}
 }
 
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
 	if c.Script == "" {
-		return &ConfigError{Field: "script", Message: "script cannot be empty"}
+		return fmt.Errorf("script is required")
 	}
-
-	if c.Timeout < 0 {
-		return &ConfigError{Field: "timeout", Message: "timeout must be non-negative"}
+	if c.Timeout <= 0 {
+		return fmt.Errorf("timeout must be positive")
 	}
-
-	if c.Timeout > 300000 { // 5 minutes
-		return &ConfigError{Field: "timeout", Message: "timeout cannot exceed 300000ms (5 minutes)"}
+	if c.SecurityLevel != SecurityLevelStrict &&
+		c.SecurityLevel != SecurityLevelStandard &&
+		c.SecurityLevel != SecurityLevelPermissive {
+		return fmt.Errorf("invalid security level: %s", c.SecurityLevel)
 	}
-
-	if c.MemoryLimitMB < 0 {
-		return &ConfigError{Field: "memory_limit_mb", Message: "memory limit must be non-negative"}
+	if c.MaxStackDepth <= 0 {
+		return fmt.Errorf("max_stack_depth must be positive")
 	}
-
-	if c.MaxStackDepth < 0 {
-		return &ConfigError{Field: "max_stack_depth", Message: "max stack depth must be non-negative"}
-	}
-
-	validSecurityLevels := map[string]bool{
-		SecurityLevelStrict:     true,
-		SecurityLevelStandard:   true,
-		SecurityLevelPermissive: true,
-	}
-
-	if !validSecurityLevels[c.SecurityLevel] {
-		return &ConfigError{
-			Field:   "security_level",
-			Message: "security level must be 'strict', 'standard', or 'permissive'",
-		}
-	}
-
 	return nil
 }
 
-// GetTimeoutDuration returns the timeout as a time.Duration
-func (c *Config) GetTimeoutDuration() time.Duration {
-	return time.Duration(c.Timeout) * time.Millisecond
+// HasInputSchema returns true if an input schema is configured
+func (c *Config) HasInputSchema() bool {
+	return c.InputSchemaID != "" || len(c.InputSchema) > 0
 }
 
-// IsUtilityEnabled checks if a utility is enabled in the configuration
-func (c *Config) IsUtilityEnabled(utilityName string) bool {
-	for _, name := range c.EnabledUtilities {
-		if name == utilityName {
-			return true
-		}
+// HasOutputSchema returns true if an output schema is configured
+func (c *Config) HasOutputSchema() bool {
+	return c.OutputSchemaID != "" || len(c.OutputSchema) > 0
+}
+
+// GetInputSchema returns the input schema, preferring enriched schema over ID
+func (c *Config) GetInputSchema() map[string]interface{} {
+	if len(c.InputSchema) > 0 {
+		return c.InputSchema
 	}
-	return false
+	return nil
 }
 
-// ConfigError represents a configuration validation error
-type ConfigError struct {
-	Field   string
-	Message string
+// GetOutputSchema returns the output schema, preferring enriched schema over ID
+func (c *Config) GetOutputSchema() map[string]interface{} {
+	if len(c.OutputSchema) > 0 {
+		return c.OutputSchema
+	}
+	return nil
 }
 
-func (e *ConfigError) Error() string {
-	return "config error [" + e.Field + "]: " + e.Message
+// DefaultUtilitiesByLevel defines default utilities for each security level
+var DefaultUtilitiesByLevel = map[string][]string{
+	SecurityLevelStrict:     {"console", "json"},
+	SecurityLevelStandard:   {"console", "json", "encoding"},
+	SecurityLevelPermissive: {"console", "json", "encoding", "timers"},
 }
 
-// InputField represents a manually defined input field
-type InputField struct {
-	Key      string `json:"key"`
-	Type     string `json:"type"`
-	Required bool   `json:"required,omitempty"`
+// UnmarshalJSON implements custom JSON unmarshaling for Config
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type Alias Config
+	aux := &struct {
+		Timeout string `json:"timeout,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(c),
+	}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// Parse timeout if provided as string
+	if aux.Timeout != "" {
+		duration, err := time.ParseDuration(aux.Timeout)
+		if err != nil {
+			return fmt.Errorf("invalid timeout format: %w", err)
+		}
+		c.Timeout = duration
+	}
+
+	return nil
 }

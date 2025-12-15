@@ -32,11 +32,6 @@ func (s *Sandbox) Apply(vm *goja.Runtime) error {
 		return fmt.Errorf("failed to freeze built-ins: %w", err)
 	}
 
-	// Set up stack depth monitoring
-	if err := s.setupStackMonitoring(vm); err != nil {
-		return fmt.Errorf("failed to setup stack monitoring: %w", err)
-	}
-
 	return nil
 }
 
@@ -75,7 +70,7 @@ func (s *Sandbox) removeDangerousGlobals(vm *goja.Runtime) error {
 func (s *Sandbox) restrictEval(vm *goja.Runtime) error {
 	// Replace eval with a restricted version that throws an error
 	restrictedEval := func(call goja.FunctionCall) goja.Value {
-		panic(vm.NewGoError(NewSecurityError("eval is not allowed in strict security mode")))
+		panic(vm.NewGoError(fmt.Errorf("eval is not allowed in strict security mode")))
 	}
 
 	return vm.Set("eval", restrictedEval)
@@ -139,108 +134,12 @@ func (s *Sandbox) freezeBuiltins(vm *goja.Runtime) error {
 	return nil
 }
 
-// setupStackMonitoring sets up stack depth monitoring
-func (s *Sandbox) setupStackMonitoring(vm *goja.Runtime) error {
-	if s.maxStackDepth <= 0 {
-		return nil
-	}
-
-	// Inject a stack depth counter
-	monitorScript := fmt.Sprintf(`
-		(function() {
-			var maxDepth = %d;
-			var currentDepth = 0;
-			
-			var originalFunction = Function.prototype.constructor;
-			
-			// We can't reliably intercept all function calls in goja
-			// This is more of a demonstration - real stack depth is monitored by goja itself
-			// and will throw RangeError: Maximum call stack size exceeded
-			
-			return {
-				maxDepth: maxDepth,
-				currentDepth: currentDepth
-			};
-		})()
-	`, s.maxStackDepth)
-
-	_, err := vm.RunString(monitorScript)
-	if err != nil {
-		return fmt.Errorf("failed to setup stack monitoring: %w", err)
-	}
-
-	return nil
-}
-
-// ValidateOperation checks if an operation is allowed at the current security level
-func (s *Sandbox) ValidateOperation(operation string) error {
-	restrictions := s.getRestrictions()
-
-	for _, forbidden := range restrictions {
-		if operation == forbidden {
-			return NewSecurityError(fmt.Sprintf("operation '%s' is not allowed at security level '%s'",
-				operation, s.securityLevel))
-		}
-	}
-
-	return nil
-}
-
-// getRestrictions returns the list of forbidden operations for the current security level
-func (s *Sandbox) getRestrictions() []string {
-	switch s.securityLevel {
-	case SecurityLevelStrict:
-		return []string{
-			"eval",
-			"Function",
-			"setTimeout",
-			"setInterval",
-			"XMLHttpRequest",
-			"fetch",
-			"WebSocket",
-			"importScripts",
-		}
-	case SecurityLevelStandard:
-		return []string{
-			"XMLHttpRequest",
-			"fetch",
-			"WebSocket",
-			"importScripts",
-		}
-	case SecurityLevelPermissive:
-		return []string{
-			"importScripts", // Still forbidden even in permissive mode
-		}
-	default:
-		return []string{}
-	}
-}
-
-// CheckMemoryUsage checks if memory usage is within limits
-// Note: goja doesn't provide direct memory inspection, so this is a placeholder
-func (s *Sandbox) CheckMemoryUsage(vm *goja.Runtime) error {
-	// This is a placeholder - goja doesn't expose memory usage directly
-	// In production, you might want to monitor the process memory externally
-	return nil
-}
-
 // InjectSecurityAPI injects security-related APIs into the VM
 func (s *Sandbox) InjectSecurityAPI(vm *goja.Runtime) error {
 	securityObj := vm.NewObject()
 
 	// Add security level information
 	securityObj.Set("level", s.securityLevel)
-
-	// Add a function to check if an operation is allowed
-	securityObj.Set("isAllowed", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) == 0 {
-			return vm.ToValue(false)
-		}
-
-		operation := call.Argument(0).String()
-		err := s.ValidateOperation(operation)
-		return vm.ToValue(err == nil)
-	})
 
 	vm.Set("__security__", securityObj)
 	return nil
