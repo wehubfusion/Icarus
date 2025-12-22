@@ -401,10 +401,25 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 		processSpan.SetAttributes(attribute.String("message.node.id", msg.Node.NodeID))
 	}
 	if msg.Payload != nil {
-		processSpan.SetAttributes(
-			attribute.String("message.payload.source", msg.Payload.Source),
-			attribute.String("message.payload.reference", msg.Payload.Reference),
-		)
+		attrs := []attribute.KeyValue{}
+		// Add plugin type from metadata if available
+		if pluginType := msg.Metadata["plugin_type"]; pluginType != "" {
+			attrs = append(attrs, attribute.String("message.plugin_type", pluginType))
+		}
+		// Add execution context fields from Payload
+		if msg.Payload.ExecutionID != "" {
+			attrs = append(attrs, attribute.String("message.execution_id", msg.Payload.ExecutionID))
+		}
+		if msg.Payload.WorkflowID != "" {
+			attrs = append(attrs, attribute.String("message.workflow_id", msg.Payload.WorkflowID))
+		}
+		if msg.Payload.RunID != "" {
+			attrs = append(attrs, attribute.String("message.run_id", msg.Payload.RunID))
+		}
+		if msg.Payload.NodeID != "" {
+			attrs = append(attrs, attribute.String("message.node_id", msg.Payload.NodeID))
+		}
+		processSpan.SetAttributes(attrs...)
 	}
 	processSpan.SetAttributes(attribute.String("message.created_at", msg.CreatedAt))
 	defer processSpan.End()
@@ -434,10 +449,10 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 		// Report error if we have workflow information
 		// Use a background context with timeout to ensure reporting works even if parent context is cancelled
 		if workflowID != "" && runID != "" {
-			// Extract executionID from message metadata
+			// Extract executionID from Payload
 			executionID := ""
-			if msg.Metadata != nil {
-				executionID = msg.Metadata["execution_id"]
+			if msg.Payload != nil {
+				executionID = msg.Payload.ExecutionID
 			}
 
 			reportCtx, reportCancel := context.WithTimeout(context.Background(), 10*time.Minute)

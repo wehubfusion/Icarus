@@ -30,11 +30,27 @@ type BlobReference struct {
 
 // Payload represents the message payload data
 type Payload struct {
-	Source        string         `json:"source"`
-	Data          string         `json:"data"` // Inline data (for small payloads)
-	Reference     string         `json:"reference"`
+	InlineData    *string        `json:"inlineData,omitempty"`    // Inline data (for small payloads) - nullable
 	BlobReference *BlobReference `json:"blobReference,omitempty"` // Reference to blob storage (for large payloads)
 	FieldMappings []FieldMapping `json:"fieldMappings,omitempty"` // Field mappings for extracting data from blob
+	// Execution context fields (for convenience - also available in Workflow/Node/Metadata)
+	ExecutionID string `json:"execution_id"` // Unique identifier for this execution
+	WorkflowID  string `json:"workflow_id"`  // Workflow identifier
+	RunID       string `json:"run_id"`       // Workflow run identifier
+	NodeID      string `json:"node_id"`      // Node identifier
+}
+
+// GetInlineData returns the inline data as a string, or empty string if nil
+func (p *Payload) GetInlineData() string {
+	if p == nil || p.InlineData == nil {
+		return ""
+	}
+	return *p.InlineData
+}
+
+// HasInlineData returns true if inline data is present
+func (p *Payload) HasInlineData() bool {
+	return p != nil && p.InlineData != nil && *p.InlineData != ""
 }
 
 // Output represents output destination information
@@ -171,11 +187,26 @@ func (m *Message) WithNode(nodeID string, configuration interface{}) *Message {
 }
 
 // WithPayload adds payload information to the message
-func (m *Message) WithPayload(source, data, reference string) *Message {
+func (m *Message) WithPayload(data string) *Message {
+	var dataPtr *string
+	if data != "" {
+		dataPtr = &data
+	}
 	m.Payload = &Payload{
-		Source:    source,
-		Data:      data,
-		Reference: reference,
+		InlineData: dataPtr,
+	}
+	// Populate execution context fields from message structure if available
+	if m.Workflow != nil {
+		m.Payload.WorkflowID = m.Workflow.WorkflowID
+		m.Payload.RunID = m.Workflow.RunID
+	}
+	if m.Node != nil {
+		m.Payload.NodeID = m.Node.NodeID
+	}
+	if m.Metadata != nil {
+		if executionID := m.Metadata["execution_id"]; executionID != "" {
+			m.Payload.ExecutionID = executionID
+		}
 	}
 	m.UpdatedAt = time.Now().Format(time.RFC3339)
 	return m

@@ -36,7 +36,7 @@ func TestMessageCreation(t *testing.T) {
 func TestMessageWithComponents(t *testing.T) {
 	msg := message.NewMessage().
 		WithNode("node-123", map[string]interface{}{"type": "processor"}).
-		WithPayload("source1", "test data", "ref-456").
+		WithPayload( "test data").
 		WithOutput("stream")
 
 	if msg.Node.NodeID != "node-123" {
@@ -45,14 +45,9 @@ func TestMessageWithComponents(t *testing.T) {
 	if msg.Node.Configuration.(map[string]interface{})["type"] != "processor" {
 		t.Errorf("Expected node config type 'processor', got %v", msg.Node.Configuration)
 	}
-	if msg.Payload.Source != "source1" {
-		t.Errorf("Expected payload source 'source1', got %s", msg.Payload.Source)
-	}
-	if msg.Payload.Data != "test data" {
-		t.Errorf("Expected payload data 'test data', got %s", msg.Payload.Data)
-	}
-	if msg.Payload.Reference != "ref-456" {
-		t.Errorf("Expected payload reference 'ref-456', got %s", msg.Payload.Reference)
+	// Source field removed - plugin type available in Metadata["plugin_type"]
+	if msg.Payload.GetInlineData() != "test data" {
+		t.Errorf("Expected payload data 'test data', got %s", msg.Payload.GetInlineData())
 	}
 	if msg.Output.DestinationType != "stream" {
 		t.Errorf("Expected output destination 'stream', got %s", msg.Output.DestinationType)
@@ -62,7 +57,7 @@ func TestMessageWithComponents(t *testing.T) {
 func TestMessageSerialization(t *testing.T) {
 	original := message.NewWorkflowMessage("workflow-123", "run-456").
 		WithNode("node-789", map[string]interface{}{"priority": "high"}).
-		WithPayload("test-source", "test data content", "ref-123").
+		WithPayload( "test data content").
 		WithOutput("stream")
 
 	// Serialize to bytes
@@ -87,11 +82,9 @@ func TestMessageSerialization(t *testing.T) {
 	if deserialized.Node.NodeID != original.Node.NodeID {
 		t.Errorf("Node ID mismatch: expected %s, got %s", original.Node.NodeID, deserialized.Node.NodeID)
 	}
-	if deserialized.Payload.Source != original.Payload.Source {
-		t.Errorf("Payload source mismatch: expected %s, got %s", original.Payload.Source, deserialized.Payload.Source)
-	}
-	if deserialized.Payload.Data != original.Payload.Data {
-		t.Errorf("Payload data mismatch: expected %s, got %s", original.Payload.Data, deserialized.Payload.Data)
+	// Source field removed - plugin type available in Metadata["plugin_type"]
+	if deserialized.Payload.GetInlineData() != original.Payload.GetInlineData() {
+		t.Errorf("Payload data mismatch: expected %s, got %s", original.Payload.GetInlineData(), deserialized.Payload.GetInlineData())
 	}
 	if deserialized.Output.DestinationType != original.Output.DestinationType {
 		t.Errorf("Output destination mismatch: expected %s, got %s", original.Output.DestinationType, deserialized.Output.DestinationType)
@@ -112,7 +105,7 @@ func TestMessagePublishing(t *testing.T) {
 
 	// Test publishing a message
 	msg := message.NewWorkflowMessage("workflow-test", uuid.New().String()).
-		WithPayload("test", "test message", "ref-123")
+		WithPayload( "test message")
 
 	err := c.Messages.Publish(ctx, "test.events.user.created", msg)
 	if err != nil {
@@ -126,7 +119,7 @@ func TestPullMessages(t *testing.T) {
 
 	// Publish a message first
 	msg := message.NewWorkflowMessage("workflow-pull", uuid.New().String()).
-		WithPayload("pull-test", "pull test message", "ref-pull")
+		WithPayload( "pull test message")
 
 	err := c.Messages.Publish(ctx, "test.events.user.created", msg)
 	if err != nil {
@@ -150,8 +143,8 @@ func TestPullMessages(t *testing.T) {
 		if messages[0].Workflow.WorkflowID != msg.Workflow.WorkflowID {
 			t.Errorf("Workflow ID mismatch: expected %s, got %s", msg.Workflow.WorkflowID, messages[0].Workflow.WorkflowID)
 		}
-		if messages[0].Payload.Data != msg.Payload.Data {
-			t.Errorf("Payload data mismatch: expected %s, got %s", msg.Payload.Data, messages[0].Payload.Data)
+		if messages[0].Payload.GetInlineData() != msg.Payload.GetInlineData() {
+			t.Errorf("Payload data mismatch: expected %s, got %s", msg.Payload.GetInlineData(), messages[0].Payload.GetInlineData())
 		}
 	}
 }
@@ -228,7 +221,7 @@ func TestMessageAckNakTerm(t *testing.T) {
 func TestFromNATSMsg(t *testing.T) {
 	// Create a test message
 	originalMsg := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("test", "test data", "ref-123")
+		WithPayload( "test data")
 
 	data, err := originalMsg.ToBytes()
 	if err != nil {
@@ -254,16 +247,16 @@ func TestFromNATSMsg(t *testing.T) {
 			originalMsg.Workflow.WorkflowID, convertedMsg.Workflow.WorkflowID)
 	}
 
-	if convertedMsg.Payload.Data != originalMsg.Payload.Data {
+	if convertedMsg.Payload.GetInlineData() != originalMsg.Payload.GetInlineData() {
 		t.Errorf("Payload data mismatch: expected %s, got %s",
-			originalMsg.Payload.Data, convertedMsg.Payload.Data)
+			originalMsg.Payload.GetInlineData(), convertedMsg.Payload.GetInlineData())
 	}
 }
 
 func TestNATSMsgWrapper(t *testing.T) {
 	// Create a test message
 	msg := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("test", "test data", "ref-123")
+		WithPayload( "test data")
 
 	// Note: We don't need to create a real NATS message for this test
 	// The NATSMsg wrapper is what we're testing
@@ -310,7 +303,7 @@ func TestNATSMsgWrapper(t *testing.T) {
 	}
 
 	// Test Respond method
-	response := message.NewMessage().WithPayload("response", "test response", "response-ref")
+	response := message.NewMessage().WithPayload( "test response")
 	err = wrappedMsg.Respond(response)
 	if err != nil {
 		t.Errorf("Respond should not error without real NATS message, got: %v", err)
@@ -539,7 +532,7 @@ func TestMessage_HasSchema(t *testing.T) {
 func TestMessage_SerializationWithEmbeddedNodes(t *testing.T) {
 	original := message.NewWorkflowMessage("workflow-123", "run-456").
 		WithNode("parent-node", nil).
-		WithPayload("test", "test data", "ref-123")
+		WithPayload( "test data")
 
 	embeddedNodes := []message.EmbeddedNode{
 		{
@@ -613,7 +606,7 @@ func TestMessage_WithEmbeddedNodes_Fluent(t *testing.T) {
 	msg := message.NewMessage().
 		WithNode("parent", nil).
 		WithEmbeddedNodes(embeddedNodes).
-		WithPayload("test", "data", "ref")
+		WithPayload( "data")
 
 	if !msg.HasEmbeddedNodes() {
 		t.Error("Message should be a unit after WithEmbeddedNodes")

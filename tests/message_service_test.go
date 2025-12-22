@@ -53,7 +53,7 @@ func TestMessageServiceReportSuccess(t *testing.T) {
 
 	// Create a result message
 	resultMessage := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("processor", "success result", "result-ref")
+		WithPayload( "success result")
 
 	// Create a mock NATS message for acknowledgment
 	natsMsg := &nats.Msg{
@@ -111,7 +111,7 @@ func TestMessageServiceReportSuccessValidation(t *testing.T) {
 	ctx := context.Background()
 
 	// Test with invalid message (missing workflow)
-	invalidMessage := message.NewMessage().WithPayload("test", "data", "ref")
+	invalidMessage := message.NewMessage().WithPayload( "data")
 	err := c.Messages.ReportSuccess(ctx, *invalidMessage, nil)
 	if err == nil {
 		t.Error("Expected validation error for message without workflow")
@@ -121,7 +121,10 @@ func TestMessageServiceReportSuccessValidation(t *testing.T) {
 	// Framework auto-populates timestamps but Temporal metadata is required
 	invalidMessage2 := &message.Message{
 		Workflow:  &message.Workflow{WorkflowID: "test", RunID: "test"},
-		Payload:   &message.Payload{Source: "test", Data: "data", Reference: "ref"},
+		Payload: func() *message.Payload {
+			data := "data"
+			return &message.Payload{InlineData: &data}
+		}(),
 		UpdatedAt: time.Now().Format(time.RFC3339),
 	}
 	err = c.Messages.ReportSuccess(ctx, *invalidMessage2, nil)
@@ -133,7 +136,10 @@ func TestMessageServiceReportSuccessValidation(t *testing.T) {
 	// Test with message missing UpdatedAt and Temporal metadata
 	invalidMessage3 := &message.Message{
 		Workflow:  &message.Workflow{WorkflowID: "test", RunID: "test"},
-		Payload:   &message.Payload{Source: "test", Data: "data", Reference: "ref"},
+		Payload: func() *message.Payload {
+			data := "data"
+			return &message.Payload{InlineData: &data}
+		}(),
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
 	err = c.Messages.ReportSuccess(ctx, *invalidMessage3, nil)
@@ -201,7 +207,7 @@ func TestMessageServiceReportWithPublishError(t *testing.T) {
 
 	// Test ReportSuccess with publish error
 	resultMessage := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("processor", "success result", "result-ref")
+		WithPayload( "success result")
 
 	err := c.Messages.ReportSuccess(ctx, *resultMessage, nil)
 	if err == nil {
@@ -247,7 +253,7 @@ func TestMessageServicePublishValidation(t *testing.T) {
 	ctx := context.Background()
 
 	msg := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("test", "test data", "ref-123")
+		WithPayload( "test data")
 
 	// Test with empty subject
 	err := c.Messages.Publish(ctx, "", msg)
@@ -270,7 +276,7 @@ func TestMessageServiceContextCancellation(t *testing.T) {
 	cancel()
 
 	msg := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("test", "test data", "ref-123")
+		WithPayload( "test data")
 
 	// Test Publish with cancelled context
 	err := c.Messages.Publish(ctx, "test.subject", msg)
@@ -286,7 +292,7 @@ func TestMessageServiceContextCancellation(t *testing.T) {
 
 	// Test ReportSuccess with cancelled context
 	resultMessage := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("processor", "success result", "result-ref")
+		WithPayload( "success result")
 
 	err = c.Messages.ReportSuccess(ctx, *resultMessage, nil)
 	if err == nil {
@@ -313,7 +319,7 @@ func TestMessageServiceTimeout(t *testing.T) {
 	time.Sleep(1 * time.Millisecond)
 
 	msg := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("test", "test data", "ref-123")
+		WithPayload( "test data")
 
 	// Test operations with timed out context
 	err := c.Messages.Publish(ctx, "test.subject", msg)

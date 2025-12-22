@@ -36,7 +36,7 @@ func (m *mockProcessor) Process(ctx context.Context, msg *message.Message) (mess
 	}
 	// Return a default result message
 	resultMessage := message.NewMessage().
-		WithPayload("test-processor", `{"status":"processed"}`, "test-result")
+		WithPayload( `{"status":"processed"}`)
 
 	// Copy workflow information if it exists
 	if msg.Workflow != nil {
@@ -275,13 +275,13 @@ func TestRunnerRunWithSuccessfulProcessor(t *testing.T) {
 
 	// Add test messages
 	testMsg := message.NewMessage().
-		WithPayload("test", "test data", "ref-123")
+		WithPayload( "test data")
 	mockClient.addMessage(testMsg)
 
 	mockProc := &mockProcessor{
 		processFunc: func(ctx context.Context, msg *message.Message) (message.Message, error) {
 			// Simulate successful processing
-			resultMessage := message.NewMessage().WithPayload("test", `{"status":"success"}`, "test-result")
+			resultMessage := message.NewMessage().WithPayload( `{"status":"success"}`)
 			if msg.Workflow != nil {
 				resultMessage.Workflow = msg.Workflow
 				resultMessage.WithMetadata("temporal_workflow_id", msg.Workflow.WorkflowID)
@@ -322,7 +322,7 @@ func TestRunnerRunWithFailingProcessor(t *testing.T) {
 
 	// Add test messages
 	testMsg := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("test", "test data", "ref-123")
+		WithPayload( "test data")
 	mockClient.addMessage(testMsg)
 
 	mockProc := &mockProcessor{
@@ -363,7 +363,7 @@ func TestRunnerRunWithMultipleMessages(t *testing.T) {
 	// Add multiple test messages
 	for i := 0; i < 3; i++ {
 		testMsg := message.NewMessage().
-			WithPayload("test", "test data", "ref-123")
+			WithPayload( "test data")
 		mockClient.addMessage(testMsg)
 	}
 
@@ -371,7 +371,7 @@ func TestRunnerRunWithMultipleMessages(t *testing.T) {
 		processFunc: func(ctx context.Context, msg *message.Message) (message.Message, error) {
 			// Simulate successful processing with small delay
 			time.Sleep(10 * time.Millisecond)
-			resultMessage := message.NewMessage().WithPayload("test", `{"status":"success"}`, "test-result")
+			resultMessage := message.NewMessage().WithPayload( `{"status":"success"}`)
 			if msg.Workflow != nil {
 				resultMessage.Workflow = msg.Workflow
 				resultMessage.WithMetadata("temporal_workflow_id", msg.Workflow.WorkflowID)
@@ -439,7 +439,7 @@ func TestRunnerRunWithReportError(t *testing.T) {
 
 	// Add test messages
 	testMsg := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("test", "test data", "ref-123")
+		WithPayload( "test data")
 	mockClient.addMessage(testMsg)
 
 	// Set up report error
@@ -485,7 +485,7 @@ func TestRunnerRunContextCancellation(t *testing.T) {
 	// Add multiple messages to ensure processing takes some time
 	for i := 0; i < 10; i++ {
 		testMsg := message.NewMessage().
-			WithPayload("test", "test data", "ref-123")
+			WithPayload( "test data")
 		mockClient.addMessage(testMsg)
 	}
 
@@ -493,7 +493,7 @@ func TestRunnerRunContextCancellation(t *testing.T) {
 		processFunc: func(ctx context.Context, msg *message.Message) (message.Message, error) {
 			// Simulate slow processing
 			time.Sleep(50 * time.Millisecond)
-			resultMessage := message.NewMessage().WithPayload("test", `{"status":"success"}`, "test-result")
+			resultMessage := message.NewMessage().WithPayload( `{"status":"success"}`)
 			if msg.Workflow != nil {
 				resultMessage.Workflow = msg.Workflow
 				resultMessage.WithMetadata("temporal_workflow_id", msg.Workflow.WorkflowID)

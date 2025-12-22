@@ -108,39 +108,6 @@ func (s *MessageService) SetBlobStorage(bs BlobStorageClient) {
 	s.blobStorage = bs
 }
 
-// validateMessage performs strict validation on the message for callback operations
-// Auto-populates CreatedAt and UpdatedAt if they are empty
-func (s *MessageService) validateMessage(msg *Message) error {
-	if msg == nil {
-		return fmt.Errorf("message cannot be nil")
-	}
-
-	// Auto-populate timestamps if empty (framework responsibility, not service responsibility)
-	now := time.Now().Format(time.RFC3339)
-	if msg.CreatedAt == "" {
-		msg.CreatedAt = now
-	}
-	if msg.UpdatedAt == "" {
-		msg.UpdatedAt = now
-	}
-
-	if msg.Workflow == nil {
-		return fmt.Errorf("message Workflow is required")
-	}
-
-	// Node is optional when Workflow is present (for workflow-level callbacks)
-	// But if Node is present, Workflow must also be present
-	if msg.Node != nil && msg.Workflow == nil {
-		return fmt.Errorf("message Workflow is required when Node is present")
-	}
-
-	if msg.Payload == nil {
-		return fmt.Errorf("message Payload is required")
-	}
-
-	return nil
-}
-
 // NewMessageService creates a new message service with the given JetStream context.
 // Any implementation that satisfies JSContext (including nats.JetStreamContext) can be used.
 // The maxDeliver parameter controls the maximum number of delivery attempts for consumers.
@@ -364,8 +331,9 @@ func (s *MessageService) getMessageIdentifier(msg *Message) string {
 	if msg.Node != nil {
 		return fmt.Sprintf("node:%s", msg.Node.NodeID)
 	}
-	if msg.Payload != nil && msg.Payload.Reference != "" {
-		return fmt.Sprintf("payload:%s", msg.Payload.Reference)
+	// Check Payload for execution ID
+	if msg.Payload != nil && msg.Payload.ExecutionID != "" {
+		return fmt.Sprintf("execution:%s", msg.Payload.ExecutionID)
 	}
 	return fmt.Sprintf("timestamp:%s", msg.CreatedAt)
 }
@@ -626,28 +594,19 @@ func (s *MessageService) PublishResult(ctx context.Context, resultMsg *ResultMes
 func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Message, msg *nats.Msg) error {
 	startTime := time.Now()
 
-	// Extract execution metadata from message structure
-	var workflowID, runID, nodeID string
-	if resultMessage.Workflow != nil {
-		workflowID = resultMessage.Workflow.WorkflowID
-		runID = resultMessage.Workflow.RunID
-	}
-	if resultMessage.Node != nil {
-		nodeID = resultMessage.Node.NodeID
-	}
-
-	// Fallback to metadata if not in struct (for backward compatibility)
-	if workflowID == "" {
-		workflowID = resultMessage.Metadata["workflow_id"]
-	}
-	if runID == "" {
-		runID = resultMessage.Metadata["run_id"]
-	}
-	if nodeID == "" {
-		nodeID = resultMessage.Metadata["node_id"]
+	// Extract execution metadata from Payload (single source of truth)
+	if resultMessage.Payload == nil {
+		s.logger.Error("Missing payload for success report")
+		if msg != nil {
+			_ = msg.Nak()
+		}
+		return fmt.Errorf("missing payload")
 	}
 
-	executionID := resultMessage.Metadata["execution_id"]
+	executionID := resultMessage.Payload.ExecutionID
+	workflowID := resultMessage.Payload.WorkflowID
+	runID := resultMessage.Payload.RunID
+	nodeID := resultMessage.Payload.NodeID
 	correlationID := resultMessage.CorrelationID
 
 	if executionID == "" {
@@ -680,8 +639,15 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 		zap.Bool("has_node_struct", resultMessage.Node != nil))
 
 	// Parse result from payload
+	if resultMessage.Payload == nil || !resultMessage.Payload.HasInlineData() {
+		s.logger.Error("Missing payload data for success report")
+		if msg != nil {
+			_ = msg.Nak()
+		}
+		return fmt.Errorf("missing payload data")
+	}
 	var nodeResult map[string]interface{}
-	if err := json.Unmarshal([]byte(resultMessage.Payload.Data), &nodeResult); err != nil {
+	if err := json.Unmarshal([]byte(resultMessage.Payload.GetInlineData()), &nodeResult); err != nil {
 		s.logger.Error("Failed to unmarshal result",
 			zap.String("execution_id", executionID),
 			zap.String("workflow_id", workflowID),

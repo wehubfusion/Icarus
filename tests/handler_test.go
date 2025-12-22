@@ -12,7 +12,7 @@ import (
 // createTestNATSMsg creates a test NATSMsg for handler testing
 func createTestNATSMsg(workflowID, runID string) *message.NATSMsg {
 	msg := message.NewWorkflowMessage(workflowID, runID).
-		WithPayload("test-source", "test data", "test-ref")
+		WithPayload( "test data")
 
 	// Note: We don't need to create a real NATS message for this test
 	// The NATSMsg wrapper is what we're testing
@@ -226,7 +226,7 @@ func TestLoggingMiddlewareMessageIdentification(t *testing.T) {
 
 	// Test with message without workflow or node
 	basicMsg := &message.NATSMsg{
-		Message: message.NewMessage().WithPayload("source", "data", "ref"),
+		Message: message.NewMessage().WithPayload( "data"),
 		Subject: "test.subject",
 		Reply:   "test.reply",
 	}
@@ -386,7 +386,7 @@ func TestMiddlewareErrorPropagation(t *testing.T) {
 func TestRequestHandler(t *testing.T) {
 	// Test RequestHandler type - this is just a type alias test
 	var requestHandler message.RequestHandler = func(_ context.Context, _ *message.NATSMsg) (*message.Message, error) {
-		response := message.NewMessage().WithPayload("response", "test response", "response-ref")
+		response := message.NewMessage().WithPayload( "test response")
 		return response, nil
 	}
 
@@ -408,7 +408,7 @@ func TestRequestHandler(t *testing.T) {
 		return
 	}
 
-	if response.Payload.Data != "test response" {
+	if response.Payload.GetInlineData() != "test response" {
 		t.Error("Expected response payload with 'test response'")
 	}
 }

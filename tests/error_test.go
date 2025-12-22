@@ -109,7 +109,7 @@ func TestPublishErrors(t *testing.T) {
 
 	// Test publishing with invalid subject
 	msg := message.NewWorkflowMessage("workflow-test", uuid.New().String()).
-		WithPayload("test", "test content", "ref-123")
+		WithPayload( "test content")
 	err := c.Messages.Publish(ctx, "", msg) // Empty subject
 	if err == nil {
 		t.Error("Expected error for empty subject")
@@ -191,7 +191,7 @@ func TestMessageSerializationErrors(t *testing.T) {
 	// Test serializing message that can't be marshaled (shouldn't happen with normal usage)
 	// This is more of a theoretical test since our Message struct should always be serializable
 	msg := message.NewWorkflowMessage("workflow-test", "run-test").
-		WithPayload("test", "content", "ref-test")
+		WithPayload( "content")
 	data, err := msg.ToBytes()
 	if err != nil {
 		t.Errorf("Unexpected error serializing valid message: %v", err)
