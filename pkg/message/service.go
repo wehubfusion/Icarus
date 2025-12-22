@@ -8,7 +8,6 @@ import (
 
 	"github.com/nats-io/nats.go"
 	sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
-	"github.com/wehubfusion/Icarus/pkg/storage"
 	"go.uber.org/zap"
 )
 
@@ -87,18 +86,11 @@ func (s *natsSubAdapter) Fetch(batch int, opts ...nats.PullOpt) ([]*nats.Msg, er
 type MessageService struct {
 	js                JSContext
 	logger            *zap.Logger
-	maxDeliver        int                       // Maximum number of delivery attempts before giving up (default: 5)
-	publishMaxRetries int                       // Maximum number of retry attempts for publish operations (default: 3)
-	resultStream      string                    // JetStream stream name for publishing results (e.g., RESULTS_UAT)
-	resultSubject     string                    // Subject for publishing results (e.g., result.uat)
-	temporalClient    TemporalSignaler          // Temporal client for signaling Zeus workflows
-	blobStorage       BlobStorageClient         // Blob storage for large results
-	resultFileClient  *storage.ResultFileClient // Unified result file client for appending node results
-}
-
-// TemporalSignaler interface for signaling workflows
-type TemporalSignaler interface {
-	SignalWorkflow(ctx context.Context, workflowID, runID, signalName string, data interface{}) error
+	maxDeliver        int               // Maximum number of delivery attempts before giving up (default: 5)
+	publishMaxRetries int               // Maximum number of retry attempts for publish operations (default: 3)
+	resultStream      string            // JetStream stream name for publishing results (e.g., RESULTS_UAT)
+	resultSubject     string            // Subject for publishing results (e.g., result.uat)
+	blobStorage       BlobStorageClient // Blob storage for large results
 }
 
 // BlobStorageClient interface for storing large results
@@ -108,22 +100,12 @@ type BlobStorageClient interface {
 }
 
 const (
-	maxSignalSize = 1.5 * 1024 * 1024 // 1.5MB - Temporal signal payload limit (actual is 2MB, using 1.5MB for safety)
+	maxInlineResultSize = 1.5 * 1024 * 1024 // 1.5MB - Threshold for inline vs blob storage
 )
-
-// SetTemporalClient sets the Temporal client for signaling
-func (s *MessageService) SetTemporalClient(tc TemporalSignaler) {
-	s.temporalClient = tc
-}
 
 // SetBlobStorage sets the blob storage client for large results
 func (s *MessageService) SetBlobStorage(bs BlobStorageClient) {
 	s.blobStorage = bs
-}
-
-// SetResultFileClient sets the result file client for unified result storage
-func (s *MessageService) SetResultFileClient(rfc *storage.ResultFileClient) {
-	s.resultFileClient = rfc
 }
 
 // validateMessage performs strict validation on the message for callback operations
@@ -562,210 +544,225 @@ func (s *MessageService) PullMessages(ctx context.Context, stream, consumer stri
 	}
 }
 
-// ResultType represents different types of results that can be published
-type ResultType string
+// PublishResult publishes a ResultMessage to the result stream using JetStream.
+// This is used for reporting unit execution results back to Zeus.
+func (s *MessageService) PublishResult(ctx context.Context, resultMsg *ResultMessage) error {
+	if s.resultSubject == "" {
+		s.logger.Error("PublishResult failed: result subject not configured")
+		return sdkerrors.NewValidationError("result subject not configured", "INVALID_CONFIG", nil)
+	}
 
-const (
-	ResultTypeSuccess ResultType = "success"
-	ResultTypeError   ResultType = "error"
-	ResultTypeWarning ResultType = "warning"
-	ResultTypeInfo    ResultType = "info"
-)
+	if resultMsg == nil {
+		s.logger.Error("PublishResult failed: result message cannot be nil")
+		return sdkerrors.NewValidationError("result message cannot be nil", "INVALID_MESSAGE", nil)
+	}
 
-// ReportSuccess signals Zeus workflow with execution result using Temporal Signals.
-// For results <1.5MB, sends full payload via signal. For larger results, stores in
-// the unified result file and signals with reference.
+	// Ensure result stream exists
+	if err := s.ensureStreamForSubject(s.resultSubject); err != nil {
+		s.logger.Error("Failed to ensure result stream exists",
+			zap.String("stream", s.resultStream),
+			zap.String("subject", s.resultSubject),
+			zap.Error(err))
+		return sdkerrors.NewInternalError("", "failed to ensure result stream exists", "STREAM_ENSURE_FAILED", err)
+	}
+
+	s.logger.Debug("Publishing result message",
+		zap.String("execution_id", resultMsg.ExecutionID),
+		zap.String("workflow_id", resultMsg.WorkflowID),
+		zap.String("node_id", resultMsg.NodeID),
+		zap.String("status", resultMsg.Status),
+		zap.String("subject", s.resultSubject))
+
+	data, err := resultMsg.ToBytes()
+	if err != nil {
+		s.logger.Error("Failed to marshal result message",
+			zap.String("execution_id", resultMsg.ExecutionID),
+			zap.Error(err))
+		return sdkerrors.NewInternalError("", "failed to marshal result message", "MARSHAL_FAILED", err)
+	}
+
+	// Retry logic for critical result publishing
+	var publishErr error
+	for attempt := 1; attempt <= s.publishMaxRetries; attempt++ {
+		_, publishErr = s.js.Publish(s.resultSubject, data)
+		if publishErr == nil {
+			break
+		}
+
+		if attempt < s.publishMaxRetries {
+			s.logger.Warn("Failed to publish result, retrying",
+				zap.String("execution_id", resultMsg.ExecutionID),
+				zap.Int("attempt", attempt),
+				zap.Int("max_retries", s.publishMaxRetries),
+				zap.Error(publishErr))
+			// Brief backoff before retry
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+	}
+
+	if publishErr != nil {
+		s.logger.Error("Failed to publish result after all retries",
+			zap.String("execution_id", resultMsg.ExecutionID),
+			zap.String("workflow_id", resultMsg.WorkflowID),
+			zap.String("node_id", resultMsg.NodeID),
+			zap.Int("attempts", s.publishMaxRetries),
+			zap.Error(publishErr))
+		return sdkerrors.NewInternalError("", "failed to publish result after retries", "PUBLISH_FAILED", publishErr)
+	}
+
+	s.logger.Info("Successfully published result message",
+		zap.String("execution_id", resultMsg.ExecutionID),
+		zap.String("workflow_id", resultMsg.WorkflowID),
+		zap.String("node_id", resultMsg.NodeID),
+		zap.String("status", resultMsg.Status),
+		zap.String("subject", s.resultSubject))
+
+	return nil
+}
+
+// ReportSuccess publishes unit execution result to JetStream result stream.
+// For results <1.5MB, includes full payload inline. For larger results, stores in
+// blob storage and includes blob reference.
 func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Message, msg *nats.Msg) error {
 	startTime := time.Now()
-	resultMessage.WithMetadata("result_type", string(ResultTypeSuccess))
 
-	// Validate message
-	if err := s.validateMessage(&resultMessage); err != nil {
-		s.logger.Error("Success report validation failed", zap.Error(err))
-		return fmt.Errorf("validation failed: %w", err)
+	// Extract execution metadata from message structure
+	var workflowID, runID, nodeID string
+	if resultMessage.Workflow != nil {
+		workflowID = resultMessage.Workflow.WorkflowID
+		runID = resultMessage.Workflow.RunID
+	}
+	if resultMessage.Node != nil {
+		nodeID = resultMessage.Node.NodeID
 	}
 
-	// Extract Temporal callback info
-	workflowID := resultMessage.Metadata["temporal_workflow_id"]
-	runID := resultMessage.Metadata["temporal_run_id"]
-	signalName := resultMessage.Metadata["temporal_signal_name"]
-	executionID := resultMessage.Metadata["execution_id"]
+	// Fallback to metadata if not in struct (for backward compatibility)
+	if workflowID == "" {
+		workflowID = resultMessage.Metadata["workflow_id"]
+	}
+	if runID == "" {
+		runID = resultMessage.Metadata["run_id"]
+	}
+	if nodeID == "" {
+		nodeID = resultMessage.Metadata["node_id"]
+	}
 
-	if workflowID == "" || runID == "" || signalName == "" {
-		s.logger.Error("Missing Temporal callback metadata",
+	executionID := resultMessage.Metadata["execution_id"]
+	correlationID := resultMessage.CorrelationID
+
+	if executionID == "" {
+		s.logger.Error("Missing execution_id for success report")
+		if msg != nil {
+			_ = msg.Nak()
+		}
+		return fmt.Errorf("missing execution_id")
+	}
+
+	if workflowID == "" || runID == "" {
+		s.logger.Error("Missing workflow metadata for success report",
 			zap.String("workflow_id", workflowID),
 			zap.String("run_id", runID),
-			zap.String("signal_name", signalName))
+			zap.String("execution_id", executionID),
+			zap.Bool("has_workflow_struct", resultMessage.Workflow != nil),
+			zap.Bool("has_node_struct", resultMessage.Node != nil))
 		if msg != nil {
 			_ = msg.Nak()
 		}
-		return fmt.Errorf("missing Temporal callback metadata")
+		return fmt.Errorf("missing workflow metadata")
 	}
 
-	if s.temporalClient == nil {
-		s.logger.Error("Temporal client not initialized")
-		if msg != nil {
-			_ = msg.Nak()
-		}
-		return fmt.Errorf("temporal client not initialized")
-	}
-
-	s.logger.Debug("Preparing to signal Zeus workflow",
+	s.logger.Debug("Preparing to publish success result",
 		zap.String("workflow_id", workflowID),
 		zap.String("run_id", runID),
-		zap.String("signal_name", signalName),
-		zap.String("execution_id", executionID))
+		zap.String("execution_id", executionID),
+		zap.String("node_id", nodeID),
+		zap.Bool("has_workflow_struct", resultMessage.Workflow != nil),
+		zap.Bool("has_node_struct", resultMessage.Node != nil))
 
 	// Parse result from payload
 	var nodeResult map[string]interface{}
 	if err := json.Unmarshal([]byte(resultMessage.Payload.Data), &nodeResult); err != nil {
-		s.logger.Error("Failed to unmarshal result, will report as error",
+		s.logger.Error("Failed to unmarshal result",
 			zap.String("execution_id", executionID),
 			zap.String("workflow_id", workflowID),
 			zap.String("run_id", runID),
 			zap.Error(err))
 
-		// Report unmarshal failure as error to Temporal if we have executionID
-		if executionID != "" {
-			unmarshalErr := fmt.Errorf("failed to unmarshal result: %w", err)
-			if reportErr := s.ReportError(ctx, executionID, workflowID, runID, unmarshalErr, msg); reportErr != nil {
-				s.logger.Error("Failed to report unmarshal error to workflow",
-					zap.String("execution_id", executionID),
-					zap.String("workflow_id", workflowID),
-					zap.Error(reportErr))
-			}
+		// Report unmarshal failure as error
+		unmarshalErr := fmt.Errorf("failed to unmarshal result: %w", err)
+		if reportErr := s.ReportError(ctx, executionID, workflowID, runID, correlationID, unmarshalErr, msg); reportErr != nil {
+			s.logger.Error("Failed to report unmarshal error",
+				zap.String("execution_id", executionID),
+				zap.String("workflow_id", workflowID),
+				zap.Error(reportErr))
 		}
 
 		if msg != nil {
 			_ = msg.Nak()
 		}
-		return fmt.Errorf("failed to unmarshal result: %w", err)
+		return unmarshalErr
 	}
 
-	// Extract node ID for result file operations
-	nodeID, _ := nodeResult["node_id"].(string)
+	// Use node ID from message struct, fallback to result payload or executionID
+	if nodeID == "" {
+		if extractedNodeID, ok := nodeResult["node_id"].(string); ok && extractedNodeID != "" {
+			nodeID = extractedNodeID
+		} else {
+			nodeID = executionID // Final fallback to executionID if nodeID not found
+		}
+	}
+
+	// Extract plugin type
+	pluginType := resultMessage.Metadata["plugin_type"]
+	if pluginType == "" {
+		pluginType, _ = nodeResult["plugin_type"].(string)
+	}
+
+	// Extract execution time
+	var executionTimeMs int64
+	if execTime, ok := nodeResult["execution_time_ms"].(float64); ok {
+		executionTimeMs = int64(execTime)
+	}
+
+	// Extract status
+	status := "success"
+	if s, ok := nodeResult["status"].(string); ok && s != "" {
+		status = s
+	}
 
 	// Check payload size
 	resultBytes, _ := json.Marshal(nodeResult)
 	resultSize := len(resultBytes)
 
-	var signalPayload interface{}
+	// Create result message
+	resultMsg := NewResultMessage(executionID, workflowID, runID, nodeID, status)
+	if correlationID != "" {
+		resultMsg.WithCorrelationID(correlationID)
+	}
+	if pluginType != "" {
+		resultMsg.WithPluginType(pluginType)
+	}
+	if executionTimeMs > 0 {
+		resultMsg.WithExecutionTime(executionTimeMs)
+	}
 
-	// NEW: Unified result file approach for large results
-	// If result file client is available, use it for large results
-	if s.resultFileClient != nil && resultSize > maxSignalSize {
-		s.logger.Info("Result too large, storing in unified result file",
+	// Handle result storage based on size
+	if resultSize <= maxInlineResultSize {
+		// FAST PATH: Direct inline result for small results
+		s.logger.Info("Sending result with inline data",
 			zap.String("execution_id", executionID),
-			zap.String("node_id", nodeID),
-			zap.Int("size_bytes", resultSize),
-			zap.Int("threshold", maxSignalSize))
-
-		// Extract plugin type from metadata or result
-		pluginType := resultMessage.Metadata["plugin_type"]
-		if pluginType == "" {
-			pluginType, _ = nodeResult["plugin_type"].(string)
-		}
-
-		// Extract execution time if available
-		var executionTimeMs int64
-		if execTime, ok := nodeResult["execution_time_ms"].(float64); ok {
-			executionTimeMs = int64(execTime)
-		}
-
-		// Extract actual result data (unwrap if nested under "result")
-		actualResult := nodeResult
-		if inner, ok := nodeResult["result"]; ok {
-			actualResult = map[string]interface{}{"result": inner}
-		}
-
-		// Extract status from result
-		status := "success"
-		if s, ok := nodeResult["status"].(string); ok {
-			status = s
-		}
-
-		// Create NodeResult with proper structure
-		nodeResultObj := storage.CreateNodeResult(
-			nodeID,
-			pluginType,
-			status,
-			executionTimeMs,
-			actualResult,
-			nil, // no error for success
-		)
-
-		// Append to shared result file
-		resultFilePath, err := s.resultFileClient.AppendNodeResult(ctx, workflowID, runID, nodeID, nodeResultObj)
-		if err != nil {
-			s.logger.Error("Failed to append result to result file, will report as error",
-				zap.String("execution_id", executionID),
-				zap.String("workflow_id", workflowID),
-				zap.String("run_id", runID),
-				zap.String("node_id", nodeID),
-				zap.Error(err))
-
-			// Report the result file failure as an error to Temporal
-			fileErr := fmt.Errorf("result file append failed: %w", err)
-			if reportErr := s.ReportError(ctx, executionID, workflowID, runID, fileErr, msg); reportErr != nil {
-				s.logger.Error("Failed to report result file error to workflow",
-					zap.String("execution_id", executionID),
-					zap.String("workflow_id", workflowID),
-					zap.Error(reportErr))
-			}
-
-			if msg != nil {
-				_ = msg.Nak()
-			}
-			return fileErr
-		}
-
-		s.logger.Info("Result appended to unified result file",
-			zap.String("execution_id", executionID),
-			zap.String("node_id", nodeID),
-			zap.String("result_file_path", resultFilePath),
 			zap.Int("size_bytes", resultSize))
 
-		// Send signal with result file path reference
-		signalPayload = map[string]interface{}{
-			"execution_id":     executionID,
-			"workflow_id":      workflowID,
-			"run_id":           runID,
-			"node_id":          nodeID,
-			"status":           nodeResult["status"],
-			"result_file_path": resultFilePath,
-			"result_size":      resultSize,
-			"timestamp":        time.Now(),
-		}
-	} else if resultSize <= maxSignalSize {
-		// FAST PATH: Direct signal for small results
-		// Structure signal to match NodeExecutionResult with inline_result field
-		s.logger.Info("Sending result via direct signal",
-			zap.String("execution_id", executionID),
-			zap.Int("size_bytes", resultSize),
-			zap.String("result_file_path", resultMessage.Payload.ResultFilePath))
-
-		// Send signal with proper structure matching NodeExecutionResult
-		signalPayload = map[string]interface{}{
-			"execution_id":  executionID,
-			"node_id":       nodeID,
-			"status":        nodeResult["status"],
-			"inline_result": nodeResult, // Contains full result: { "_meta": {...}, "result": {...} }
-			"result_size":   resultSize,
-			"timestamp":     time.Now(),
-		}
-
-		// CRITICAL: Include result_file_path if set on the message payload
-		// This is needed for units that store embedded node results in the result file
-		if resultMessage.Payload.ResultFilePath != "" {
-			signalPayload.(map[string]interface{})["result_file_path"] = resultMessage.Payload.ResultFilePath
-		}
+		// Set inline result
+		resultMsg.WithInlineResult(resultBytes)
+		resultMsg.ResultSize = resultSize
 
 	} else {
-		// FALLBACK: Legacy blob storage for large results when result file client not available
-		s.logger.Info("Result too large, storing in Azure Blob Storage (legacy path)",
+		// Large results - store in blob storage
+		s.logger.Info("Result too large, storing in Azure Blob Storage",
 			zap.String("execution_id", executionID),
 			zap.Int("size_bytes", resultSize),
-			zap.Int("threshold", maxSignalSize))
+			zap.Int("threshold", maxInlineResultSize))
 
 		if s.blobStorage == nil {
 			s.logger.Error("Blob storage not initialized for large result",
@@ -787,21 +784,21 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 			"workflow_id":  workflowID,
 			"run_id":       runID,
 			"execution_id": executionID,
-			"node_id":      fmt.Sprintf("%v", nodeResult["node_id"]),
-			"status":       fmt.Sprintf("%v", nodeResult["status"]),
+			"node_id":      nodeID,
+			"status":       status,
 		})
 
 		if err != nil {
-			s.logger.Error("Failed to upload result to blob storage, will report as error",
+			s.logger.Error("Failed to upload result to blob storage",
 				zap.String("execution_id", executionID),
 				zap.String("workflow_id", workflowID),
 				zap.String("run_id", runID),
 				zap.Error(err))
 
-			// Report the blob upload failure as an error to Temporal
+			// Report the blob upload failure as an error
 			blobErr := fmt.Errorf("blob upload failed: %w", err)
-			if reportErr := s.ReportError(ctx, executionID, workflowID, runID, blobErr, msg); reportErr != nil {
-				s.logger.Error("Failed to report blob upload error to workflow",
+			if reportErr := s.ReportError(ctx, executionID, workflowID, runID, correlationID, blobErr, msg); reportErr != nil {
+				s.logger.Error("Failed to report blob upload error",
 					zap.String("execution_id", executionID),
 					zap.String("workflow_id", workflowID),
 					zap.Error(reportErr))
@@ -818,40 +815,26 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 			zap.String("blob_url", blobURL),
 			zap.Int("size_bytes", resultSize))
 
-		nodeResult["blob_reference"] = map[string]interface{}{
-			"url":        blobURL,
-			"size_bytes": resultSize,
-		}
-
-		// Send compact reference signal
-		signalPayload = map[string]interface{}{
-			"execution_id": executionID,
-			"workflow_id":  workflowID,
-			"run_id":       runID,
-			"node_id":      nodeResult["node_id"],
-			"status":       nodeResult["status"],
-			"large_result": true,
-			"blob_url":     blobURL,
-			"result_size":  resultSize,
-			"timestamp":    time.Now(),
-		}
+		// Set blob reference on result message
+		resultMsg.WithBlobReference(&BlobReference{
+			URL:       blobURL,
+			SizeBytes: resultSize,
+		})
+		resultMsg.ResultSize = resultSize
 	}
 
-	// Signal Zeus workflow with timeout (30s for reliability)
-	signalCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	if err := s.temporalClient.SignalWorkflow(signalCtx, workflowID, runID, signalName, signalPayload); err != nil {
-		s.logger.Error("Failed to signal workflow with success result, will report as error",
+	// Publish result to JetStream
+	if err := s.PublishResult(ctx, resultMsg); err != nil {
+		s.logger.Error("Failed to publish result to JetStream",
 			zap.String("workflow_id", workflowID),
 			zap.String("execution_id", executionID),
 			zap.String("run_id", runID),
 			zap.Error(err))
 
-		// Report the signal failure as an error to Temporal
-		signalErr := fmt.Errorf("failed to signal workflow: %w", err)
-		if reportErr := s.ReportError(ctx, executionID, workflowID, runID, signalErr, msg); reportErr != nil {
-			s.logger.Error("Failed to report signal error to workflow (cascading failure)",
+		// Report the publish failure as an error
+		publishErr := fmt.Errorf("failed to publish result: %w", err)
+		if reportErr := s.ReportError(ctx, executionID, workflowID, runID, correlationID, publishErr, msg); reportErr != nil {
+			s.logger.Error("Failed to report publish error (cascading failure)",
 				zap.String("execution_id", executionID),
 				zap.String("workflow_id", workflowID),
 				zap.String("run_id", runID),
@@ -859,19 +842,19 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 		}
 
 		if msg != nil {
-			_ = msg.Nak() // Retry on signal failure
+			_ = msg.Nak() // Retry on publish failure
 		}
-		return signalErr
+		return publishErr
 	}
 
-	signalDuration := time.Since(startTime)
-	s.logger.Info("Successfully signaled Zeus workflow",
+	publishDuration := time.Since(startTime)
+	s.logger.Info("Successfully published result to JetStream",
 		zap.String("workflow_id", workflowID),
 		zap.String("run_id", runID),
 		zap.String("execution_id", executionID),
-		zap.Duration("signal_duration", signalDuration),
+		zap.Duration("publish_duration", publishDuration),
 		zap.Int("payload_size", resultSize),
-		zap.Bool("used_blob_storage", resultSize > maxSignalSize))
+		zap.Bool("used_blob_reference", resultMsg.HasBlobReference()))
 
 	// Acknowledge the source message
 	if msg != nil {
@@ -886,21 +869,22 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 	return nil
 }
 
-// ReportError signals Zeus workflow with error result using Temporal Signals.
+// ReportError publishes error result to JetStream result stream.
 //
 // Error Classification:
 //   - Internal errors (transient failures): NAK the message for retry
 //   - Other errors (permanent failures like BadRequest, NotFound, etc.): ACK the message to prevent redelivery
 //
 // Parameters:
-//   - executionID: The unique identifier for this execution (required for signaling)
+//   - executionID: The unique identifier for this execution (required)
 //   - workflowID: The unique identifier of the workflow that failed
 //   - runID: The unique identifier of this specific workflow execution run
+//   - correlationID: Optional correlation ID for tracking
 //   - err: The error that occurred (can be *AppError or regular error)
 //   - msg: NATS message to acknowledge/nak after error reporting (can be nil)
 //
-// Returns an error if the message cannot be published.
-func (s *MessageService) ReportError(ctx context.Context, executionID, workflowID, runID string, err error, msg *nats.Msg) error {
+// Returns an error if the result cannot be published.
+func (s *MessageService) ReportError(ctx context.Context, executionID, workflowID, runID, correlationID string, err error, msg *nats.Msg) error {
 	startTime := time.Now()
 
 	if executionID == "" {
@@ -914,78 +898,74 @@ func (s *MessageService) ReportError(ctx context.Context, executionID, workflowI
 	// Determine if transient or permanent
 	isTransient := true
 	errorMsg := err.Error()
+	errorCode := "INTERNAL_ERROR"
+	errorType := "internal"
 
 	if appErr, ok := err.(*sdkerrors.AppError); ok {
 		isTransient = (appErr.Type == sdkerrors.Internal)
+		errorCode = appErr.Code
+		if errorCode == "" {
+			errorCode = "APP_ERROR"
+		}
+
+		// Map error type
+		switch appErr.Type {
+		case sdkerrors.BadRequest:
+			errorType = "bad_request"
+		case sdkerrors.NotFound:
+			errorType = "not_found"
+		case sdkerrors.Unauthorized:
+			errorType = "unauthorized"
+		case sdkerrors.Conflict:
+			errorType = "conflict"
+		case sdkerrors.ValidationFailed:
+			errorType = "validation_failed"
+		case sdkerrors.PermissionDenied:
+			errorType = "permission_denied"
+		case sdkerrors.Internal:
+			errorType = "internal"
+		default:
+			errorType = "internal"
+		}
 	}
 
-	s.logger.Info("Reporting error via signal",
+	s.logger.Info("Publishing error result",
 		zap.String("execution_id", executionID),
 		zap.String("workflow_id", workflowID),
 		zap.String("run_id", runID),
-		zap.Bool("is_transient", isTransient))
+		zap.Bool("is_transient", isTransient),
+		zap.String("error_code", errorCode))
 
-	if s.temporalClient == nil {
-		s.logger.Error("Temporal client not initialized")
-		if msg != nil {
-			_ = msg.Nak()
-		}
-		return fmt.Errorf("temporal client unavailable")
+	// Extract node ID from error context if available (may not always be present)
+	nodeID := executionID // Default to executionID if nodeID not available
+
+	// Build error result message
+	resultMsg := NewResultMessage(executionID, workflowID, runID, nodeID, "failed")
+	if correlationID != "" {
+		resultMsg.WithCorrelationID(correlationID)
 	}
 
-	// Build error result
-	errorResult := map[string]interface{}{
-		"execution_id": executionID,
-		"workflow_id":  workflowID,
-		"run_id":       runID,
-		"status":       "failed",
-		"error":        errorMsg,
-		"timestamp":    time.Now(),
-		"is_transient": isTransient,
-	}
+	resultMsg.WithError(&ResultError{
+		Code:      errorCode,
+		Message:   errorMsg,
+		Retryable: isTransient,
+		Type:      errorType,
+	})
 
-	// Signal with timeout (30s for reliability, with retry)
-	signalName := fmt.Sprintf("unit-result-%s", executionID)
-
-	// Retry logic for critical error reporting
-	var signalErr error
-	maxRetries := 3
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		signalCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		signalErr = s.temporalClient.SignalWorkflow(signalCtx, workflowID, runID, signalName, errorResult)
-		cancel()
-
-		if signalErr == nil {
-			break
-		}
-
-		if attempt < maxRetries {
-			s.logger.Warn("Failed to signal workflow with error, retrying",
-				zap.String("execution_id", executionID),
-				zap.String("workflow_id", workflowID),
-				zap.String("run_id", runID),
-				zap.Int("attempt", attempt),
-				zap.Int("max_retries", maxRetries),
-				zap.Error(signalErr))
-			// Brief backoff before retry
-			time.Sleep(time.Duration(attempt) * time.Second)
-		}
-	}
-
-	if signalErr != nil {
-		s.logger.Error("Failed to signal workflow with error after all retries",
+	// Publish error result to JetStream
+	if err := s.PublishResult(ctx, resultMsg); err != nil {
+		s.logger.Error("Failed to publish error result after retries",
 			zap.String("execution_id", executionID),
 			zap.String("workflow_id", workflowID),
 			zap.String("run_id", runID),
-			zap.Int("attempts", maxRetries),
-			zap.Error(signalErr))
+			zap.Error(err))
 		if msg != nil {
 			_ = msg.Nak()
 		}
-		return fmt.Errorf("failed to signal after %d attempts: %w", maxRetries, signalErr)
+		return fmt.Errorf("failed to publish error result: %w", err)
 	}
 
-	s.logger.Info("Successfully signaled error to Zeus",
+	s.logger.Info("Successfully published error result to JetStream",
 		zap.String("execution_id", executionID),
 		zap.String("workflow_id", workflowID),
 		zap.Duration("duration", time.Since(startTime)))
@@ -993,9 +973,9 @@ func (s *MessageService) ReportError(ctx context.Context, executionID, workflowI
 	// Ack/Nak based on error type
 	if msg != nil {
 		if isTransient {
-			_ = msg.Nak()
+			_ = msg.Nak() // Retry transient errors
 		} else {
-			_ = msg.Ack()
+			_ = msg.Ack() // Don't retry permanent errors
 		}
 	}
 

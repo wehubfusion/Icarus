@@ -30,12 +30,11 @@ type BlobReference struct {
 
 // Payload represents the message payload data
 type Payload struct {
-	Source         string         `json:"source"`
-	Data           string         `json:"data"` // Inline data (for small payloads)
-	Reference      string         `json:"reference"`
-	BlobReference  *BlobReference `json:"blobReference,omitempty"`  // Reference to blob storage (for large payloads)
-	ResultFilePath string         `json:"resultFilePath,omitempty"` // Path to unified result file (for multi-unit workflows)
-	FieldMappings  []FieldMapping `json:"fieldMappings,omitempty"`  // Field mappings for extracting data from blob
+	Source        string         `json:"source"`
+	Data          string         `json:"data"` // Inline data (for small payloads)
+	Reference     string         `json:"reference"`
+	BlobReference *BlobReference `json:"blobReference,omitempty"` // Reference to blob storage (for large payloads)
+	FieldMappings []FieldMapping `json:"fieldMappings,omitempty"` // Field mappings for extracting data from blob
 }
 
 // Output represents output destination information
@@ -435,4 +434,153 @@ func (m *Message) HasConnection() bool {
 // HasSchema returns true if the message has schema details
 func (m *Message) HasSchema() bool {
 	return m.Schema != nil && m.Schema.SchemaID != ""
+}
+
+// ResultMessage represents a unit execution result published to JetStream.
+// This is a dedicated structure for result reporting, separate from execution request messages.
+type ResultMessage struct {
+	// Correlation ID for tracking related messages across the system
+	CorrelationID string `json:"correlation_id,omitempty"`
+
+	// Execution metadata
+	ExecutionID string `json:"execution_id"` // Unique identifier for this execution
+	WorkflowID  string `json:"workflow_id"`  // Workflow identifier
+	RunID       string `json:"run_id"`       // Workflow run identifier
+	NodeID      string `json:"node_id"`      // Node identifier
+
+	// Execution status
+	Status string `json:"status"` // "success", "failed", "skipped"
+
+	// Result data - one of these will be populated based on result size
+	InlineResult  json.RawMessage `json:"inline_result,omitempty"`  // Full result data for small results (<1.5MB)
+	BlobReference *BlobReference  `json:"blob_reference,omitempty"` // Blob reference for large results (>1.5MB)
+
+	// Error information (only present when status is "failed")
+	Error *ResultError `json:"error,omitempty"`
+
+	// Metadata
+	PluginType      string `json:"plugin_type,omitempty"`       // Plugin type that processed the node
+	ExecutionTimeMs int64  `json:"execution_time_ms,omitempty"` // Execution duration in milliseconds
+	ResultSize      int    `json:"result_size,omitempty"`       // Size of result in bytes
+
+	// Timestamps
+	Timestamp time.Time `json:"timestamp"`  // When the result was generated
+	CreatedAt string    `json:"created_at"` // ISO 8601 timestamp when message was created
+	UpdatedAt string    `json:"updated_at"` // ISO 8601 timestamp when message was last updated
+}
+
+// ResultError contains error information for failed executions
+type ResultError struct {
+	Code      string `json:"code"`           // Error code (e.g., "INTERNAL_ERROR", "VALIDATION_ERROR")
+	Message   string `json:"message"`        // Human-readable error message
+	Retryable bool   `json:"retryable"`      // Whether the error is retryable (transient vs permanent)
+	Type      string `json:"type,omitempty"` // Error type (e.g., "internal", "bad_request", "not_found")
+}
+
+// NewResultMessage creates a new result message with timestamps
+func NewResultMessage(executionID, workflowID, runID, nodeID, status string) *ResultMessage {
+	now := time.Now()
+	return &ResultMessage{
+		ExecutionID: executionID,
+		WorkflowID:  workflowID,
+		RunID:       runID,
+		NodeID:      nodeID,
+		Status:      status,
+		Timestamp:   now,
+		CreatedAt:   now.Format(time.RFC3339),
+		UpdatedAt:   now.Format(time.RFC3339),
+	}
+}
+
+// WithCorrelationID sets the correlation ID for the result message
+func (r *ResultMessage) WithCorrelationID(correlationID string) *ResultMessage {
+	r.CorrelationID = correlationID
+	r.UpdatedAt = time.Now().Format(time.RFC3339)
+	return r
+}
+
+// WithInlineResult sets the inline result data
+func (r *ResultMessage) WithInlineResult(result json.RawMessage) *ResultMessage {
+	r.InlineResult = result
+	r.ResultSize = len(result)
+	r.UpdatedAt = time.Now().Format(time.RFC3339)
+	return r
+}
+
+// WithBlobReference sets the blob reference for large results
+func (r *ResultMessage) WithBlobReference(blobRef *BlobReference) *ResultMessage {
+	r.BlobReference = blobRef
+	r.UpdatedAt = time.Now().Format(time.RFC3339)
+	return r
+}
+
+// WithError sets the error information
+func (r *ResultMessage) WithError(err *ResultError) *ResultMessage {
+	r.Error = err
+	r.Status = "failed"
+	r.UpdatedAt = time.Now().Format(time.RFC3339)
+	return r
+}
+
+// WithPluginType sets the plugin type
+func (r *ResultMessage) WithPluginType(pluginType string) *ResultMessage {
+	r.PluginType = pluginType
+	r.UpdatedAt = time.Now().Format(time.RFC3339)
+	return r
+}
+
+// WithExecutionTime sets the execution time in milliseconds
+func (r *ResultMessage) WithExecutionTime(ms int64) *ResultMessage {
+	r.ExecutionTimeMs = ms
+	r.UpdatedAt = time.Now().Format(time.RFC3339)
+	return r
+}
+
+// ToBytes serializes the result message to JSON bytes
+func (r *ResultMessage) ToBytes() ([]byte, error) {
+	return json.Marshal(r)
+}
+
+// FromBytes deserializes a result message from JSON bytes
+func ResultMessageFromBytes(data []byte) (*ResultMessage, error) {
+	var msg ResultMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return nil, err
+	}
+	return &msg, nil
+}
+
+// FromNATSMsg converts a NATS message to a ResultMessage
+func ResultMessageFromNATSMsg(natsMsg *nats.Msg) (*ResultMessage, error) {
+	return ResultMessageFromBytes(natsMsg.Data)
+}
+
+// HasInlineResult returns true if the result is available inline
+func (r *ResultMessage) HasInlineResult() bool {
+	return len(r.InlineResult) > 0
+}
+
+// HasBlobReference returns true if the result is stored in blob storage
+func (r *ResultMessage) HasBlobReference() bool {
+	return r.BlobReference != nil && r.BlobReference.URL != ""
+}
+
+// IsSuccess returns true if the execution was successful
+func (r *ResultMessage) IsSuccess() bool {
+	return r.Status == "success"
+}
+
+// IsFailed returns true if the execution failed
+func (r *ResultMessage) IsFailed() bool {
+	return r.Status == "failed"
+}
+
+// IsSkipped returns true if the execution was skipped
+func (r *ResultMessage) IsSkipped() bool {
+	return r.Status == "skipped"
+}
+
+// IsRetryable returns true if the error is retryable (only meaningful for failed executions)
+func (r *ResultMessage) IsRetryable() bool {
+	return r.Error != nil && r.Error.Retryable
 }

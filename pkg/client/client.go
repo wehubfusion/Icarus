@@ -11,11 +11,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// TemporalSignaler interface for signaling Temporal workflows
-type TemporalSignaler interface {
-	SignalWorkflow(ctx context.Context, workflowID, runID, signalName string, data interface{}) error
-}
-
 // BlobStorageClient interface for storing large workflow results
 type BlobStorageClient interface {
 	UploadResult(ctx context.Context, blobPath string, data []byte, metadata map[string]string) (string, error)
@@ -52,9 +47,6 @@ type Client struct {
 
 	// Processes will provide process management functionality (reserved for future use)
 	// Processes *process.ProcessService
-
-	// temporalClient is used to signal Zeus workflows with execution results
-	temporalClient TemporalSignaler
 
 	// blobStorage is used to store large execution results
 	blobStorage BlobStorageClient
@@ -294,15 +286,6 @@ func (c *Client) ensureConnected() error {
 		return sdkerrors.NewInternalError("", "not connected to NATS", "NOT_CONNECTED", nil)
 	}
 	return nil
-}
-
-// SetTemporalClient injects the Temporal client for signaling Zeus workflows
-func (c *Client) SetTemporalClient(tc TemporalSignaler) {
-	c.temporalClient = tc
-	if c.Messages != nil {
-		c.Messages.SetTemporalClient(tc)
-	}
-	c.logger.Info("Temporal signaling enabled for Icarus client")
 }
 
 // SetBlobStorage injects the blob storage client for large results

@@ -185,7 +185,6 @@ func (m *mockPullJSSubscription) Fetch(batch int, opts ...nats.PullOpt) ([]*nats
 func newMockClient() *mockClientWrapper {
 	mockJS := &mockJSContext{}
 	c := client.NewClientWithJSContext(mockJS)
-	attachNoopTemporal(c)
 	return &mockClientWrapper{
 		Client: c,
 		mockJS: mockJS,

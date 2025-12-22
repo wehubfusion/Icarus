@@ -226,7 +226,7 @@ func runExamples(ctx context.Context, client *client.Client, sigChan chan os.Sig
 
 	// Report a failed workflow execution
 	errorData := fmt.Errorf("Database connection timeout after 3 retries at 2024-10-07T10:30:00Z")
-	if err := client.Messages.ReportError(ctx, errorExecutionID, errorWorkflowID, errorRunID, errorData, nil); err != nil {
+	if err := client.Messages.ReportError(ctx, errorExecutionID, errorWorkflowID, errorRunID, "", errorData, nil); err != nil {
 		log.Printf("Failed to report error: %v", err)
 	} else {
 		fmt.Println("✓ Error callback reported")

@@ -37,8 +37,6 @@ func (p *integrationProcessor) Process(ctx context.Context, msg *message.Message
 func TestClientMessageServiceIntegration(t *testing.T) {
 	// Create client with mock JetStream
 	c := client.NewClientWithJSContext(NewMockJS())
-	attachNoopTemporal(c)
-	attachNoopTemporal(c)
 
 	if c.Messages == nil {
 		t.Fatal("Messages service should be initialized")
@@ -96,8 +94,6 @@ func TestClientMessageServiceIntegration(t *testing.T) {
 func TestRunnerIntegration(t *testing.T) {
 	// Create client with mock JetStream
 	c := client.NewClientWithJSContext(NewMockJS())
-	attachNoopTemporal(c)
-	attachNoopTemporal(c)
 
 	// Create integration processor
 	processor := &integrationProcessor{}
@@ -155,7 +151,6 @@ func TestRunnerIntegration(t *testing.T) {
 func TestRunnerWithFailingProcessor(t *testing.T) {
 	// Create client with mock JetStream
 	c := client.NewClientWithJSContext(NewMockJS())
-	attachNoopTemporal(c)
 
 	// Create failing processor
 	processor := &integrationProcessor{shouldFail: true}
@@ -251,7 +246,6 @@ func TestMessageHandlerIntegration(t *testing.T) {
 func TestEndToEndWorkflow(t *testing.T) {
 	// Test a complete end-to-end workflow
 	c := client.NewClientWithJSContext(NewMockJS())
-	attachNoopTemporal(c)
 	ctx := context.Background()
 
 	workflowID := "e2e-workflow-" + uuid.New().String()
@@ -311,7 +305,6 @@ func TestEndToEndWorkflow(t *testing.T) {
 func TestErrorReportingWorkflow(t *testing.T) {
 	// Test error reporting workflow
 	c := client.NewClientWithJSContext(NewMockJS())
-	attachNoopTemporal(c)
 	ctx := context.Background()
 
 	workflowID := "error-workflow-" + uuid.New().String()
@@ -321,7 +314,7 @@ func TestErrorReportingWorkflow(t *testing.T) {
 	// 1. Simulate a processing error
 	errorMessage := fmt.Errorf("simulated processing error")
 
-	err := c.Messages.ReportError(ctx, executionID, workflowID, runID, errorMessage, nil)
+	err := c.Messages.ReportError(ctx, executionID, workflowID, runID, "", errorMessage, nil)
 	if err != nil {
 		t.Errorf("Failed to report error: %v", err)
 	}
