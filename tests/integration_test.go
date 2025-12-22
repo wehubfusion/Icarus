@@ -29,7 +29,7 @@ func (p *integrationProcessor) Process(ctx context.Context, msg *message.Message
 
 	// Create a result message
 	result := message.NewWorkflowMessage(msg.Workflow.WorkflowID, msg.Workflow.RunID).
-		WithPayload("integration-processor", "processed successfully", "integration-result")
+		WithPayload( "processed successfully")
 
 	return *result, nil
 }
@@ -37,8 +37,6 @@ func (p *integrationProcessor) Process(ctx context.Context, msg *message.Message
 func TestClientMessageServiceIntegration(t *testing.T) {
 	// Create client with mock JetStream
 	c := client.NewClientWithJSContext(NewMockJS())
-	attachNoopTemporal(c)
-	attachNoopTemporal(c)
 
 	if c.Messages == nil {
 		t.Fatal("Messages service should be initialized")
@@ -52,7 +50,7 @@ func TestClientMessageServiceIntegration(t *testing.T) {
 
 	// 1. Publish a message
 	msg := message.NewWorkflowMessage(workflowID, runID).
-		WithPayload("integration-test", "test message data", "integration-ref").
+		WithPayload( "test message data").
 		WithNode("test-node", map[string]interface{}{"type": "integration"}).
 		WithOutput("stream")
 
@@ -84,8 +82,8 @@ func TestClientMessageServiceIntegration(t *testing.T) {
 		t.Errorf("RunID mismatch: expected %s, got %s", runID, pulledMsg.Workflow.RunID)
 	}
 
-	if pulledMsg.Payload.Data != "test message data" {
-		t.Errorf("Payload data mismatch: expected 'test message data', got %s", pulledMsg.Payload.Data)
+	if pulledMsg.Payload.GetInlineData() != "test message data" {
+		t.Errorf("Payload data mismatch: expected 'test message data', got %s", pulledMsg.Payload.GetInlineData())
 	}
 
 	if pulledMsg.Node.NodeID != "test-node" {
@@ -96,8 +94,6 @@ func TestClientMessageServiceIntegration(t *testing.T) {
 func TestRunnerIntegration(t *testing.T) {
 	// Create client with mock JetStream
 	c := client.NewClientWithJSContext(NewMockJS())
-	attachNoopTemporal(c)
-	attachNoopTemporal(c)
 
 	// Create integration processor
 	processor := &integrationProcessor{}
@@ -125,7 +121,7 @@ func TestRunnerIntegration(t *testing.T) {
 	mockJS := c.Messages // Access the underlying mock through the service
 	for i := 0; i < 3; i++ {
 		testMsg := message.NewWorkflowMessage("integration-workflow", "integration-run").
-			WithPayload("integration-test", "test data", "integration-ref")
+			WithPayload( "test data")
 
 		// We need to access the mock JS context to add messages
 		// This is a bit hacky but necessary for integration testing with mocks
@@ -155,7 +151,6 @@ func TestRunnerIntegration(t *testing.T) {
 func TestRunnerWithFailingProcessor(t *testing.T) {
 	// Create client with mock JetStream
 	c := client.NewClientWithJSContext(NewMockJS())
-	attachNoopTemporal(c)
 
 	// Create failing processor
 	processor := &integrationProcessor{shouldFail: true}
@@ -181,7 +176,7 @@ func TestRunnerWithFailingProcessor(t *testing.T) {
 
 	// Add a test message
 	testMsg := message.NewWorkflowMessage("failing-workflow", "failing-run").
-		WithPayload("integration-test", "test data", "integration-ref")
+		WithPayload( "test data")
 
 	_, _ = testMsg.ToBytes() // Serialize for validation
 	c.Messages.Publish(context.Background(), "integration.test", testMsg)
@@ -229,7 +224,7 @@ func TestMessageHandlerIntegration(t *testing.T) {
 
 	// Create test message
 	msg := message.NewWorkflowMessage("handler-integration-workflow", "handler-integration-run").
-		WithPayload("integration-test", "handler test data", "handler-ref")
+		WithPayload( "handler test data")
 
 	natsMsg := &message.NATSMsg{
 		Message: msg,
@@ -251,7 +246,6 @@ func TestMessageHandlerIntegration(t *testing.T) {
 func TestEndToEndWorkflow(t *testing.T) {
 	// Test a complete end-to-end workflow
 	c := client.NewClientWithJSContext(NewMockJS())
-	attachNoopTemporal(c)
 	ctx := context.Background()
 
 	workflowID := "e2e-workflow-" + uuid.New().String()
@@ -259,7 +253,7 @@ func TestEndToEndWorkflow(t *testing.T) {
 
 	// 1. Create and publish initial message
 	initialMsg := message.NewWorkflowMessage(workflowID, runID).
-		WithPayload("e2e-source", "initial data", "e2e-ref-1").
+		WithPayload( "initial data").
 		WithNode("input-node", map[string]interface{}{"type": "input"}).
 		WithOutput("stream")
 
@@ -284,7 +278,7 @@ func TestEndToEndWorkflow(t *testing.T) {
 
 	// 3. Create result message
 	resultMsg := message.NewWorkflowMessage(workflowID, runID).
-		WithPayload("e2e-processor", `{"status":"processed"}`, "e2e-result").
+		WithPayload( `{"status":"processed"}`).
 		WithNode("output-node", map[string]interface{}{"type": "output"}).
 		WithOutput("callback").
 		WithMetadata("temporal_workflow_id", workflowID).
@@ -311,7 +305,6 @@ func TestEndToEndWorkflow(t *testing.T) {
 func TestErrorReportingWorkflow(t *testing.T) {
 	// Test error reporting workflow
 	c := client.NewClientWithJSContext(NewMockJS())
-	attachNoopTemporal(c)
 	ctx := context.Background()
 
 	workflowID := "error-workflow-" + uuid.New().String()
@@ -321,7 +314,7 @@ func TestErrorReportingWorkflow(t *testing.T) {
 	// 1. Simulate a processing error
 	errorMessage := fmt.Errorf("simulated processing error")
 
-	err := c.Messages.ReportError(ctx, executionID, workflowID, runID, errorMessage, nil)
+	err := c.Messages.ReportError(ctx, executionID, workflowID, runID, "", errorMessage, nil)
 	if err != nil {
 		t.Errorf("Failed to report error: %v", err)
 	}

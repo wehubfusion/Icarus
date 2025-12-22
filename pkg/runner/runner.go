@@ -401,10 +401,25 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 		processSpan.SetAttributes(attribute.String("message.node.id", msg.Node.NodeID))
 	}
 	if msg.Payload != nil {
-		processSpan.SetAttributes(
-			attribute.String("message.payload.source", msg.Payload.Source),
-			attribute.String("message.payload.reference", msg.Payload.Reference),
-		)
+		attrs := []attribute.KeyValue{}
+		// Add plugin type from metadata if available
+		if pluginType := msg.Metadata["plugin_type"]; pluginType != "" {
+			attrs = append(attrs, attribute.String("message.plugin_type", pluginType))
+		}
+		// Add execution context fields from Payload
+		if msg.Payload.ExecutionID != "" {
+			attrs = append(attrs, attribute.String("message.execution_id", msg.Payload.ExecutionID))
+		}
+		if msg.Payload.WorkflowID != "" {
+			attrs = append(attrs, attribute.String("message.workflow_id", msg.Payload.WorkflowID))
+		}
+		if msg.Payload.RunID != "" {
+			attrs = append(attrs, attribute.String("message.run_id", msg.Payload.RunID))
+		}
+		if msg.Payload.NodeID != "" {
+			attrs = append(attrs, attribute.String("message.node_id", msg.Payload.NodeID))
+		}
+		processSpan.SetAttributes(attrs...)
 	}
 	processSpan.SetAttributes(attribute.String("message.created_at", msg.CreatedAt))
 	defer processSpan.End()
@@ -434,18 +449,18 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 		// Report error if we have workflow information
 		// Use a background context with timeout to ensure reporting works even if parent context is cancelled
 		if workflowID != "" && runID != "" {
-			// Extract executionID from message metadata
+			// Extract executionID from Payload
 			executionID := ""
-			if msg.Metadata != nil {
-				executionID = msg.Metadata["execution_id"]
+			if msg.Payload != nil {
+				executionID = msg.Payload.ExecutionID
 			}
 
 			reportCtx, reportCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer reportCancel()
 
-			if reportErr := r.client.Messages.ReportError(reportCtx, executionID, workflowID, runID, processErr, msg.GetNATSMsg()); reportErr != nil {
+			if reportErr := r.client.Messages.ReportError(reportCtx, executionID, workflowID, runID, correlationID, processErr, msg.GetNATSMsg()); reportErr != nil {
 				// Critical: If we can't report the error, log it extensively but don't fail silently
-				r.logger.Error("CRITICAL: Failed to report error to Temporal workflow - workflow may hang",
+				r.logger.Error("CRITICAL: Failed to report error to JetStream - workflow may hang",
 					zap.String("workflowID", workflowID),
 					zap.String("runID", runID),
 					zap.String("executionID", executionID),
@@ -455,14 +470,14 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 				// Try one more time with a fresh context after a brief delay
 				time.Sleep(2 * time.Second)
 				retryCtx, retryCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				if retryErr := r.client.Messages.ReportError(retryCtx, executionID, workflowID, runID, processErr, msg.GetNATSMsg()); retryErr != nil {
-					r.logger.Error("CRITICAL: Retry also failed to report error to Temporal",
+				if retryErr := r.client.Messages.ReportError(retryCtx, executionID, workflowID, runID, correlationID, processErr, msg.GetNATSMsg()); retryErr != nil {
+					r.logger.Error("CRITICAL: Retry also failed to report error to JetStream",
 						zap.String("workflowID", workflowID),
 						zap.String("runID", runID),
 						zap.String("executionID", executionID),
 						zap.Error(retryErr))
 				} else {
-					r.logger.Info("Successfully reported error to Temporal on retry",
+					r.logger.Info("Successfully reported error to JetStream on retry",
 						zap.String("workflowID", workflowID),
 						zap.String("executionID", executionID))
 				}
@@ -483,9 +498,20 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 	span.SetStatus(codes.Ok, "Message processed successfully")
 	processSpan.SetStatus(codes.Ok, "Message processed successfully")
 
-	// Ensure result message has correlation ID
+	// Ensure result message has correlation ID and workflow/node info
 	if resultMessage.CorrelationID == "" && correlationID != "" {
 		resultMessage.CorrelationID = correlationID
+	}
+	// Ensure workflow info is preserved in result message
+	if resultMessage.Workflow == nil && workflowID != "" && runID != "" {
+		resultMessage.Workflow = &message.Workflow{
+			WorkflowID: workflowID,
+			RunID:      runID,
+		}
+	}
+	// Ensure node info is preserved in result message
+	if resultMessage.Node == nil && msg.Node != nil {
+		resultMessage.Node = msg.Node
 	}
 
 	// Add result message attributes if available
@@ -528,7 +554,7 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 			errorCtx, errorCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer errorCancel()
 
-			if errorReportErr := r.client.Messages.ReportError(errorCtx, executionID, workflowID, runID, reportErr, msg.GetNATSMsg()); errorReportErr != nil {
+			if errorReportErr := r.client.Messages.ReportError(errorCtx, executionID, workflowID, runID, correlationID, reportErr, msg.GetNATSMsg()); errorReportErr != nil {
 				// Critical: If we can't report the error, log it extensively
 				r.logger.Error("CRITICAL: Failed to report error to workflow after success report failed - workflow may hang",
 					zap.String("workflowID", workflowID),
@@ -540,13 +566,13 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 				// Try one more time with a fresh context
 				time.Sleep(2 * time.Second)
 				retryCtx, retryCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				if retryErr := r.client.Messages.ReportError(retryCtx, executionID, workflowID, runID, reportErr, msg.GetNATSMsg()); retryErr != nil {
-					r.logger.Error("CRITICAL: Retry also failed to report error to Temporal",
+				if retryErr := r.client.Messages.ReportError(retryCtx, executionID, workflowID, runID, correlationID, reportErr, msg.GetNATSMsg()); retryErr != nil {
+					r.logger.Error("CRITICAL: Retry also failed to report error to JetStream",
 						zap.String("workflowID", workflowID),
 						zap.String("executionID", executionID),
 						zap.Error(retryErr))
 				} else {
-					r.logger.Info("Successfully reported error to Temporal on retry",
+					r.logger.Info("Successfully reported error to JetStream on retry",
 						zap.String("workflowID", workflowID),
 						zap.String("executionID", executionID))
 				}

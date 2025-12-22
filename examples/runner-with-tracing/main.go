@@ -56,7 +56,7 @@ func (p *SimpleProcessor) Process(ctx context.Context, msg *message.Message) (me
 		fields = append(fields, zap.String("node_id", msg.Node.NodeID))
 	}
 	if msg.Payload != nil {
-		fields = append(fields, zap.String("payload_data", msg.Payload.Data))
+		fields = append(fields, zap.String("payload_data", msg.Payload.GetInlineData()))
 	}
 
 	p.logger.Info("Processor received message", fields...)
@@ -80,7 +80,7 @@ func (p *SimpleProcessor) Process(ctx context.Context, msg *message.Message) (me
 
 	// Create a response message
 	resultMsg := message.NewMessage()
-	resultMsg.WithPayload("processor", fmt.Sprintf("Processed by %s at %s", p.name, time.Now().Format(time.RFC3339)), "processed-data")
+	resultMsg.WithPayload( fmt.Sprintf("Processed by %s at %s", p.name, time.Now().Format(time.RFC3339)))
 	resultMsg.WithNode("result-node", map[string]interface{}{
 		"processor":      p.name,
 		"processingTime": processingTime.String(),
@@ -284,9 +284,7 @@ func produceMessages(ctx context.Context, client *client.Client, logger *zap.Log
 		)
 
 		msg.WithPayload(
-			"test-source",
 			fmt.Sprintf("Test data %d - %s", i, time.Now().Format(time.RFC3339)),
-			fmt.Sprintf("ref-%d", i),
 		)
 
 		msg.WithNode(

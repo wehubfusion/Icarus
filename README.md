@@ -86,7 +86,7 @@ if err != nil {
 for _, msg := range messages {
     var content string
     if msg.Payload != nil {
-        content = msg.Payload.Data
+        content = msg.Payload.GetInlineData()
     }
     fmt.Printf("Processing: %s (Workflow: %s)\n", content, msg.Workflow.WorkflowID)
     msg.Ack() // Acknowledge message processing
@@ -102,7 +102,7 @@ type MyProcessor struct{}
 func (p *MyProcessor) Process(ctx context.Context, msg *message.Message) (message.Message, error) {
     var content string
     if msg.Payload != nil {
-        content = msg.Payload.Data
+        content = msg.Payload.GetInlineData()
     }
     fmt.Printf("Processing: %s (Workflow: %s)\n", content, msg.Workflow.WorkflowID)
 
@@ -428,11 +428,18 @@ Messages can contain a `BlobReference` in the payload for large data that exceed
 ```go
 // Payload with blob reference (set by Zeus when publishing large inputs)
 type Payload struct {
-    Source        string         `json:"source"`
-    Data          string         `json:"data"`                    // Inline data (for small payloads)
-    Reference     string         `json:"reference"`
+    InlineData    *string        `json:"inlineData,omitempty"`   // Inline data (for small payloads) - nullable
     BlobReference *BlobReference `json:"blobReference,omitempty"` // Reference to blob storage
+    // Execution context fields (automatically populated by WithPayload)
+    ExecutionID string `json:"execution_id"` // Unique identifier for this execution
+    WorkflowID  string `json:"workflow_id"`  // Workflow identifier
+    RunID       string `json:"run_id"`       // Workflow run identifier
+    NodeID      string `json:"node_id"`      // Node identifier
 }
+
+// Helper methods:
+// GetData() returns the inline data as string, or empty string if nil
+// HasData() returns true if inline data is present
 
 type BlobReference struct {
     URL       string `json:"url"`       // Direct blob URL (for logging)
@@ -443,7 +450,7 @@ type BlobReference struct {
 When `BlobResolvingMiddleware` is applied:
 1. It checks if the message has a `BlobReference`
 2. If yes, downloads the data from Azure Blob Storage using the shared-key client
-3. Populates `Payload.Data` with the downloaded content
+3. Populates `Payload.InlineData` with the downloaded content
 4. Clears the `BlobReference`
 5. Passes the message to the processor with inline data
 
@@ -544,7 +551,7 @@ processing.duration_ms = 1500
 
 // Message details
 message.node.id = "process-payment"
-message.payload.source = "api-server"
+// Source field removed - plugin type available in Metadata["plugin_type"]
 message.created_at = "2024-01-01T12:00:00Z"
 ```
 
@@ -640,7 +647,7 @@ if err != nil {
 }
 
 // Report error
-err := client.Messages.ReportError(ctx, workflowID, runID, "Processing failed: timeout", originalNATSMsg)
+err := client.Messages.ReportError(ctx, executionID, workflowID, runID, correlationID, fmt.Errorf("Processing failed: timeout"), originalNATSMsg)
 if err != nil {
     logger.Error("Failed to report error", zap.Error(err))
 }
@@ -659,7 +666,6 @@ Success callbacks contain:
   "payload": {
     "source": "processor",
     "result": "Processing completed successfully",
-    "reference": "result-ref"
   },
   "metadata": {
     "result_type": "success"
@@ -680,7 +686,6 @@ Error callbacks contain:
   "payload": {
     "source": "callback-service",
     "result": "Processing failed: connection timeout",
-    "reference": "error-workflow-123-run-456"
   },
   "metadata": {
     "result_type": "error",
@@ -732,7 +737,7 @@ for _, msg := range messages {
         logger.Error("Processing failed",
             zap.String("workflow_id", msg.Workflow.WorkflowID),
             zap.String("run_id", msg.Workflow.RunID),
-            zap.String("error", msg.Payload.Data))
+            zap.String("error", msg.Payload.GetInlineData()))
     }
 
     msg.Ack()
@@ -996,7 +1001,7 @@ if err != nil {
 for _, msg := range messages {
     var content string
     if msg.Payload != nil {
-        content = msg.Payload.Data
+        content = msg.Payload.GetInlineData()
     }
     fmt.Printf("Pulled message: %s\n", content)
 }
@@ -1143,7 +1148,7 @@ type Message struct {
 
 - **Workflow**: Contains `WorkflowID` and `RunID` for tracking workflow executions
 - **Node**: Contains `NodeID` and `Configuration` for workflow node information
-- **Payload**: Contains `Source`, `Data`, and `Reference` for the message content
+- **Payload**: Contains `InlineData` for the message content (execution ID is stored in `Metadata["execution_id"]`, plugin type in `Metadata["plugin_type"]`)
 - **Output**: Contains `DestinationType` for routing information
 - **Metadata**: Flexible key-value pairs for additional information
 - **EmbeddedNodes**: Array of child nodes to execute within the parent node (for unit processing)
@@ -1896,7 +1901,7 @@ func main() {
         for _, pulledMsg := range messages {
             var content string
             if pulledMsg.Payload != nil {
-                content = pulledMsg.Payload.Data
+                content = pulledMsg.Payload.InlineData
             }
             fmt.Printf("Pulled: %s (Workflow: %s)\n", content, pulledMsg.Workflow.WorkflowID)
             pulledMsg.Ack() // Acknowledge message
@@ -1918,7 +1923,7 @@ if err != nil {
 for _, msg := range messages {
     var content string
     if msg.Payload != nil {
-        content = msg.Payload.Data
+        content = msg.Payload.GetInlineData()
     }
     fmt.Printf("Processing: %s (Workflow: %s)\n", content, msg.Workflow.WorkflowID)
     // Messages are automatically acknowledged after successful deserialization
@@ -1934,7 +1939,7 @@ type RunnerProcessor struct{}
 func (RunnerProcessor) Process(ctx context.Context, msg *message.Message) (message.Message, error) {
     var content string
     if msg.Payload != nil {
-        content = msg.Payload.Data
+        content = msg.Payload.GetInlineData()
     }
     fmt.Printf("Processing: %s (Workflow: %s)\n", content, msg.Workflow.WorkflowID)
     // Simulate processing work

@@ -53,7 +53,7 @@ func TestMessageServiceReportSuccess(t *testing.T) {
 
 	// Create a result message
 	resultMessage := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("processor", "success result", "result-ref")
+		WithPayload( "success result")
 
 	// Create a mock NATS message for acknowledgment
 	natsMsg := &nats.Msg{
@@ -93,17 +93,16 @@ func TestMessageServiceReportError(t *testing.T) {
 		Data:    []byte("test data"),
 	}
 
-	// Test ReportError (will fail without Temporal client, which is expected)
-	err := c.Messages.ReportError(ctx, executionID, workflowID, runID, errorMsg, natsMsg)
-	// Expect error when Temporal client is not initialized (new requirement)
-	if err == nil {
-		t.Error("Expected error when Temporal client not initialized")
+	// Test ReportError (should succeed with JetStream)
+	err := c.Messages.ReportError(ctx, executionID, workflowID, runID, "", errorMsg, natsMsg)
+	if err != nil {
+		t.Errorf("ReportError failed: %v", err)
 	}
 
-	// Test ReportError without NATS message (will also fail without Temporal client)
-	err = c.Messages.ReportError(ctx, executionID, workflowID, runID, errorMsg, nil)
-	if err == nil {
-		t.Error("Expected error when Temporal client not initialized")
+	// Test ReportError without NATS message (should also succeed)
+	err = c.Messages.ReportError(ctx, executionID, workflowID, runID, "", errorMsg, nil)
+	if err != nil {
+		t.Errorf("ReportError failed: %v", err)
 	}
 }
 
@@ -112,7 +111,7 @@ func TestMessageServiceReportSuccessValidation(t *testing.T) {
 	ctx := context.Background()
 
 	// Test with invalid message (missing workflow)
-	invalidMessage := message.NewMessage().WithPayload("test", "data", "ref")
+	invalidMessage := message.NewMessage().WithPayload( "data")
 	err := c.Messages.ReportSuccess(ctx, *invalidMessage, nil)
 	if err == nil {
 		t.Error("Expected validation error for message without workflow")
@@ -122,7 +121,10 @@ func TestMessageServiceReportSuccessValidation(t *testing.T) {
 	// Framework auto-populates timestamps but Temporal metadata is required
 	invalidMessage2 := &message.Message{
 		Workflow:  &message.Workflow{WorkflowID: "test", RunID: "test"},
-		Payload:   &message.Payload{Source: "test", Data: "data", Reference: "ref"},
+		Payload: func() *message.Payload {
+			data := "data"
+			return &message.Payload{InlineData: &data}
+		}(),
 		UpdatedAt: time.Now().Format(time.RFC3339),
 	}
 	err = c.Messages.ReportSuccess(ctx, *invalidMessage2, nil)
@@ -134,7 +136,10 @@ func TestMessageServiceReportSuccessValidation(t *testing.T) {
 	// Test with message missing UpdatedAt and Temporal metadata
 	invalidMessage3 := &message.Message{
 		Workflow:  &message.Workflow{WorkflowID: "test", RunID: "test"},
-		Payload:   &message.Payload{Source: "test", Data: "data", Reference: "ref"},
+		Payload: func() *message.Payload {
+			data := "data"
+			return &message.Payload{InlineData: &data}
+		}(),
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
 	err = c.Messages.ReportSuccess(ctx, *invalidMessage3, nil)
@@ -159,19 +164,19 @@ func TestMessageServiceReportErrorValidation(t *testing.T) {
 	c := client.NewClientWithJSContext(NewMockJS())
 	ctx := context.Background()
 
-	// Note: ReportError now requires Temporal client to be initialized
+	// Test ReportError validation
 	// These tests verify that errors are properly handled when client is missing
 
 	executionID := "exec-" + uuid.New().String()
 
 	// Test with empty workflow ID (will fail due to missing Temporal client)
-	err := c.Messages.ReportError(ctx, executionID, "", "run-123", fmt.Errorf("error message"), nil)
+	err := c.Messages.ReportError(ctx, executionID, "", "run-123", "", fmt.Errorf("error message"), nil)
 	if err == nil {
 		t.Error("Expected error when Temporal client not initialized")
 	}
 
 	// Test with empty run ID (will fail due to missing Temporal client)
-	err = c.Messages.ReportError(ctx, executionID, "workflow-123", "", fmt.Errorf("error message"), nil)
+	err = c.Messages.ReportError(ctx, executionID, "workflow-123", "", "", fmt.Errorf("error message"), nil)
 	if err == nil {
 		t.Error("Expected error when Temporal client not initialized")
 	}
@@ -202,7 +207,7 @@ func TestMessageServiceReportWithPublishError(t *testing.T) {
 
 	// Test ReportSuccess with publish error
 	resultMessage := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("processor", "success result", "result-ref")
+		WithPayload( "success result")
 
 	err := c.Messages.ReportSuccess(ctx, *resultMessage, nil)
 	if err == nil {
@@ -212,7 +217,7 @@ func TestMessageServiceReportWithPublishError(t *testing.T) {
 	executionID := "exec-" + uuid.New().String()
 
 	// Test ReportError with publish error
-	err = c.Messages.ReportError(ctx, executionID, "workflow-123", "run-456", fmt.Errorf("error message"), nil)
+	err = c.Messages.ReportError(ctx, executionID, "workflow-123", "run-456", "", fmt.Errorf("error message"), nil)
 	if err == nil {
 		t.Error("Expected error when publish fails")
 	}
@@ -248,7 +253,7 @@ func TestMessageServicePublishValidation(t *testing.T) {
 	ctx := context.Background()
 
 	msg := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("test", "test data", "ref-123")
+		WithPayload( "test data")
 
 	// Test with empty subject
 	err := c.Messages.Publish(ctx, "", msg)
@@ -271,7 +276,7 @@ func TestMessageServiceContextCancellation(t *testing.T) {
 	cancel()
 
 	msg := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("test", "test data", "ref-123")
+		WithPayload( "test data")
 
 	// Test Publish with cancelled context
 	err := c.Messages.Publish(ctx, "test.subject", msg)
@@ -287,7 +292,7 @@ func TestMessageServiceContextCancellation(t *testing.T) {
 
 	// Test ReportSuccess with cancelled context
 	resultMessage := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("processor", "success result", "result-ref")
+		WithPayload( "success result")
 
 	err = c.Messages.ReportSuccess(ctx, *resultMessage, nil)
 	if err == nil {
@@ -297,7 +302,7 @@ func TestMessageServiceContextCancellation(t *testing.T) {
 	executionID := "exec-" + uuid.New().String()
 
 	// Test ReportError with cancelled context
-	err = c.Messages.ReportError(ctx, executionID, "workflow-123", "run-456", fmt.Errorf("error message"), nil)
+	err = c.Messages.ReportError(ctx, executionID, "workflow-123", "run-456", "", fmt.Errorf("error message"), nil)
 	if err == nil {
 		t.Error("Expected error for cancelled context in ReportError")
 	}
@@ -314,7 +319,7 @@ func TestMessageServiceTimeout(t *testing.T) {
 	time.Sleep(1 * time.Millisecond)
 
 	msg := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload("test", "test data", "ref-123")
+		WithPayload( "test data")
 
 	// Test operations with timed out context
 	err := c.Messages.Publish(ctx, "test.subject", msg)

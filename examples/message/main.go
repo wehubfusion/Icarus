@@ -53,7 +53,7 @@ func runExamples(ctx context.Context, client *client.Client, sigChan chan os.Sig
 
 	// Create a basic message
 	basicMsg := message.NewMessage()
-	basicMsg.WithPayload("example-service", "Hello from Icarus!", "ref-001")
+	basicMsg.WithPayload( "Hello from Icarus!")
 	basicMsg.WithMetadata("example", "basic-publish")
 	basicMsg.WithMetadata("timestamp", time.Now().Format(time.RFC3339))
 
@@ -80,7 +80,7 @@ func runExamples(ctx context.Context, client *client.Client, sigChan chan os.Sig
 		"timeout":        30,
 		"retry_count":    3,
 	})
-	workflowMsg.WithPayload("workflow-engine", `{"user_id": 12345, "action": "purchase", "amount": 99.99}`, "order-789")
+	workflowMsg.WithPayload( `{"user_id": 12345, "action": "purchase", "amount": 99.99}`)
 	workflowMsg.WithOutput("database")
 	workflowMsg.WithMetadata("priority", "high")
 	workflowMsg.WithMetadata("environment", "production")
@@ -138,7 +138,7 @@ func runExamples(ctx context.Context, client *client.Client, sigChan chan os.Sig
 				fmt.Printf("  - Node: %s\n", msg.Node.NodeID)
 			}
 			if msg.Payload != nil {
-				fmt.Printf("  - Payload: %s\n", msg.Payload.Data)
+				fmt.Printf("  - Payload: %s\n", msg.Payload.GetInlineData())
 			}
 			if len(msg.Metadata) > 0 {
 				fmt.Printf("  - Metadata: %v\n", msg.Metadata)
@@ -180,7 +180,7 @@ func runExamples(ctx context.Context, client *client.Client, sigChan chan os.Sig
 
 	for i, test := range testMessages {
 		testMsg := message.NewMessage()
-		testMsg.WithPayload("test-publisher", test.data, fmt.Sprintf("test-ref-%d", i+1))
+		testMsg.WithPayload( test.data)
 		testMsg.WithMetadata("message_type", test.msgType)
 		testMsg.WithMetadata("test_sequence", fmt.Sprintf("%d", i+1))
 
@@ -209,7 +209,7 @@ func runExamples(ctx context.Context, client *client.Client, sigChan chan os.Sig
 	// Report a successful workflow execution
 	successData := `{"status": "completed", "processed_items": 150, "duration": "45.2s"}`
 	resultMessage := message.NewWorkflowMessage(callbackWorkflowID, callbackRunID).
-		WithPayload("callback-service", successData, fmt.Sprintf("success-%s-%s", callbackWorkflowID, callbackRunID))
+		WithPayload( successData)
 
 	if err := client.Messages.ReportSuccess(ctx, *resultMessage, nil); err != nil {
 		log.Printf("Failed to report success: %v", err)
@@ -226,7 +226,7 @@ func runExamples(ctx context.Context, client *client.Client, sigChan chan os.Sig
 
 	// Report a failed workflow execution
 	errorData := fmt.Errorf("Database connection timeout after 3 retries at 2024-10-07T10:30:00Z")
-	if err := client.Messages.ReportError(ctx, errorExecutionID, errorWorkflowID, errorRunID, errorData, nil); err != nil {
+	if err := client.Messages.ReportError(ctx, errorExecutionID, errorWorkflowID, errorRunID, "", errorData, nil); err != nil {
 		log.Printf("Failed to report error: %v", err)
 	} else {
 		fmt.Println("✓ Error callback reported")
@@ -247,7 +247,7 @@ func runExamples(ctx context.Context, client *client.Client, sigChan chan os.Sig
 			"validate": true,
 		},
 	})
-	complexMsg.WithPayload("serialization-demo", `{"complex": true, "nested": {"data": [1,2,3]}}`, "serial-ref")
+	complexMsg.WithPayload( `{"complex": true, "nested": {"data": [1,2,3]}}`)
 	complexMsg.WithOutput("file-system")
 	complexMsg.WithMetadata("encoding", "utf-8")
 	complexMsg.WithMetadata("compression", "gzip")
@@ -268,7 +268,7 @@ func runExamples(ctx context.Context, client *client.Client, sigChan chan os.Sig
 		fmt.Println("✓ Message deserialized successfully")
 		fmt.Printf("  - Workflow ID: %s\n", deserializedMsg.Workflow.WorkflowID)
 		fmt.Printf("  - Node ID: %s\n", deserializedMsg.Node.NodeID)
-		fmt.Printf("  - Payload: %s\n", deserializedMsg.Payload.Data)
+		fmt.Printf("  - Payload: %s\n", deserializedMsg.Payload.GetInlineData())
 		fmt.Printf("  - Metadata count: %d\n", len(deserializedMsg.Metadata))
 	}
 	fmt.Println()

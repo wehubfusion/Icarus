@@ -58,7 +58,7 @@ func (p *SimpleProcessor) Process(ctx context.Context, msg *message.Message) (me
 		fields = append(fields, zap.String("node_id", msg.Node.NodeID))
 	}
 	if msg.Payload != nil {
-		fields = append(fields, zap.String("payload_data", msg.Payload.Data))
+		fields = append(fields, zap.String("payload_data", msg.Payload.GetInlineData()))
 	}
 
 	p.logger.Info("Processor received message", fields...)
@@ -71,7 +71,7 @@ func (p *SimpleProcessor) Process(ctx context.Context, msg *message.Message) (me
 
 		// Create a result message with the processing results
 		resultMessage := message.NewMessage().
-			WithPayload("processor-result", fmt.Sprintf("Processed by %s in %v", p.name, processingTime), "processing-result")
+			WithPayload( fmt.Sprintf("Processed by %s in %v", p.name, processingTime))
 
 		// Copy workflow information if it exists
 		if msg.Workflow != nil {
@@ -378,10 +378,9 @@ func publishTestMessages(c *client.Client, ctx context.Context) error {
 		})
 
 		// Add payload
+		data := msgData.data
 		msg.Payload = &message.Payload{
-			Source:    "example-generator",
-			Data:      msgData.data,
-			Reference: fmt.Sprintf("ref-%d", i+1),
+			InlineData: &data,
 		}
 
 		// Add some metadata
