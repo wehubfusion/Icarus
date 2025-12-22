@@ -34,10 +34,11 @@ type Payload struct {
 	BlobReference *BlobReference `json:"blobReference,omitempty"` // Reference to blob storage (for large payloads)
 	FieldMappings []FieldMapping `json:"fieldMappings,omitempty"` // Field mappings for extracting data from blob
 	// Execution context fields (for convenience - also available in Workflow/Node/Metadata)
-	ExecutionID string `json:"execution_id"` // Unique identifier for this execution
-	WorkflowID  string `json:"workflow_id"`  // Workflow identifier
-	RunID       string `json:"run_id"`       // Workflow run identifier
-	NodeID      string `json:"node_id"`      // Node identifier
+	CorrelationID string `json:"correlation_id,omitempty"` // Correlation ID for tracking related messages
+	ExecutionID   string `json:"execution_id"`             // Unique identifier for this execution
+	WorkflowID    string `json:"workflow_id"`              // Workflow identifier
+	RunID         string `json:"run_id"`                   // Workflow run identifier
+	NodeID        string `json:"node_id"`                  // Node identifier
 }
 
 // GetInlineData returns the inline data as a string, or empty string if nil
@@ -196,6 +197,9 @@ func (m *Message) WithPayload(data string) *Message {
 		InlineData: dataPtr,
 	}
 	// Populate execution context fields from message structure if available
+	if m.CorrelationID != "" {
+		m.Payload.CorrelationID = m.CorrelationID
+	}
 	if m.Workflow != nil {
 		m.Payload.WorkflowID = m.Workflow.WorkflowID
 		m.Payload.RunID = m.Workflow.RunID
