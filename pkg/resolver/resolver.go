@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/wehubfusion/Icarus/pkg/message"
 	"github.com/wehubfusion/Icarus/pkg/storage"
@@ -72,6 +73,7 @@ type FieldMappingParams struct {
 	SourceResults    map[string]*SourceResult
 	TriggerData      []byte
 	BlobSourceNodeID string
+	ConsumerGraph    *ConsumerGraph // Optional: consumer graph for multi-blob downloads
 }
 
 // SourceResult contains the minimal data required to evaluate field mappings.
@@ -109,6 +111,130 @@ func (s *Service) ResolveMappedInput(
 	}
 
 	return s.buildInputFromFieldMappings(base, params)
+}
+
+// ResolveMappedInputWithConsumerGraph resolves input using consumer graph to download multiple blob files.
+// This method handles cases where source nodes are in different blob files (e.g., Unit N-2, embedded nodes).
+// If consumerGraph is nil, it falls back to ResolveMappedInput behavior.
+func (s *Service) ResolveMappedInputWithConsumerGraph(
+	ctx context.Context,
+	inline []byte,
+	blobRef *message.BlobReference,
+	params *FieldMappingParams,
+	consumerGraph *ConsumerGraph,
+) ([]byte, error) {
+	// If no consumer graph provided, fall back to standard behavior
+	if consumerGraph == nil {
+		return s.ResolveMappedInput(ctx, inline, blobRef, params)
+	}
+
+	// If no field mappings, use standard resolution
+	if params == nil || len(params.FieldMappings) == 0 {
+		return s.ResolveMappedInput(ctx, inline, blobRef, params)
+	}
+
+	// Determine which blob files are needed
+	requiredFiles := consumerGraph.DetermineRequiredFiles(params.FieldMappings)
+
+	// If no blob files needed, use standard resolution
+	if len(requiredFiles) == 0 {
+		return s.ResolveMappedInput(ctx, inline, blobRef, params)
+	}
+
+	// Download and parse all required blob files
+	sourceResults, err := s.downloadAndParseBlobFiles(ctx, requiredFiles, params.FieldMappings)
+	if err != nil {
+		return nil, fmt.Errorf("resolver: failed to download and parse blob files: %w", err)
+	}
+
+	// Merge with any existing source results
+	if params.SourceResults == nil {
+		params.SourceResults = make(map[string]*SourceResult)
+	}
+	for nodeID, result := range sourceResults {
+		params.SourceResults[nodeID] = result
+	}
+
+	// Build input using field mappings with all source results
+	buildParams := BuildInputParams{
+		UnitNodeID:    params.BlobSourceNodeID,
+		FieldMappings: params.FieldMappings,
+		SourceResults: params.SourceResults,
+		TriggerData:   params.TriggerData,
+	}
+
+	return buildInputFromMappings(buildParams)
+}
+
+// downloadAndParseBlobFiles downloads multiple blob files in parallel and extracts SourceResults.
+func (s *Service) downloadAndParseBlobFiles(
+	ctx context.Context,
+	requiredFiles []*RequiredBlobFile,
+	fieldMappings []message.FieldMapping,
+) (map[string]*SourceResult, error) {
+	if s.blobClient == nil {
+		return nil, fmt.Errorf("resolver: blob client not configured for multi-blob download")
+	}
+
+	// Extract all source node IDs we need
+	sourceNodeIDs := make(map[string]bool)
+	for _, mapping := range fieldMappings {
+		if !mapping.IsEventTrigger && mapping.SourceNodeID != "" {
+			sourceNodeIDs[mapping.SourceNodeID] = true
+		}
+	}
+
+	// Download all files in parallel
+	type downloadResult struct {
+		file *RequiredBlobFile
+		data []byte
+		err  error
+	}
+
+	var wg sync.WaitGroup
+	results := make([]downloadResult, len(requiredFiles))
+
+	for i, file := range requiredFiles {
+		wg.Add(1)
+		go func(idx int, f *RequiredBlobFile) {
+			defer wg.Done()
+			data, err := s.blobClient.DownloadResult(ctx, f.BlobURL)
+			results[idx] = downloadResult{
+				file: f,
+				data: data,
+				err:  err,
+			}
+		}(i, file)
+	}
+
+	// Wait for all downloads to complete
+	wg.Wait()
+
+	allSourceResults := make(map[string]*SourceResult)
+	for _, result := range results {
+		if result.err != nil {
+			return nil, fmt.Errorf("resolver: failed to download blob file %s: %w", result.file.BlobURL, result.err)
+		}
+
+		// Parse blob to extract source results
+		parsedResults := sourceResultsFromBlob(result.data, sourceNodeIDs)
+		for nodeID, sourceResult := range parsedResults {
+			// Only include nodes that are in this file's ContainsNodes list
+			isInFile := false
+			for _, containsNode := range result.file.ContainsNodes {
+				if containsNode == nodeID {
+					isInFile = true
+					break
+				}
+			}
+
+			if isInFile {
+				allSourceResults[nodeID] = sourceResult
+			}
+		}
+	}
+
+	return allSourceResults, nil
 }
 
 // buildInputFromFieldMappings centralizes the logic for constructing unit inputs using field mappings.
