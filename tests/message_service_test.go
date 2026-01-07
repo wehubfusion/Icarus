@@ -53,7 +53,7 @@ func TestMessageServiceReportSuccess(t *testing.T) {
 
 	// Create a result message
 	resultMessage := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload( "success result")
+		WithPayload("success result")
 
 	// Create a mock NATS message for acknowledgment
 	natsMsg := &nats.Msg{
@@ -111,7 +111,7 @@ func TestMessageServiceReportSuccessValidation(t *testing.T) {
 	ctx := context.Background()
 
 	// Test with invalid message (missing workflow)
-	invalidMessage := message.NewMessage().WithPayload( "data")
+	invalidMessage := message.NewMessage().WithPayload("data")
 	err := c.Messages.ReportSuccess(ctx, *invalidMessage, nil)
 	if err == nil {
 		t.Error("Expected validation error for message without workflow")
@@ -120,7 +120,7 @@ func TestMessageServiceReportSuccessValidation(t *testing.T) {
 	// Test with message missing Temporal callback metadata (new requirement)
 	// Framework auto-populates timestamps but Temporal metadata is required
 	invalidMessage2 := &message.Message{
-		Workflow:  &message.Workflow{WorkflowID: "test", RunID: "test"},
+		Workflow: &message.Workflow{WorkflowID: "test", RunID: "test"},
 		Payload: func() *message.Payload {
 			data := "data"
 			return &message.Payload{InlineData: &data}
@@ -135,7 +135,7 @@ func TestMessageServiceReportSuccessValidation(t *testing.T) {
 
 	// Test with message missing UpdatedAt and Temporal metadata
 	invalidMessage3 := &message.Message{
-		Workflow:  &message.Workflow{WorkflowID: "test", RunID: "test"},
+		Workflow: &message.Workflow{WorkflowID: "test", RunID: "test"},
 		Payload: func() *message.Payload {
 			data := "data"
 			return &message.Payload{InlineData: &data}
@@ -207,7 +207,7 @@ func TestMessageServiceReportWithPublishError(t *testing.T) {
 
 	// Test ReportSuccess with publish error
 	resultMessage := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload( "success result")
+		WithPayload("success result")
 
 	err := c.Messages.ReportSuccess(ctx, *resultMessage, nil)
 	if err == nil {
@@ -253,7 +253,7 @@ func TestMessageServicePublishValidation(t *testing.T) {
 	ctx := context.Background()
 
 	msg := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload( "test data")
+		WithPayload("test data")
 
 	// Test with empty subject
 	err := c.Messages.Publish(ctx, "", msg)
@@ -276,7 +276,7 @@ func TestMessageServiceContextCancellation(t *testing.T) {
 	cancel()
 
 	msg := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload( "test data")
+		WithPayload("test data")
 
 	// Test Publish with cancelled context
 	err := c.Messages.Publish(ctx, "test.subject", msg)
@@ -292,7 +292,7 @@ func TestMessageServiceContextCancellation(t *testing.T) {
 
 	// Test ReportSuccess with cancelled context
 	resultMessage := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload( "success result")
+		WithPayload("success result")
 
 	err = c.Messages.ReportSuccess(ctx, *resultMessage, nil)
 	if err == nil {
@@ -319,11 +319,66 @@ func TestMessageServiceTimeout(t *testing.T) {
 	time.Sleep(1 * time.Millisecond)
 
 	msg := message.NewWorkflowMessage("workflow-123", "run-456").
-		WithPayload( "test data")
+		WithPayload("test data")
 
 	// Test operations with timed out context
 	err := c.Messages.Publish(ctx, "test.subject", msg)
 	if err == nil {
 		t.Error("Expected timeout error in Publish")
+	}
+}
+
+func TestExtractNodeIDFromExecutionID(t *testing.T) {
+	tests := []struct {
+		name        string
+		executionID string
+		workflowID  string
+		want        string
+	}{
+		{
+			name:        "Standard format with UUID workflow and node IDs",
+			executionID: "4b45d6f2-ee47-490e-b5c4-86754d95aaa9-8ff422ee-5ed1-421c-8967-1dc1c996b895-1767712791219504964",
+			workflowID:  "4b45d6f2-ee47-490e-b5c4-86754d95aaa9",
+			want:        "8ff422ee-5ed1-421c-8967-1dc1c996b895",
+		},
+		{
+			name:        "Different workflow and node IDs",
+			executionID: "workflow-123-node-456-1234567890",
+			workflowID:  "workflow-123",
+			want:        "node-456",
+		},
+		{
+			name:        "Node ID without dashes",
+			executionID: "workflow-abc123-9876543210",
+			workflowID:  "workflow",
+			want:        "abc123",
+		},
+		{
+			name:        "ExecutionID without matching workflowID prefix",
+			executionID: "different-workflow-node-123-1234567890",
+			workflowID:  "mismatch",
+			want:        "different-workflow-node-123-1234567890",
+		},
+		{
+			name:        "ExecutionID equals workflowID (no node or timestamp)",
+			executionID: "workflow-123",
+			workflowID:  "workflow-123",
+			want:        "workflow-123",
+		},
+		{
+			name:        "Complex node ID with multiple dashes",
+			executionID: "wf-id-my-complex-node-id-with-dashes-9876543210",
+			workflowID:  "wf-id",
+			want:        "my-complex-node-id-with-dashes",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := message.ExtractNodeIDFromExecutionID(tt.executionID, tt.workflowID)
+			if got != tt.want {
+				t.Errorf("ExtractNodeIDFromExecutionID() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

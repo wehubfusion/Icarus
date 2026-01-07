@@ -13,18 +13,6 @@ import (
 // Input: ProcessInput.Data["data"] - can be base64 string or raw JSON
 // Output: {"encoded": "base64encoded..."}
 func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) runtime.ProcessOutput {
-	// Extract "data" field from ProcessInput.Data
-	dataField, hasData := input.Data["data"]
-	if !hasData {
-		return runtime.ErrorOutput(NewProcessingError(
-			n.NodeId(),
-			"produce",
-			"input must contain a 'data' field",
-			input.ItemIndex,
-			nil,
-		))
-	}
-
 	// Validate that schema is provided (enriched by Elysium)
 	if len(cfg.Schema) == 0 {
 		return runtime.ErrorOutput(NewConfigError(
@@ -34,38 +22,19 @@ func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) ru
 		))
 	}
 
-	// Convert data to []byte for processing
+	// Convert full input data to []byte for processing (root can be object or array)
 	var dataToProcess []byte
 	var err error
 
-	switch v := dataField.(type) {
-	case string:
-		// Data is base64-encoded string - decode it
-		dataToProcess, err = base64.StdEncoding.DecodeString(v)
+	dataToProcess, err = json.Marshal(input.Data)
 		if err != nil {
 			return runtime.ErrorOutput(NewProcessingError(
 				n.NodeId(),
 				"produce",
-				"failed to decode base64 data",
+			"failed to marshal input data",
 				input.ItemIndex,
 				err,
 			))
-		}
-	case []byte:
-		// Data is already bytes
-		dataToProcess = v
-	default:
-		// Data is JSON object/array - marshal it
-		dataToProcess, err = json.Marshal(v)
-		if err != nil {
-			return runtime.ErrorOutput(NewProcessingError(
-				n.NodeId(),
-				"produce",
-				"failed to marshal data field",
-				input.ItemIndex,
-				err,
-			))
-		}
 	}
 
 	// Create schema engine

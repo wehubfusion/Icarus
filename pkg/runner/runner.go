@@ -529,9 +529,7 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 		zap.String("workflowID", workflowID),
 		zap.String("runID", runID),
 		zap.String("correlationID", correlationID),
-		zap.Duration("processingTime", processingTime),
-		zap.Any("resultMessage", resultMessage)) // Log the result message
-
+		zap.Duration("processingTime", processingTime))
 	// Report success if we have workflow information
 	// Use a longer timeout for large blob uploads (10 minutes to handle very large files)
 	if workflowID != "" && runID != "" {
