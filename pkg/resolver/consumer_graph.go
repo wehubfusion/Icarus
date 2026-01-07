@@ -1,6 +1,8 @@
 package resolver
 
 import (
+	"encoding/json"
+
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
@@ -13,12 +15,28 @@ type RequiredBlobFile struct {
 	ContainsNodes []string `json:"containsNodes"` // List of node IDs whose results are in this file
 }
 
+// ResultLocation tracks where a node's result is stored and includes inline data if available
+type ResultLocation struct {
+	NodeID        string          `json:"nodeId"`        // The node ID
+	ExecutionID   string          `json:"executionId"`   // Which execution ID/file contains this result
+	StorageType   string          `json:"storageType"`   // "inline" or "blob"
+	BlobURL       string          `json:"blobUrl"`       // If blob, the URL to download
+	BlobPath      string          `json:"blobPath"`      // If blob, the path
+	HasInlineData bool            `json:"hasInlineData"` // Whether inline result is available
+	IsEmbedded    bool            `json:"isEmbedded"`    // Whether this is an embedded node
+	InlineData    json.RawMessage `json:"inlineData"`     // Inline data if available (for nodes with inline results)
+}
+
 // ConsumerGraph tracks which blob files are needed to access results from source nodes
-// It maps execution IDs to blob file information
+// It maps execution IDs to blob file information and tracks result locations
 type ConsumerGraph struct {
 	// RequiredFiles maps execution ID to the blob file information
 	// This tells the resolver which files to download to access specific node results
 	RequiredFiles map[string]*RequiredBlobFile `json:"requiredFiles"`
+
+	// ResultLocations maps node ID to where its result is stored
+	// Includes inline data for nodes with inline results
+	ResultLocations map[string]*ResultLocation `json:"resultLocations,omitempty"`
 }
 
 // DetermineRequiredFiles extracts which blob files are needed based on field mappings
@@ -82,7 +100,8 @@ func (cg *ConsumerGraph) FindFileForNode(nodeID string) *RequiredBlobFile {
 // NewConsumerGraph creates a new empty consumer graph
 func NewConsumerGraph() *ConsumerGraph {
 	return &ConsumerGraph{
-		RequiredFiles: make(map[string]*RequiredBlobFile),
+		RequiredFiles:   make(map[string]*RequiredBlobFile),
+		ResultLocations: make(map[string]*ResultLocation),
 	}
 }
 

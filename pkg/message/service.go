@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -98,10 +99,6 @@ type BlobStorageClient interface {
 	UploadResult(ctx context.Context, blobPath string, data []byte, metadata map[string]string) (string, error)
 	DownloadResult(ctx context.Context, blobURL string) ([]byte, error)
 }
-
-const (
-	maxInlineResultSize = 1.5 * 1024 * 1024 // 1.5MB - Threshold for inline vs blob storage
-)
 
 // SetBlobStorage sets the blob storage client for large results
 func (s *MessageService) SetBlobStorage(bs BlobStorageClient) {
@@ -638,70 +635,17 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 		zap.Bool("has_workflow_struct", resultMessage.Workflow != nil),
 		zap.Bool("has_node_struct", resultMessage.Node != nil))
 
-	// Parse result from payload
-	if resultMessage.Payload == nil || !resultMessage.Payload.HasInlineData() {
-		s.logger.Error("Missing payload data for success report")
-		if msg != nil {
-			_ = msg.Nak()
-		}
-		return fmt.Errorf("missing payload data")
-	}
-	var nodeResult map[string]interface{}
-	if err := json.Unmarshal([]byte(resultMessage.Payload.GetInlineData()), &nodeResult); err != nil {
-		s.logger.Error("Failed to unmarshal result",
-			zap.String("execution_id", executionID),
-			zap.String("workflow_id", workflowID),
-			zap.String("run_id", runID),
-			zap.Error(err))
-
-		// Report unmarshal failure as error
-		unmarshalErr := fmt.Errorf("failed to unmarshal result: %w", err)
-		if reportErr := s.ReportError(ctx, executionID, workflowID, runID, correlationID, unmarshalErr, msg); reportErr != nil {
-			s.logger.Error("Failed to report unmarshal error",
-				zap.String("execution_id", executionID),
-				zap.String("workflow_id", workflowID),
-				zap.Error(reportErr))
-		}
-
-		if msg != nil {
-			_ = msg.Nak()
-		}
-		return unmarshalErr
-	}
-
-	// Use node ID from message struct, fallback to result payload or executionID
-	if nodeID == "" {
-		if extractedNodeID, ok := nodeResult["node_id"].(string); ok && extractedNodeID != "" {
-			nodeID = extractedNodeID
-		} else {
-			nodeID = executionID // Final fallback to executionID if nodeID not found
-		}
-	}
-
-	// Extract plugin type
+	// Extract plugin type and execution time from metadata
 	pluginType := resultMessage.Metadata["plugin_type"]
-	if pluginType == "" {
-		pluginType, _ = nodeResult["plugin_type"].(string)
-	}
-
-	// Extract execution time
 	var executionTimeMs int64
-	if execTime, ok := nodeResult["execution_time_ms"].(float64); ok {
-		executionTimeMs = int64(execTime)
+	if execTimeStr := resultMessage.Metadata["execution_time_ms"]; execTimeStr != "" {
+		if execTime, err := strconv.ParseInt(execTimeStr, 10, 64); err == nil {
+			executionTimeMs = execTime
+		}
 	}
-
-	// Extract status
-	status := "success"
-	if s, ok := nodeResult["status"].(string); ok && s != "" {
-		status = s
-	}
-
-	// Check payload size
-	resultBytes, _ := json.Marshal(nodeResult)
-	resultSize := len(resultBytes)
 
 	// Create result message
-	resultMsg := NewResultMessage(executionID, workflowID, runID, nodeID, status)
+	resultMsg := NewResultMessage(executionID, workflowID, runID, nodeID, "success")
 	if correlationID != "" {
 		resultMsg.WithCorrelationID(correlationID)
 	}
@@ -712,81 +656,33 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 		resultMsg.WithExecutionTime(executionTimeMs)
 	}
 
-	// Handle result storage based on size
-	if resultSize <= maxInlineResultSize {
-		// FAST PATH: Direct inline result for small results
-		s.logger.Info("Sending result with inline data",
+	// Respect resolver's decision - use whatever it returned (blob or inline)
+	if resultMessage.Payload.BlobReference != nil {
+		// Resolver decided to use blob storage
+		s.logger.Info("Publishing result with blob reference from resolver",
+			zap.String("execution_id", executionID),
+			zap.String("blob_url", resultMessage.Payload.BlobReference.URL),
+			zap.Int("size_bytes", resultMessage.Payload.BlobReference.SizeBytes))
+
+		resultMsg.WithBlobReference(resultMessage.Payload.BlobReference)
+		resultMsg.ResultSize = resultMessage.Payload.BlobReference.SizeBytes
+	} else if resultMessage.Payload.HasInlineData() {
+		// Resolver decided to use inline data
+		inlineData := resultMessage.Payload.GetInlineData()
+		resultSize := len(inlineData)
+
+		s.logger.Info("Publishing result with inline data from resolver",
 			zap.String("execution_id", executionID),
 			zap.Int("size_bytes", resultSize))
 
-		// Set inline result
-		resultMsg.WithInlineResult(resultBytes)
+		resultMsg.WithInlineResult(json.RawMessage(inlineData))
 		resultMsg.ResultSize = resultSize
-
 	} else {
-		// Large results - store in blob storage
-		s.logger.Info("Result too large, storing in Azure Blob Storage",
-			zap.String("execution_id", executionID),
-			zap.Int("size_bytes", resultSize),
-			zap.Int("threshold", maxInlineResultSize))
-
-		if s.blobStorage == nil {
-			s.logger.Error("Blob storage not initialized for large result",
-				zap.Int("size_bytes", resultSize))
-			if msg != nil {
-				_ = msg.Nak()
-			}
-			return fmt.Errorf("blob storage not initialized but result size %d exceeds limit", resultSize)
+		s.logger.Error("Payload has neither blob reference nor inline data")
+		if msg != nil {
+			_ = msg.Nak()
 		}
-
-		// Build blob path
-		blobPath := fmt.Sprintf("results/%s/%s/%s.json",
-			workflowID,
-			runID,
-			executionID)
-
-		// Upload to Azure Blob Storage
-		blobURL, err := s.blobStorage.UploadResult(ctx, blobPath, resultBytes, map[string]string{
-			"workflow_id":  workflowID,
-			"run_id":       runID,
-			"execution_id": executionID,
-			"node_id":      nodeID,
-			"status":       status,
-		})
-
-		if err != nil {
-			s.logger.Error("Failed to upload result to blob storage",
-				zap.String("execution_id", executionID),
-				zap.String("workflow_id", workflowID),
-				zap.String("run_id", runID),
-				zap.Error(err))
-
-			// Report the blob upload failure as an error
-			blobErr := fmt.Errorf("blob upload failed: %w", err)
-			if reportErr := s.ReportError(ctx, executionID, workflowID, runID, correlationID, blobErr, msg); reportErr != nil {
-				s.logger.Error("Failed to report blob upload error",
-					zap.String("execution_id", executionID),
-					zap.String("workflow_id", workflowID),
-					zap.Error(reportErr))
-			}
-
-			if msg != nil {
-				_ = msg.Nak()
-			}
-			return blobErr
-		}
-
-		s.logger.Info("Result uploaded to blob storage",
-			zap.String("execution_id", executionID),
-			zap.String("blob_url", blobURL),
-			zap.Int("size_bytes", resultSize))
-
-		// Set blob reference on result message
-		resultMsg.WithBlobReference(&BlobReference{
-			URL:       blobURL,
-			SizeBytes: resultSize,
-		})
-		resultMsg.ResultSize = resultSize
+		return fmt.Errorf("invalid payload: no data or blob reference")
 	}
 
 	// Publish result to JetStream
@@ -819,7 +715,7 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 		zap.String("run_id", runID),
 		zap.String("execution_id", executionID),
 		zap.Duration("publish_duration", publishDuration),
-		zap.Int("payload_size", resultSize),
+		zap.Int("payload_size", resultMsg.ResultSize),
 		zap.Bool("used_blob_reference", resultMsg.HasBlobReference()))
 
 	// Acknowledge the source message
@@ -902,8 +798,15 @@ func (s *MessageService) ReportError(ctx context.Context, executionID, workflowI
 		zap.Bool("is_transient", isTransient),
 		zap.String("error_code", errorCode))
 
-	// Extract node ID from error context if available (may not always be present)
-	nodeID := executionID // Default to executionID if nodeID not available
+	// Extract node ID from execution ID
+	// Format: {workflowID}-{nodeID}-{timestamp}
+	// We need to extract the nodeID part
+	nodeID := ExtractNodeIDFromExecutionID(executionID, workflowID)
+
+	s.logger.Debug("Extracted nodeID from executionID",
+		zap.String("execution_id", executionID),
+		zap.String("workflow_id", workflowID),
+		zap.String("node_id", nodeID))
 
 	// Build error result message
 	resultMsg := NewResultMessage(executionID, workflowID, runID, nodeID, "failed")
@@ -946,4 +849,46 @@ func (s *MessageService) ReportError(ctx context.Context, executionID, workflowI
 	}
 
 	return nil
+}
+
+// ExtractNodeIDFromExecutionID extracts the base nodeID from a compound executionID.
+// ExecutionID format: {workflowID}-{nodeID}-{timestamp}
+// Example: "4b45d6f2-ee47-490e-b5c4-86754d95aaa9-8ff422ee-5ed1-421c-8967-1dc1c996b895-1767712791219504964"
+// Returns: "8ff422ee-5ed1-421c-8967-1dc1c996b895"
+// Exported for testing purposes.
+func ExtractNodeIDFromExecutionID(executionID, workflowID string) string {
+	// Remove workflowID prefix (if present)
+	if len(executionID) > len(workflowID)+1 && executionID[:len(workflowID)+1] == workflowID+"-" {
+		remaining := executionID[len(workflowID)+1:]
+
+		// Find the last dash followed by all digits (timestamp)
+		// Work backwards to find where timestamp starts
+		lastDash := -1
+		for i := len(remaining) - 1; i >= 0; i-- {
+			if remaining[i] == '-' {
+				// Check if everything after this dash is digits
+				isAllDigits := true
+				for j := i + 1; j < len(remaining); j++ {
+					if remaining[j] < '0' || remaining[j] > '9' {
+						isAllDigits = false
+						break
+					}
+				}
+				if isAllDigits && i+1 < len(remaining) {
+					lastDash = i
+					break
+				}
+			}
+		}
+
+		if lastDash > 0 {
+			return remaining[:lastDash]
+		}
+
+		// If no timestamp found, return remaining part
+		return remaining
+	}
+
+	// If format doesn't match, return executionID as-is (fallback)
+	return executionID
 }
