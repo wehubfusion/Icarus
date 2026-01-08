@@ -321,11 +321,27 @@ func wrapScript(script string) string {
 	// Trim whitespace
 	script = strings.TrimSpace(script)
 
-	// Check if script has explicit return statement or is multi-line
+	// Check if script has explicit return statement
 	hasReturn := strings.Contains(script, "return")
-	isMultiLine := strings.Contains(script, "\n") || strings.Contains(script, ";")
+	if hasReturn {
+		// Script has explicit return - wrap as-is
+		return fmt.Sprintf("(function() {\n%s\n})()", script)
+	}
 
-	if hasReturn || isMultiLine {
+	// Check if script starts with object literal expression syntax
+	// e.g., ({ key: value }) or ({...})
+	if strings.HasPrefix(script, "({") && strings.HasSuffix(script, "})") {
+		// Object literal expression - auto-return regardless of newlines
+		return fmt.Sprintf("(function() { return %s; })()", script)
+	}
+
+	// Check if it's a single expression (array literal, primitive, etc.)
+	// Single expressions typically don't have semicolons or have only trailing semicolons
+	trimmedScript := strings.TrimSuffix(script, ";")
+	hasSemicolon := strings.Contains(trimmedScript, ";")
+	hasNewline := strings.Contains(script, "\n")
+
+	if hasSemicolon || hasNewline {
 		// Multi-statement script - wrap as-is
 		return fmt.Sprintf("(function() {\n%s\n})()", script)
 	}
