@@ -3,6 +3,7 @@ package simplecondition
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/wehubfusion/Icarus/pkg/embedded/runtime"
 )
@@ -34,12 +35,12 @@ func (n *SimpleConditionNode) Process(input runtime.ProcessInput) runtime.Proces
 	}
 
 	results := make(map[string]bool)
-	for _, condition := range cfg.Conditions {
-		met, err := n.evaluateCondition(input, condition)
+	for _, manualInput := range cfg.ManualInputs {
+		met, err := n.evaluateCondition(input, manualInput)
 		if err != nil {
 			return runtime.ErrorOutput(err)
 		}
-		results[condition.Name] = met
+		results[manualInput.Name] = met
 	}
 
 	overallResult := n.calculateOverallResult(results, cfg.LogicOperator)
@@ -56,21 +57,42 @@ func (n *SimpleConditionNode) Process(input runtime.ProcessInput) runtime.Proces
 	return runtime.SuccessOutput(output)
 }
 
-func (n *SimpleConditionNode) evaluateCondition(input runtime.ProcessInput, condition Condition) (bool, error) {
-	actualValue, exists := getValueFromPath(input.Data, condition.FieldPath)
+func (n *SimpleConditionNode) evaluateCondition(input runtime.ProcessInput, manualInput ManualInput) (bool, error) {
+	// Use name as field_path to extract value from input data
+	// Strip leading slash if present (field mappings may include it)
+	fieldPath := strings.TrimPrefix(manualInput.Name, "/")
+	actualValue, exists := getValueFromPath(input.Data, fieldPath)
 
 	if !exists {
-		if condition.Operator == OpIsEmpty {
-			return true, nil
+		// Special handling: if field doesn't exist and we're checking for empty string,
+		// treat missing field as empty string (backward compatible with is_empty)
+		if manualInput.Operator == OpEquals && manualInput.Value == "" {
+			return true, nil // Missing field equals empty string
 		}
-		if condition.Operator == OpIsNotEmpty {
-			return false, nil
+
+		// For all other cases, missing field is an error
+		// Debug: Log available fields
+		availableFields := make([]string, 0, len(input.Data))
+		for key := range input.Data {
+			availableFields = append(availableFields, key)
 		}
+
 		return false, NewEvaluationError(
 			n.NodeId(),
 			input.ItemIndex,
-			condition.Name,
-			fmt.Sprintf("field '%s' not found in input", condition.FieldPath),
+			manualInput.Name,
+			fmt.Sprintf("field '%s' not found in input. Available fields: %v. Input data: %+v",
+				fieldPath, availableFields, input.Data),
+		)
+	}
+
+	// Convert the expected value from string to the appropriate type
+	expectedValue, err := manualInput.ConvertValue()
+	if err != nil {
+		return false, NewConfigError(
+			n.NodeId(),
+			"value",
+			fmt.Sprintf("failed to convert value '%s' for condition '%s': %v", manualInput.Value, manualInput.Name, err),
 		)
 	}
 
@@ -78,9 +100,9 @@ func (n *SimpleConditionNode) evaluateCondition(input runtime.ProcessInput, cond
 		n.NodeId(),
 		input.ItemIndex,
 		actualValue,
-		condition.ExpectedValue,
-		condition.Operator,
-		condition.CaseInsensitive,
+		expectedValue,
+		manualInput.Operator,
+		false, // case_insensitive removed from schema
 	)
 	if err != nil {
 		return false, err

@@ -33,15 +33,6 @@ func compareValues(nodeID string, itemIndex int, actualValue, expectedValue inte
 		return compareEndsWith(actualValue, expectedValue, caseInsensitive)
 	case OpRegex:
 		return compareRegex(nodeID, itemIndex, actualValue, expectedValue)
-	case OpIn:
-		return compareIn(actualValue, expectedValue, caseInsensitive)
-	case OpNotIn:
-		result, err := compareIn(actualValue, expectedValue, caseInsensitive)
-		return !result, err
-	case OpIsEmpty:
-		return isEmptyValue(actualValue), nil
-	case OpIsNotEmpty:
-		return !isEmptyValue(actualValue), nil
 	default:
 		return false, NewComparisonError(nodeID, itemIndex, string(operator), "unsupported operator")
 	}
@@ -137,17 +128,4 @@ func compareRegex(nodeID string, itemIndex int, actualValue, expectedValue inter
 		return false, NewComparisonError(nodeID, itemIndex, string(OpRegex), fmt.Sprintf("invalid regex pattern '%s': %v", pattern, err))
 	}
 	return re.MatchString(actual), nil
-}
-
-func compareIn(actualValue, expectedValue interface{}, caseInsensitive bool) (bool, error) {
-	expectedSlice, err := toSlice(expectedValue)
-	if err != nil {
-		return false, fmt.Errorf("expected value must be an array for 'in' operator: %w", err)
-	}
-	for _, item := range expectedSlice {
-		if valuesEqual(actualValue, item, caseInsensitive) {
-			return true, nil
-		}
-	}
-	return false, nil
 }

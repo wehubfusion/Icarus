@@ -30,31 +30,6 @@ func getValueFromPath(data map[string]interface{}, path string) (interface{}, bo
 	return current, true
 }
 
-// isEmptyValue checks if a value is considered empty.
-func isEmptyValue(value interface{}) bool {
-	if value == nil {
-		return true
-	}
-	switch v := value.(type) {
-	case string:
-		return v == ""
-	case []interface{}:
-		return len(v) == 0
-	case map[string]interface{}:
-		return len(v) == 0
-	case bool:
-		return !v
-	case float64:
-		return v == 0
-	case int:
-		return v == 0
-	case int64:
-		return v == 0
-	default:
-		return false
-	}
-}
-
 // toFloat64 converts a value to float64.
 func toFloat64(value interface{}) (float64, error) {
 	switch v := value.(type) {
