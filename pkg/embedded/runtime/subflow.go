@@ -1066,6 +1066,29 @@ func (sp *SubflowProcessor) buildSingleNodeInput(
 			continue
 		}
 
+		// Check for wrapped array with empty sourceEndpoint (pass-through case)
+		if m.SourceEndpoint == "" {
+			// Check if source node has isWrappedArray metadata
+			if wrapped, ok := sourceOut["isWrappedArray"]; ok {
+				if isWrapped, ok := wrapped.(bool); ok && isWrapped {
+					// Auto-unwrap: get the items array
+					if items, ok := sourceOut["items"]; ok {
+						// Pass the raw array directly to destination endpoints
+						for _, dest := range m.DestinationEndpoints {
+							// Handle empty destination - means pass as "input" or root
+							if dest == "" {
+								// For empty destination, use "input" as the key
+								input["input"] = items
+							} else {
+								SetNestedValue(input, dest, items)
+							}
+						}
+						continue
+					}
+				}
+			}
+		}
+
 		val := sp.extractValue(sourceOut, m.SourceEndpoint)
 		if val == nil {
 			continue

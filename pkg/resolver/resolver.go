@@ -11,9 +11,9 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/storage"
 )
 
-// DefaultMaxInlineBytes defines the default threshold (900KB) for inline payloads.
+// DefaultMaxInlineBytes defines the default threshold (500KB) for inline payloads.
 // This is set below NATS 1MB limit to leave room for message metadata and headers.
-const DefaultMaxInlineBytes = 900 * 1024 // 900KB
+const DefaultMaxInlineBytes = 500 * 1024 // 500KB
 
 // ResultMeta contains metadata required to build deterministic blob paths.
 type ResultMeta struct {
@@ -170,15 +170,14 @@ func (s *Service) ResolveMappedInputWithConsumerGraph(
 	// Determine which blob files are needed
 	requiredFiles := consumerGraph.DetermineRequiredFiles(params.FieldMappings)
 
-	// If no blob files needed, use standard resolution
-	if len(requiredFiles) == 0 {
-		return s.ResolveMappedInput(ctx, inline, blobRef, params)
-	}
-
-	// Download and parse all required blob files
-	sourceResults, err := s.downloadAndParseBlobFiles(ctx, requiredFiles, params.FieldMappings)
-	if err != nil {
-		return nil, fmt.Errorf("resolver: failed to download and parse blob files: %w", err)
+	// Download and parse required blob files (if any)
+	sourceResults := make(map[string]*SourceResult)
+	if len(requiredFiles) > 0 {
+		var err error
+		sourceResults, err = s.downloadAndParseBlobFiles(ctx, requiredFiles, params.FieldMappings)
+		if err != nil {
+			return nil, fmt.Errorf("resolver: failed to download and parse blob files: %w", err)
+		}
 	}
 
 	// Merge with any existing source results
@@ -208,14 +207,39 @@ func (s *Service) ResolveMappedInputWithConsumerGraph(
 			// Check if this node has inline data in ResultLocations
 			if location, exists := consumerGraph.ResultLocations[nodeID]; exists && location != nil {
 				if location.HasInlineData && len(location.InlineData) > 0 {
-					// Parse inline data and create SourceResult
+					// Parse inline data
 					var inlineData map[string]interface{}
 					if err := json.Unmarshal(location.InlineData, &inlineData); err == nil {
-						// Create SourceResult from inline data
+						var nodeFields map[string]interface{}
+
+						// Check if this is StandardUnitOutput format (has "single" and "array" fields)
+						singleMap, hasSingle := inlineData["single"].(map[string]interface{})
+						arraySlice, hasArray := inlineData["array"].([]interface{})
+						isStandardUnitOutput := hasSingle && hasArray
+
+						if isStandardUnitOutput {
+							// Extract and restructure data from StandardUnitOutput format
+							nodeFields = extractNodeDataFromStandardOutput(singleMap, arraySlice, nodeID)
+							// Handle empty extraction case (same logic as sourceResultsFromBlob)
+							if len(nodeFields) == 0 {
+								if len(singleMap) == 0 && len(arraySlice) == 0 {
+									// Empty StandardUnitOutput - use inlineData as fallback
+									nodeFields = inlineData
+								} else {
+									// Single/array has data but no keys for this nodeID
+									nodeFields = make(map[string]interface{})
+								}
+							}
+						} else {
+							// Not StandardUnitOutput - use as-is
+							nodeFields = inlineData
+						}
+
+						// Create SourceResult with extracted/restructured data
 						params.SourceResults[nodeID] = &SourceResult{
 							NodeID:            nodeID,
 							Status:            "success", // Assume success for inline data
-							ProjectedFields:   map[string]map[string]interface{}{nodeID: inlineData},
+							ProjectedFields:   map[string]map[string]interface{}{nodeID: nodeFields},
 							IterationMetadata: nil,
 						}
 					}
