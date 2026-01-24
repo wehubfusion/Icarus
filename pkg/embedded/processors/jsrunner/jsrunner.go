@@ -100,7 +100,17 @@ func (n *JSRunnerNode) executeScript(ctx context.Context, input runtime.ProcessI
 	}
 
 	// Inject input data as 'input' global
-	if err := vm.Set("input", input.Data); err != nil {
+	// Auto-unwrap: if input.Data is a map with single key "input" containing an array,
+	// unwrap it to provide better UX for users writing JS scripts
+	var inputData interface{} = input.Data
+	if len(input.Data) == 1 {
+		if nestedInput, hasInput := input.Data["input"]; hasInput {
+			// Unwrap and pass the nested value directly
+			inputData = nestedInput
+		}
+	}
+	
+	if err := vm.Set("input", inputData); err != nil {
 		return nil, NewExecutionError(n.NodeId(), "failed to set input variable", input.ItemIndex, 0, 0, err)
 	}
 
@@ -196,8 +206,35 @@ func (n *JSRunnerNode) validateInput(input runtime.ProcessInput, cfg *Config) (m
 		)
 	}
 
+	// Detect if input schema expects ARRAY at root and handle wrapped arrays
+	dataToValidate := input.Data
+	shouldRewrap := false
+	originalSchema := inputSchema
+
+	// Parse input schema to check type
+	var inputSchemaObj schema.Schema
+	if schemaBytes, err := json.Marshal(inputSchema); err == nil {
+		if err := json.Unmarshal(schemaBytes, &inputSchemaObj); err == nil {
+			// Check if schema expects array at root and input has wrapped array
+			if inputSchemaObj.Type == schema.TypeArray {
+				if arrayVal, ok := input.Data["input"]; ok {
+					// Wrap the array in a temporary structure for validation
+					dataToValidate = map[string]interface{}{"root": arrayVal}
+					shouldRewrap = true
+					// Temporarily modify schema to expect {"root": array}
+					inputSchema = map[string]interface{}{
+						"type": "OBJECT",
+						"properties": map[string]interface{}{
+							"root": originalSchema,
+						},
+					}
+				}
+			}
+		}
+	}
+
 	// Marshal input data to JSON
-	inputJSON, err := json.Marshal(input.Data)
+	inputJSON, err := json.Marshal(dataToValidate)
 	if err != nil {
 		return nil, NewExecutionError(n.NodeId(), "failed to marshal input data", input.ItemIndex, 0, 0, err)
 	}
@@ -245,6 +282,13 @@ func (n *JSRunnerNode) validateInput(input runtime.ProcessInput, cfg *Config) (m
 	var validatedMap map[string]interface{}
 	if err := json.Unmarshal(schemaResult.Data, &validatedMap); err != nil {
 		return nil, NewExecutionError(n.NodeId(), "failed to unmarshal validated input data", input.ItemIndex, 0, 0, err)
+	}
+
+	// If we wrapped the array for validation, unwrap it back
+	if shouldRewrap {
+		if rootVal, ok := validatedMap["root"]; ok {
+			return map[string]interface{}{"input": rootVal}, nil
+		}
 	}
 
 	return validatedMap, nil

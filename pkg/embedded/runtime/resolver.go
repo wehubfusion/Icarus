@@ -87,6 +87,32 @@ func (r *DefaultOutputResolver) buildSingleInput(
 	result := make(map[string]interface{})
 
 	for _, mapping := range unit.FieldMappings {
+		// Check for wrapped array with empty sourceEndpoint (pass-through case)
+		if mapping.SourceNodeId != "" && mapping.SourceEndpoint == "" {
+			// Check if source node has isWrappedArray metadata
+			isWrappedKey := mapping.SourceNodeId + "-/isWrappedArray"
+			if wrapped, ok := output.Single[isWrappedKey]; ok {
+				if isWrapped, ok := wrapped.(bool); ok && isWrapped {
+					// Auto-unwrap: get the items array
+					itemsKey := mapping.SourceNodeId + "-/items"
+					if items, ok := output.Single[itemsKey]; ok {
+						// Pass the raw array directly to destination endpoints
+						for _, dest := range mapping.DestinationEndpoints {
+							// Handle empty destination - means pass as "input" or root
+							if dest == "" {
+								// For empty destination, use "input" as the key
+								result["input"] = items
+							} else {
+								SetNestedValue(result, dest, items)
+							}
+						}
+						continue
+					}
+				}
+			}
+		}
+
+		// Original skip logic for truly empty mappings
 		if mapping.SourceNodeId == "" || mapping.SourceEndpoint == "" {
 			continue
 		}

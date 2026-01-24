@@ -107,7 +107,40 @@ func (n *JsonOpsNode) executeParse(input runtime.ProcessInput, cfg *Config) runt
 		))
 	}
 
-	// Unmarshal validated data to map for output
+	// Parse the schema to check if it expects an array at root level
+	var parsedSchema schema.Schema
+	if err := json.Unmarshal(cfg.Schema, &parsedSchema); err != nil {
+		return runtime.ErrorOutput(NewProcessingError(
+			n.NodeId(),
+			"parse",
+			"failed to parse schema definition",
+			input.ItemIndex,
+			err,
+		))
+	}
+
+	// Check if schema expects an array at root level
+	if parsedSchema.Type == schema.TypeArray {
+		// For array schemas, unmarshal to []interface{} and wrap it
+		var arrayData []interface{}
+		if err := json.Unmarshal(result.Data, &arrayData); err != nil {
+			return runtime.ErrorOutput(NewProcessingError(
+				n.NodeId(),
+				"parse",
+				"failed to unmarshal array data",
+				input.ItemIndex,
+				err,
+			))
+		}
+
+		// Wrap array in a map with metadata for runtime unwrapping
+		return runtime.SuccessOutput(map[string]interface{}{
+			"items":          arrayData,
+			"isWrappedArray": true,
+		})
+	}
+
+	// Unmarshal validated data to map for output (for OBJECT schemas)
 	var validatedMap map[string]interface{}
 	if err := json.Unmarshal(result.Data, &validatedMap); err != nil {
 		return runtime.ErrorOutput(NewProcessingError(
