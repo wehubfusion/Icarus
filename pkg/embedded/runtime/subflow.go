@@ -179,18 +179,11 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 func (sp *SubflowProcessor) filterNodesByIterationDepth(nodeIndices []int, currentStackDepth int) []int {
 	var filtered []int
 
-	fmt.Printf("\n=== FILTERING NODES BY ITERATION DEPTH ===\n")
-	fmt.Printf("Current stack depth: %d\n", currentStackDepth)
-	fmt.Printf("Total nodes to check: %d\n", len(nodeIndices))
-
 	for _, idx := range nodeIndices {
 		config := sp.nodeConfigs[idx]
 
 		// Get the expected iteration depth for this node by counting array markers in mappings
 		expectedDepth := sp.getNodeIterationDepth(config)
-
-		matches := expectedDepth == currentStackDepth
-		fmt.Printf("  Node %s: expected_depth=%d, matches=%v\n", config.NodeId, expectedDepth, matches)
 
 		// Node should only process when iteration depth matches its expected depth
 		// Depth 0 means no iteration (process at root level)
@@ -198,9 +191,6 @@ func (sp *SubflowProcessor) filterNodesByIterationDepth(nodeIndices []int, curre
 			filtered = append(filtered, idx)
 		}
 	}
-
-	fmt.Printf("Filtered nodes count: %d\n", len(filtered))
-	fmt.Printf("==========================================\n\n")
 
 	return filtered
 }
@@ -210,21 +200,15 @@ func (sp *SubflowProcessor) filterNodesByIterationDepth(nodeIndices []int, curre
 func (sp *SubflowProcessor) getNodeIterationDepth(config EmbeddedNodeConfig) int {
 	maxDepth := 0
 
-	fmt.Printf("\n>>> Calculating iteration depth for node %s\n", config.NodeId)
-
 	// Check all field mappings for array notation
 	for _, m := range config.GetFieldMappings() {
 		// Count array markers (//) in the source endpoint
 		depth := strings.Count(m.SourceEndpoint, "//")
 
-		fmt.Printf("    Endpoint: %s -> depth=%d\n", m.SourceEndpoint, depth)
-
 		if depth > maxDepth {
 			maxDepth = depth
 		}
 	}
-
-	fmt.Printf("    Final max depth: %d\n", maxDepth)
 
 	return maxDepth
 }
@@ -238,9 +222,6 @@ func (sp *SubflowProcessor) processDepthLevelsRecursive(
 	res *BatchResult,
 ) error {
 	// DFS: Process each depth level
-	fmt.Printf("\n*** processDepthLevelsRecursive: startDepth=%d, stackDepth=%d, totalDepthGroups=%d\n",
-		startDepth, iterStack.Depth(), len(sp.depthGroups))
-
 	for depth := startDepth; depth < len(sp.depthGroups); depth++ {
 		select {
 		case <-ctx.Done():
@@ -248,25 +229,16 @@ func (sp *SubflowProcessor) processDepthLevelsRecursive(
 		default:
 		}
 
-		fmt.Printf("\n    >> Checking depth %d (stack depth %d)\n", depth, iterStack.Depth())
-
 		nodeIndices := sp.depthGroups[depth]
 		if len(nodeIndices) == 0 {
-			fmt.Printf("       No nodes at depth %d, skipping\n", depth)
 			continue
 		}
-
-		fmt.Printf("       Found %d nodes at depth %d\n", len(nodeIndices), depth)
 
 		// Check if any node at this depth starts new iteration
 		newIterCtx := sp.detectNewIteration(nodeIndices, store, iterStack, sp.config)
 
 		if newIterCtx != nil {
 			// DFS: Found new iteration - expand and recurse for each item
-			fmt.Printf("       *** DETECTED NEW ITERATION at depth %d (stack depth %d)\n", depth, iterStack.Depth())
-			fmt.Printf("           Source: %s, Items: %d, ArrayPath: %s\n",
-				newIterCtx.SourceNodeId, newIterCtx.TotalItems, newIterCtx.ArrayPath)
-
 			sp.logger.Debug("detected new iteration, expanding DFS",
 				Field{Key: "depth", Value: depth},
 				Field{Key: "nesting_level", Value: iterStack.Depth()},
@@ -279,8 +251,6 @@ func (sp *SubflowProcessor) processDepthLevelsRecursive(
 			if err != nil {
 				return err
 			}
-
-			fmt.Printf("       *** ITERATION COMPLETE at depth %d, will also process nodes at this depth\n", depth)
 
 			// DON'T continue - fall through to process nodes at this depth too
 			// This ensures nodes get processed even after iterations are expanded
@@ -315,9 +285,6 @@ func (sp *SubflowProcessor) processDepthLevelsRecursive(
 
 		// Filter nodes by iteration depth - only process nodes whose iteration depth matches current stack depth
 		filteredNodeIndices := sp.filterNodesByIterationDepth(nodeIndices, currentStackDepth)
-
-		fmt.Printf("\n>>> Filtered %d/%d nodes at topological depth %d for stack depth %d\n",
-			len(filteredNodeIndices), len(nodeIndices), depth, currentStackDepth)
 
 		if len(filteredNodeIndices) == 0 {
 			continue // No nodes match this iteration depth
