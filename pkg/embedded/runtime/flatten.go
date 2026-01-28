@@ -284,3 +284,34 @@ func FlattenMapWithIndex(data map[string]interface{}, nodeId, basePath string, i
 
 	return result
 }
+
+// ArrayPathSegment represents a segment in a nested array path
+type ArrayPathSegment struct {
+	Path    string // Field path (e.g., "data", "assignments")
+	IsArray bool   // True if this segment has // notation
+}
+
+// ParseNestedArrayPath parses a path like "/data//assignments//topics//name"
+func ParseNestedArrayPath(path string) []ArrayPathSegment {
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return nil
+	}
+
+	var segments []ArrayPathSegment
+	parts := strings.Split(path, "//")
+
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+
+		seg := ArrayPathSegment{
+			Path:    part,
+			IsArray: i < len(parts)-1, // All but last are arrays
+		}
+		segments = append(segments, seg)
+	}
+
+	return segments
+}

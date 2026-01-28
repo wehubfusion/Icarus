@@ -4,6 +4,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 )
@@ -270,6 +271,96 @@ func (o *StandardUnitOutput) GetAllValues(key string) []interface{} {
 	return values
 }
 
+// NestedIterationContext represents a single level of array iteration
+type NestedIterationContext struct {
+	Depth             int                    // Nesting depth (0 = first level)
+	SourceNodeId      string                 // Node that provided the array
+	InitiatedByNodeId string                 // Node that started iterating
+	ArrayPath         string                 // Path to the array (e.g., "data", "assignments")
+	CurrentIndex      int                    // Current item index being processed
+	TotalItems        int                    // Total number of items
+	Items             []interface{}          // The array items
+	ItemData          map[string]interface{} // Current item as map
+}
+
+// IterationStack manages nested iteration contexts
+type IterationStack struct {
+	contexts []*NestedIterationContext
+}
+
+// NewIterationStack creates an empty iteration stack
+func NewIterationStack() *IterationStack {
+	return &IterationStack{
+		contexts: []*NestedIterationContext{},
+	}
+}
+
+// Push adds a new iteration context to the stack
+func (s *IterationStack) Push(ctx *NestedIterationContext) {
+	ctx.Depth = len(s.contexts)
+	s.contexts = append(s.contexts, ctx)
+}
+
+// Pop removes the top context from the stack
+func (s *IterationStack) Pop() {
+	if len(s.contexts) > 0 {
+		s.contexts = s.contexts[:len(s.contexts)-1]
+	}
+}
+
+// Current returns the current (top) iteration context
+func (s *IterationStack) Current() *NestedIterationContext {
+	if len(s.contexts) == 0 {
+		return nil
+	}
+	return s.contexts[len(s.contexts)-1]
+}
+
+// IsActive returns true if there are active iterations
+func (s *IterationStack) IsActive() bool {
+	return len(s.contexts) > 0
+}
+
+// Depth returns the current nesting depth
+func (s *IterationStack) Depth() int {
+	return len(s.contexts)
+}
+
+// GetCurrentIndices returns array of current indices at each depth
+func (s *IterationStack) GetCurrentIndices() []int {
+	indices := make([]int, len(s.contexts))
+	for i, ctx := range s.contexts {
+		indices[i] = ctx.CurrentIndex
+	}
+	return indices
+}
+
+// IsIteratingFrom checks if already iterating from this source and path
+func (s *IterationStack) IsIteratingFrom(sourceNodeId, arrayPath string) bool {
+	for _, ctx := range s.contexts {
+		if ctx.SourceNodeId == sourceNodeId && ctx.ArrayPath == arrayPath {
+			return true
+		}
+	}
+	return false
+}
+
+// GetContextForDepth returns the context at a specific depth
+func (s *IterationStack) GetContextForDepth(depth int) *NestedIterationContext {
+	if depth < 0 || depth >= len(s.contexts) {
+		return nil
+	}
+	return s.contexts[depth]
+}
+
+// NestedIterationConfig holds configuration for subflow processing
+type NestedIterationConfig struct {
+	MaxIterationDepth     int         // Maximum nesting depth (default: 10)
+	MaxActiveCombinations int         // Max combinations to prevent explosion (default: 100000)
+	StrictArrayNotation   bool        // Strict validation of // paths
+	ConcurrencyPerLevel   map[int]int // Workers per depth level
+}
+
 // ProcessInput contains all data needed for an embedded node to process.
 type ProcessInput struct {
 	// Ctx is the context for cancellation and timeouts
@@ -365,6 +456,9 @@ type NodeOutputStore struct {
 	// CurrentIterationItems stores the current item being processed for each iteration source
 	// Key: sourceNodeId, Value: {item, index}
 	CurrentIterationItems map[string]currentIterationItem
+	// contextOutputs stores outputs for specific nested iteration contexts
+	// Key: nodeId:index0:index1:..., Value: output
+	contextOutputs map[string]map[string]interface{}
 }
 
 // currentIterationItem holds the current item and its index for iteration
@@ -479,6 +573,57 @@ func (s *NodeOutputStore) GetCurrentIterationItem(sourceNodeId string) (map[stri
 		return ci.Item, ci.Index
 	}
 	return nil, -1
+}
+
+// GetOutputAtContext retrieves output considering the iteration stack context
+func (s *NodeOutputStore) GetOutputAtContext(
+	nodeId string,
+	iterStack *IterationStack,
+) map[string]interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// First check if there's a context-specific output
+	if iterStack != nil && iterStack.IsActive() {
+		key := s.buildContextKey(nodeId, iterStack)
+		if output, ok := s.contextOutputs[key]; ok {
+			return output
+		}
+	}
+
+	// Fall back to single output
+	return s.SingleOutputs[nodeId]
+}
+
+// SetOutputAtContext stores output for a specific nested iteration context
+func (s *NodeOutputStore) SetOutputAtContext(
+	nodeId string,
+	data map[string]interface{},
+	iterStack *IterationStack,
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if iterStack == nil || !iterStack.IsActive() {
+		s.SingleOutputs[nodeId] = data
+		return
+	}
+
+	key := s.buildContextKey(nodeId, iterStack)
+	if s.contextOutputs == nil {
+		s.contextOutputs = make(map[string]map[string]interface{})
+	}
+	s.contextOutputs[key] = data
+}
+
+// buildContextKey generates a unique key for this iteration context
+func (s *NodeOutputStore) buildContextKey(nodeId string, iterStack *IterationStack) string {
+	indices := iterStack.GetCurrentIndices()
+	key := nodeId
+	for _, idx := range indices {
+		key += fmt.Sprintf(":%d", idx)
+	}
+	return key
 }
 
 // IterationContext holds information about array iteration at the parent level.
