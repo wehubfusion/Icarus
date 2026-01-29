@@ -149,126 +149,242 @@ type ExecutionUnit struct {
 	IsTrigger bool `json:"isTrigger,omitempty"`
 }
 
-// StandardUnitOutput represents the flattened output of a unit.
-// Keys are formatted as "nodeId-/path" for objects or "nodeId-/arrayPath//field" for array items.
-type StandardUnitOutput struct {
-	// Single contains non-iterated node outputs (always populated)
-	// For non-iteration: contains all outputs
-	// For iteration: contains pre-iteration (shared) outputs only
-	Single map[string]interface{} `json:"single"`
-
-	// Array contains per-iteration outputs (empty slice if no iteration)
-	// Each item contains outputs from nodes that ran in iteration
-	Array []map[string]interface{} `json:"array"`
-}
+// StandardUnitOutput represents the flattened output of a unit as a flat map.
+// Keys are formatted as:
+//   - Non-iterated: "nodeId-/path" (e.g., "abc-/name")
+//   - Single-level iteration: "nodeId-/path[0]" (e.g., "abc-/name[0]", "abc-/name[1]")
+//   - Nested iteration: "nodeId-/path[0][1][2]" (e.g., "abc-/chapter[0][0][0]")
+type StandardUnitOutput map[string]interface{}
 
 // NewSingleOutput creates output for non-iterated processing
-func NewSingleOutput(data map[string]interface{}) *StandardUnitOutput {
+func NewSingleOutput(data map[string]interface{}) StandardUnitOutput {
 	if data == nil {
 		data = make(map[string]interface{})
 	}
-	return &StandardUnitOutput{
-		Single: data,
-		Array:  []map[string]interface{}{},
-	}
+	return StandardUnitOutput(data)
 }
 
-// NewIteratedOutput creates output for iterated processing
-func NewIteratedOutput(data map[string]interface{}, items []map[string]interface{}) *StandardUnitOutput {
-	if data == nil {
-		data = make(map[string]interface{})
+// NewIteratedOutput creates output for iterated processing by merging items with index suffixes
+func NewIteratedOutput(shared map[string]interface{}, items []map[string]interface{}) StandardUnitOutput {
+	result := make(StandardUnitOutput)
+
+	// Add shared (non-iterated) data
+	if shared != nil {
+		for k, v := range shared {
+			result[k] = v
+		}
 	}
-	if items == nil {
-		items = []map[string]interface{}{}
+
+	// Add indexed items
+	for i, item := range items {
+		for k, v := range item {
+			indexedKey := fmt.Sprintf("%s[%d]", k, i)
+			result[indexedKey] = v
+		}
 	}
-	return &StandardUnitOutput{
-		Single: data,
-		Array:  items,
-	}
+
+	return result
 }
 
-// HasIteration returns true if iteration occurred
-func (o *StandardUnitOutput) HasIteration() bool {
-	return len(o.Array) > 0
+// NewEmptyOutput creates an empty output
+func NewEmptyOutput() StandardUnitOutput {
+	return make(StandardUnitOutput)
 }
 
-// Len returns the number of items (1 if no iteration)
-func (o *StandardUnitOutput) Len() int {
-	if o.HasIteration() {
-		return len(o.Array)
+// HasIteration returns true if iteration occurred (keys contain '[' character)
+func (o StandardUnitOutput) HasIteration() bool {
+	for k := range o {
+		if strings.Contains(k, "[") {
+			return true
+		}
+	}
+	return false
+}
+
+// Len returns the number of items (max index + 1, or 1 if no iteration)
+func (o StandardUnitOutput) Len() int {
+	maxIndex := -1
+	for k := range o {
+		if idx := strings.Index(k, "["); idx > 0 {
+			// Parse first index from key
+			endIdx := strings.Index(k[idx:], "]")
+			if endIdx > 1 {
+				var index int
+				if _, err := fmt.Sscanf(k[idx+1:idx+endIdx], "%d", &index); err == nil {
+					if index > maxIndex {
+						maxIndex = index
+					}
+				}
+			}
+		}
+	}
+	if maxIndex >= 0 {
+		return maxIndex + 1
 	}
 	return 1
 }
 
-// GetValue retrieves a value by key, checking both Single and Array[index]
-func (o *StandardUnitOutput) GetValue(key string, index int) (interface{}, bool) {
-	if o.HasIteration() {
-		// Check item first
-		if index >= 0 && index < len(o.Array) {
-			if val, ok := o.Array[index][key]; ok {
-				return val, true
-			}
-		}
+// GetValue retrieves a value by key, checking indexed key first then falling back to non-indexed
+func (o StandardUnitOutput) GetValue(key string, index int) (interface{}, bool) {
+	// Try indexed key first
+	indexedKey := fmt.Sprintf("%s[%d]", key, index)
+	if val, ok := o[indexedKey]; ok {
+		return val, true
 	}
-	// Fallback to Single
-	if val, ok := o.Single[key]; ok {
+	// Fallback to non-indexed key
+	if val, ok := o[key]; ok {
 		return val, true
 	}
 	return nil, false
 }
 
-// GetItem returns merged Single + Array[index]
-func (o *StandardUnitOutput) GetItem(index int) map[string]interface{} {
-	if !o.HasIteration() {
-		return o.Single
+// GetItem returns all values at the specified index (strips index from keys)
+func (o StandardUnitOutput) GetItem(index int) map[string]interface{} {
+	result := make(map[string]interface{})
+	indexSuffix := fmt.Sprintf("[%d]", index)
+
+	// Add indexed values
+	for k, v := range o {
+		if strings.Contains(k, indexSuffix) {
+			// Extract base key by removing index suffix
+			if idx := strings.Index(k, indexSuffix); idx > 0 {
+				baseKey := k[:idx]
+				result[baseKey] = v
+			}
+		}
 	}
 
-	if index < 0 || index >= len(o.Array) {
-		return nil
+	// Add non-indexed values if no indexed values found
+	if len(result) == 0 {
+		for k, v := range o {
+			if !strings.Contains(k, "[") {
+				result[k] = v
+			}
+		}
 	}
 
-	result := make(map[string]interface{}, len(o.Single)+len(o.Array[index]))
-	for k, v := range o.Single {
-		result[k] = v
-	}
-	for k, v := range o.Array[index] {
-		result[k] = v
-	}
 	return result
 }
 
-// GetAllItems returns all items with Single merged in
-func (o *StandardUnitOutput) GetAllItems() []map[string]interface{} {
-	if !o.HasIteration() {
-		if o.Single != nil {
-			return []map[string]interface{}{o.Single}
+// GetAllItems returns all items grouped by index
+func (o StandardUnitOutput) GetAllItems() []map[string]interface{} {
+	length := o.Len()
+	if length == 1 && !o.HasIteration() {
+		// No iteration - return single item with all non-indexed keys
+		result := make(map[string]interface{})
+		for k, v := range o {
+			if !strings.Contains(k, "[") {
+				result[k] = v
+			}
+		}
+		if len(result) > 0 {
+			return []map[string]interface{}{result}
 		}
 		return nil
 	}
 
-	result := make([]map[string]interface{}, len(o.Array))
-	for i := range o.Array {
+	// Has iteration - group by index
+	result := make([]map[string]interface{}, length)
+	for i := 0; i < length; i++ {
 		result[i] = o.GetItem(i)
 	}
 	return result
 }
 
-// GetAllValues collects all values for a key across Array
-func (o *StandardUnitOutput) GetAllValues(key string) []interface{} {
-	if !o.HasIteration() {
-		if val, ok := o.Single[key]; ok {
-			return []interface{}{val}
+// GetAllValues collects all values for a key across all indices
+func (o StandardUnitOutput) GetAllValues(key string) []interface{} {
+	var values []interface{}
+
+	// Check for indexed variants
+	for i := 0; ; i++ {
+		indexedKey := fmt.Sprintf("%s[%d]", key, i)
+		if val, ok := o[indexedKey]; ok {
+			values = append(values, val)
+		} else {
+			break
 		}
-		return nil
 	}
 
-	values := make([]interface{}, 0, len(o.Array))
-	for _, item := range o.Array {
-		if val, ok := item[key]; ok {
-			values = append(values, val)
+	// If no indexed values, check for non-indexed
+	if len(values) == 0 {
+		if val, ok := o[key]; ok {
+			return []interface{}{val}
 		}
 	}
+
 	return values
+}
+
+// GetNodeIds extracts unique node IDs from keys
+func (o StandardUnitOutput) GetNodeIds() []string {
+	seen := make(map[string]bool)
+	var nodeIds []string
+
+	for k := range o {
+		// Extract nodeId from "nodeId-/path" format
+		if idx := strings.Index(k, "-/"); idx > 0 {
+			nodeId := k[:idx]
+			if !seen[nodeId] {
+				seen[nodeId] = true
+				nodeIds = append(nodeIds, nodeId)
+			}
+		}
+	}
+
+	return nodeIds
+}
+
+// GetKeysForNode returns all keys for a specific node ID
+func (o StandardUnitOutput) GetKeysForNode(nodeId string) []string {
+	prefix := nodeId + "-"
+	var keys []string
+
+	for k := range o {
+		if strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+
+	return keys
+}
+
+// ExtractIndex parses a key to extract base key and indices
+// Returns: baseKey, indices, hasIndex
+func ExtractIndex(key string) (string, []int, bool) {
+	if !strings.Contains(key, "[") {
+		return key, nil, false
+	}
+
+	// Find first [
+	idx := strings.Index(key, "[")
+	if idx < 0 {
+		return key, nil, false
+	}
+
+	baseKey := key[:idx]
+	var indices []int
+
+	// Parse all [n] patterns
+	remaining := key[idx:]
+	for {
+		if len(remaining) == 0 || remaining[0] != '[' {
+			break
+		}
+
+		endIdx := strings.Index(remaining, "]")
+		if endIdx < 0 {
+			break
+		}
+
+		var index int
+		if _, err := fmt.Sscanf(remaining[1:endIdx], "%d", &index); err == nil {
+			indices = append(indices, index)
+		}
+
+		remaining = remaining[endIdx+1:]
+	}
+
+	return baseKey, indices, len(indices) > 0
 }
 
 // NestedIterationContext represents a single level of array iteration
@@ -351,6 +467,25 @@ func (s *IterationStack) GetContextForDepth(depth int) *NestedIterationContext {
 		return nil
 	}
 	return s.contexts[depth]
+}
+
+// BuildIterationPathPrefix returns a path with indices at each level for flat output keys.
+// Example: with stack (data/0, assignments/0, details/0, topics/0) returns "/data[0]/assignments[0]/details[0]/topics[0]".
+// Used so flat keys become "nodeId-/data[0]/assignments[0]/.../field[0]" instead of "nodeId-/field[0][0][0][0]".
+func (s *IterationStack) BuildIterationPathPrefix() string {
+	if len(s.contexts) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, ctx := range s.contexts {
+		if ctx.ArrayPath == "" {
+			continue
+		}
+		b.WriteString("/")
+		b.WriteString(ctx.ArrayPath)
+		b.WriteString(fmt.Sprintf("[%d]", ctx.CurrentIndex))
+	}
+	return b.String()
 }
 
 // NestedIterationConfig holds configuration for subflow processing

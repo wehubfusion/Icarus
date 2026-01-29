@@ -79,10 +79,10 @@ var _ Logger = (*NoOpLogger)(nil)
 // Used to build input for subsequent units.
 type OutputResolver interface {
 	// ResolveValue finds a value in the output based on source mapping.
-	ResolveValue(output *StandardUnitOutput, sourceNodeId, sourceEndpoint string) (interface{}, error)
+	ResolveValue(output StandardUnitOutput, sourceNodeId, sourceEndpoint string) (interface{}, error)
 
 	// BuildInputForUnit builds the complete input for a unit based on its field mappings.
-	BuildInputForUnit(previousOutput *StandardUnitOutput, unit ExecutionUnit) (map[string]interface{}, error)
+	BuildInputForUnit(previousOutput StandardUnitOutput, unit ExecutionUnit) (map[string]interface{}, error)
 }
 
 // Metrics holds processing metrics for observability.

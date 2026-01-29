@@ -122,17 +122,17 @@ var (
 	// FlattenMap flattens a nested map with nodeId prefix.
 	FlattenMap = runtime.FlattenMap
 
-	// FlattenWithArrayPath flattens a map from an array item.
-	FlattenWithArrayPath = runtime.FlattenWithArrayPath
+	// FlattenWithIndex flattens a map with index notation for array items.
+	FlattenWithIndex = runtime.FlattenWithIndex
 
 	// GenerateOutputKey creates a standardized key for the flat output.
 	GenerateOutputKey = runtime.GenerateOutputKey
 
-	// GenerateArrayOutputKey creates a key for array item output.
-	GenerateArrayOutputKey = runtime.GenerateArrayOutputKey
+	// BuildIndexedKey creates a key with index notation.
+	BuildIndexedKey = runtime.BuildIndexedKey
 
-	// ParseOutputKey parses a flattened key back to components.
-	ParseOutputKey = runtime.ParseOutputKey
+	// ParseIndexedKey parses a key to extract nodeId, path, and indices.
+	ParseIndexedKey = runtime.ParseIndexedKey
 
 	// GetNestedValue gets a value from a nested map.
 	GetNestedValue = runtime.GetNestedValue

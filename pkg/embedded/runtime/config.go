@@ -26,9 +26,9 @@ type WorkerPoolConfig struct {
 // DefaultWorkerPoolConfig returns sensible defaults for the worker pool.
 func DefaultWorkerPoolConfig() WorkerPoolConfig {
 	return WorkerPoolConfig{
-		NumWorkers: 0,   // Will be determined at runtime
-		BatchSize:  10,  // Good balance for most workloads
-		BufferSize: 100, // Allow queuing without blocking
+		NumWorkers: 0,    // Will be determined at runtime
+		BatchSize:  10,   // Good balance for most workloads
+		BufferSize: 1000, // Large buffer for high-volume processing (10k+ items)
 	}
 }
 

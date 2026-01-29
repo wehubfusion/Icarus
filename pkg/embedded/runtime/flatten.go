@@ -36,46 +36,35 @@ func FlattenMap(data map[string]interface{}, nodeId, basePath string) map[string
 	return result
 }
 
-// FlattenWithArrayPath flattens a map that came from an array item.
-// Uses // notation: {"name": "david"} from array "data" becomes:
-// {"nodeId-/data//name": "david"}
-func FlattenWithArrayPath(item map[string]interface{}, nodeId, arrayPath string) map[string]interface{} {
-	result := make(map[string]interface{})
+// FlattenWithIndex flattens a map and adds an index suffix to all keys.
+// Example: {"name": "david"} with index 0 becomes: {"nodeId-/name[0]": "david"}
+func FlattenWithIndex(data map[string]interface{}, nodeId string, index int) map[string]interface{} {
+	flat := FlattenMap(data, nodeId, "")
+	result := make(map[string]interface{}, len(flat))
 
-	for key, value := range item {
-		flatKey := fmt.Sprintf("%s-/%s//%s", nodeId, arrayPath, key)
-
-		switch v := value.(type) {
-		case map[string]interface{}:
-			// Nested object within array item
-			nested := flattenNestedInArrayItem(v, nodeId, arrayPath, key)
-			for nk, nv := range nested {
-				result[nk] = nv
-			}
-		default:
-			result[flatKey] = value
-		}
+	for k, v := range flat {
+		indexedKey := fmt.Sprintf("%s[%d]", k, index)
+		result[indexedKey] = v
 	}
 
 	return result
 }
 
-// flattenNestedInArrayItem handles nested objects within array items.
-func flattenNestedInArrayItem(data map[string]interface{}, nodeId, arrayPath, parentKey string) map[string]interface{} {
-	result := make(map[string]interface{})
+// FlattenWithNestedIndices flattens a map and adds multiple index suffixes.
+// Example: {"name": "david"} with indices [0, 1] becomes: {"nodeId-/name[0][1]": "david"}
+func FlattenWithNestedIndices(data map[string]interface{}, nodeId string, indices []int) map[string]interface{} {
+	flat := FlattenMap(data, nodeId, "")
+	result := make(map[string]interface{}, len(flat))
 
-	for key, value := range data {
-		flatKey := fmt.Sprintf("%s-/%s//%s/%s", nodeId, arrayPath, parentKey, key)
+	// Build index suffix like [0][1][2]
+	var indexSuffix string
+	for _, idx := range indices {
+		indexSuffix += fmt.Sprintf("[%d]", idx)
+	}
 
-		switch v := value.(type) {
-		case map[string]interface{}:
-			nested := flattenNestedInArrayItem(v, nodeId, arrayPath, parentKey+"/"+key)
-			for nk, nv := range nested {
-				result[nk] = nv
-			}
-		default:
-			result[flatKey] = value
-		}
+	for k, v := range flat {
+		indexedKey := k + indexSuffix
+		result[indexedKey] = v
 	}
 
 	return result
@@ -90,25 +79,59 @@ func GenerateOutputKey(nodeId, path string) string {
 	return nodeId + "-" + path
 }
 
-// GenerateArrayOutputKey creates a key for array item output.
-// Example: GenerateArrayOutputKey("node-123", "data", "name") -> "node-123-/data//name"
-func GenerateArrayOutputKey(nodeId, arrayPath, fieldPath string) string {
-	return fmt.Sprintf("%s-/%s//%s", nodeId, arrayPath, fieldPath)
+// BuildIndexedKey creates a key with index notation.
+// Example: BuildIndexedKey("node-123", "/name", []int{0, 1}) -> "node-123-/name[0][1]"
+func BuildIndexedKey(nodeId, path string, indices []int) string {
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	key := nodeId + "-" + path
+	for _, idx := range indices {
+		key += fmt.Sprintf("[%d]", idx)
+	}
+	return key
 }
 
-// ParseOutputKey parses a flattened key back to nodeId and path.
-// Returns nodeId, path, isArrayItem, error
-func ParseOutputKey(key string) (nodeId string, path string, isArrayItem bool, err error) {
+// ParseIndexedKey parses a key to extract nodeId, path, and indices.
+// Returns: nodeId, path, indices, error
+// Example: "node-123-/name[0][1]" -> "node-123", "/name", [0, 1]
+func ParseIndexedKey(key string) (nodeId, path string, indices []int, err error) {
 	idx := strings.Index(key, "-/")
 	if idx == -1 {
-		return "", "", false, fmt.Errorf("%w: invalid key format: %s", ErrInvalidInput, key)
+		return "", "", nil, fmt.Errorf("%w: invalid key format: %s", ErrInvalidInput, key)
 	}
 
 	nodeId = key[:idx]
-	path = key[idx+1:] // includes leading /
-	isArrayItem = strings.Contains(path, "//")
+	pathAndIndices := key[idx+1:] // includes leading /
 
-	return nodeId, path, isArrayItem, nil
+	// Check for indices
+	if bracketIdx := strings.Index(pathAndIndices, "["); bracketIdx >= 0 {
+		path = pathAndIndices[:bracketIdx]
+
+		// Parse all [n] patterns
+		remaining := pathAndIndices[bracketIdx:]
+		for {
+			if len(remaining) == 0 || remaining[0] != '[' {
+				break
+			}
+
+			endIdx := strings.Index(remaining, "]")
+			if endIdx < 0 {
+				break
+			}
+
+			var index int
+			if _, parseErr := fmt.Sscanf(remaining[1:endIdx], "%d", &index); parseErr == nil {
+				indices = append(indices, index)
+			}
+
+			remaining = remaining[endIdx+1:]
+		}
+	} else {
+		path = pathAndIndices
+	}
+
+	return nodeId, path, indices, nil
 }
 
 // GetNestedValue gets a value from a nested map using a path.

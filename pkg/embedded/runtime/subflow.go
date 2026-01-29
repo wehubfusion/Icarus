@@ -154,13 +154,18 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 	store.SetSingleOutput(sp.parentNodeId, item.Data)
 
 	// Flatten parent data into shared output
+	var parentFlat map[string]interface{}
 	if sp.arrayPath != "" {
-		parentFlat := FlattenWithArrayPath(item.Data, sp.parentNodeId, sp.arrayPath)
-		MergeMaps(res.Output, parentFlat)
+		// Parent-level array iteration: include array path and index in keys
+		// Creates keys like "nodeId-/data[0]/FieldName" for array items
+		basePath := "/" + sp.arrayPath + fmt.Sprintf("[%d]", item.Index)
+		parentFlat = FlattenMap(item.Data, sp.parentNodeId, basePath)
 	} else {
-		parentFlat := FlattenMap(item.Data, sp.parentNodeId, "")
-		MergeMaps(res.Output, parentFlat)
+		// Single parent object (no array iteration): no index or array path
+		// Creates keys like "nodeId-/FieldName"
+		parentFlat = FlattenMap(item.Data, sp.parentNodeId, "")
 	}
+	MergeMaps(res.Output, parentFlat)
 
 	// Process all depth levels recursively with DFS
 	err := sp.processDepthLevelsRecursive(ctx, 0, store, iterStack, &res)
@@ -290,7 +295,11 @@ func (sp *SubflowProcessor) processDepthLevelsRecursive(
 			continue // No nodes match this iteration depth
 		}
 
-		err := sp.processDepthLevelParallel(ctx, depth, filteredNodeIndices, store, shared, iter, itemIndex)
+		var pathPrefix string
+		if iterStack.IsActive() {
+			pathPrefix = iterStack.BuildIterationPathPrefix()
+		}
+		err := sp.processDepthLevelParallel(ctx, depth, filteredNodeIndices, store, shared, iter, itemIndex, pathPrefix)
 		if err != nil {
 			return err
 		}
@@ -600,7 +609,7 @@ type depthNodeResult struct {
 }
 
 // processDepthLevelParallel processes all nodes at a depth level in parallel.
-// For iteration context, pass iter and itemIndex; otherwise pass nil and -1.
+// For iteration context, pass iter and itemIndex; pathPrefix is the iteration path for flat keys (e.g. /data[0]/assignments[0]).
 func (sp *SubflowProcessor) processDepthLevelParallel(
 	ctx context.Context,
 	depth int,
@@ -609,6 +618,7 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 	shared map[string]interface{},
 	iter *IterationState,
 	itemIndex int,
+	pathPrefix string,
 ) error {
 	if len(nodeIndices) == 0 {
 		return nil
@@ -617,7 +627,7 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 	// Single node - process directly without goroutine overhead
 	if len(nodeIndices) == 1 {
 		idx := nodeIndices[0]
-		return sp.processSingleNodeAtDepth(ctx, idx, store, shared, iter, itemIndex)
+		return sp.processSingleNodeAtDepth(ctx, idx, store, shared, iter, itemIndex, pathPrefix)
 	}
 
 	sp.logger.Debug("processing depth level in parallel",
@@ -758,10 +768,8 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 		// Store output for downstream nodes
 		store.SetSingleOutput(config.NodeId, result.output)
 
-		// Flatten and merge to shared
-		// For nested iterations, use FlattenMap without index
-		// The full multi-level indexing will be handled by mergeIndexedOutputToResult
-		flat := FlattenMap(result.output, config.NodeId, "")
+		// Flatten and merge to shared. When in iteration, pathPrefix gives path-style keys (e.g. /data[0]/assignments[0]/...).
+		flat := FlattenMap(result.output, config.NodeId, pathPrefix)
 		MergeMaps(shared, flat)
 	}
 
@@ -776,6 +784,7 @@ func (sp *SubflowProcessor) processSingleNodeAtDepth(
 	shared map[string]interface{},
 	iter *IterationState,
 	itemIndex int,
+	pathPrefix string,
 ) error {
 	node := sp.nodes[nodeIdx]
 	config := sp.nodeConfigs[nodeIdx]
@@ -840,59 +849,30 @@ func (sp *SubflowProcessor) processSingleNodeAtDepth(
 	// Store output for downstream nodes
 	store.SetSingleOutput(config.NodeId, out.Data)
 
-	// Flatten and merge to shared
-	// For nested iterations, use FlattenMap without index
-	// The full multi-level indexing will be handled by mergeIndexedOutputToResult
-	flat := FlattenMap(out.Data, config.NodeId, "")
+	// Flatten and merge to shared. When in iteration, pathPrefix gives path-style keys.
+	flat := FlattenMap(out.Data, config.NodeId, pathPrefix)
 	MergeMaps(shared, flat)
 
 	return nil
 }
 
-// mergeIndexedOutputToResult merges indexed output into result structure
+// mergeIndexedOutputToResult merges indexed output into result structure.
+// When in iteration, keys are built with path-style indices (e.g. nodeId-/data[0]/assignments[0]/.../chapter[0])
+// so we only append the current level's index to the key (key already has path prefix from flatten).
 func (sp *SubflowProcessor) mergeIndexedOutputToResult(
 	indexed map[string]interface{},
 	indices []int,
 	res *BatchResult,
 ) {
-	// Always use indexed keys in res.Output (single section) for consistency
-	// Both single-level and nested iterations use the same format: key[0], key[0][1], etc.
 	for key, val := range indexed {
 		if len(indices) == 0 {
-			// No iteration context - direct merge
 			res.Output[key] = val
 		} else {
-			// Build index suffix: [0] for single-level, [0][1][0][2] for nested
-			indexSuffix := ""
-			for _, idx := range indices {
-				indexSuffix += fmt.Sprintf("[%d]", idx)
-			}
-			indexedKey := key + indexSuffix
+			// Path-style: key is already nodeId-/path[0]/path[1]/.../field; append current index only.
+			indexedKey := key + fmt.Sprintf("[%d]", indices[len(indices)-1])
 			res.Output[indexedKey] = val
 		}
 	}
-}
-
-// createItemStore creates an isolated NodeOutputStore for processing one item.
-// It inherits all pre-iteration outputs and stores the current iteration item.
-func (sp *SubflowProcessor) createItemStore(
-	preIterStore *NodeOutputStore,
-	currentItem map[string]interface{},
-	iter IterationState,
-	itemIndex int,
-) *NodeOutputStore {
-	itemStore := NewNodeOutputStore()
-
-	// Copy all pre-iteration single outputs
-	for nodeId, output := range preIterStore.GetAllSingleOutputs() {
-		itemStore.SetSingleOutput(nodeId, output)
-	}
-
-	// Store the current item as a special entry for the iteration source
-	// This allows nodes to reference the current item via the source node ID
-	itemStore.SetCurrentIterationItem(iter.SourceNodeId, currentItem, itemIndex)
-
-	return itemStore
 }
 
 // buildItemInput builds input for a node processing a specific item.
@@ -988,44 +968,13 @@ func (sp *SubflowProcessor) buildItemInput(
 	return input
 }
 
-// extractNestedValue extracts a value that may have nested // notation
-func (sp *SubflowProcessor) extractNestedValue(data map[string]interface{}, path string, itemStore *NodeOutputStore) interface{} {
-	// If path has //, we need to navigate through nested arrays
-	if !strings.Contains(path, "//") {
-		return GetNestedValue(data, path)
-	}
-
-	// For nested paths in iteration context, navigate through the structure
-	// The path segments after the first // represent the remaining nested structure
-	segments := ParseNestedArrayPath("/" + path)
-	current := interface{}(data)
-
-	for _, seg := range segments {
-		if m, ok := current.(map[string]interface{}); ok && seg.Path != "" {
-			current = GetNestedValue(m, seg.Path)
-			if current == nil {
-				return nil
-			}
-		}
-
-		// If this segment is an array and we have array data, we need the current item
-		// But since we're already in iteration context, the data should already be the item
-		if seg.IsArray && !seg.IsArray {
-			// This shouldn't happen in proper context
-			continue
-		}
-	}
-
-	return current
-}
-
 // extractNestedValueFromSource extracts value from source considering nested context
 // This handles paths like /data//assignments//topics//name when we're in nested iteration
 func (sp *SubflowProcessor) extractNestedValueFromSource(
 	source map[string]interface{},
 	endpoint string,
-	itemStore *NodeOutputStore,
-	itemIndex int,
+	_ *NodeOutputStore,
+	_ int,
 ) interface{} {
 	endpoint = strings.TrimPrefix(endpoint, "/")
 
@@ -1207,39 +1156,6 @@ func (sp *SubflowProcessor) extractValue(source map[string]interface{}, endpoint
 		return GetNestedValue(source, fieldPath)
 	}
 
-	return GetNestedValue(source, endpoint)
-}
-
-// extractValueAtIndex extracts a value from a source at a specific array index.
-// Used when inheriting iteration from a non-iterated source that contains array data.
-// For endpoint "/data//Hire_Date" at index 2, this navigates to data[2].Hire_Date
-func (sp *SubflowProcessor) extractValueAtIndex(source map[string]interface{}, endpoint string, index int) interface{} {
-	endpoint = strings.TrimPrefix(endpoint, "/")
-
-	// Check for array notation
-	if idx := strings.Index(endpoint, "//"); idx >= 0 {
-		arrayPath := endpoint[:idx]
-		fieldPath := endpoint[idx+2:]
-
-		// Get the array at arrayPath
-		arrVal := GetNestedValue(source, arrayPath)
-		if arr, ok := arrVal.([]interface{}); ok && index < len(arr) {
-			// Get the item at index
-			item := arr[index]
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				// Extract field from item
-				if fieldPath != "" {
-					return GetNestedValue(itemMap, fieldPath)
-				}
-				return itemMap
-			}
-			// If item is not a map, return it directly
-			return item
-		}
-		return nil
-	}
-
-	// No array notation - just extract the value directly
 	return GetNestedValue(source, endpoint)
 }
 

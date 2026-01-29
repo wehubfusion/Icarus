@@ -34,7 +34,17 @@ type BuildInputParams struct {
 	TriggerData   []byte
 }
 
+// Global cache for array extractions to avoid re-traversing large arrays
+var extractionCache = struct {
+	cache map[string]interface{}
+}{
+	cache: make(map[string]interface{}),
+}
+
 func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
+	// Clear extraction cache for this build
+	extractionCache.cache = make(map[string]interface{})
+
 	if len(params.FieldMappings) == 0 {
 		if len(params.TriggerData) > 0 {
 			return params.TriggerData, nil
@@ -143,8 +153,139 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 	// Track failures for detailed error messages
 	failedMappings := make([]string, 0)
 
+	// OPTIMIZATION: Group field mappings by source node and collection path for batch extraction
+	type batchKey struct {
+		sourceNodeID     string
+		collectionPath   string
+		sourceCollection string
+	}
+	batchedExtractions := make(map[batchKey][]struct {
+		mapping   message.FieldMapping
+		fieldPath string
+	})
+
 	for _, mapping := range params.FieldMappings {
 		if mapping.IsEventTrigger {
+			continue
+		}
+
+		// Check if this is a collection traversal mapping (has //)
+		if strings.Contains(mapping.SourceEndpoint, "//") {
+			parts := strings.SplitN(mapping.SourceEndpoint, "//", 2)
+			if len(parts) == 2 {
+				sourceCollectionPath := strings.Trim(parts[0], "/")
+				fieldPath := strings.Trim(parts[1], "/")
+
+				// Determine destination collection path
+				for _, destEndpoint := range mapping.DestinationEndpoints {
+					if strings.Contains(destEndpoint, "//") {
+						destParts := strings.SplitN(destEndpoint, "//", 2)
+						if len(destParts) == 2 {
+							destCollectionPath := strings.Trim(destParts[0], "/")
+							if destCollectionPath != "" {
+								key := batchKey{
+									sourceNodeID:     mapping.SourceNodeID,
+									collectionPath:   destCollectionPath,
+									sourceCollection: sourceCollectionPath,
+								}
+								batchedExtractions[key] = append(batchedExtractions[key], struct {
+									mapping   message.FieldMapping
+									fieldPath string
+								}{mapping, fieldPath})
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Process batched extractions first
+	// Use (sourceNodeID, sourceEndpoint) as key - pointer comparison fails because range reuses loop vars
+	type mappingKey struct {
+		sourceNodeID   string
+		sourceEndpoint string
+	}
+	batchProcessedMappings := make(map[mappingKey]bool)
+
+	for key, batch := range batchedExtractions {
+		if len(batch) <= 1 {
+			continue // No benefit from batching
+		}
+
+		// Get source result
+		var sourceResult *SourceResult
+		if result, exists := params.SourceResults[key.sourceNodeID]; exists {
+			sourceResult = result
+		}
+
+		if sourceResult == nil || sourceResult.ProjectedFields == nil {
+			continue
+		}
+
+		nodeFields, hasNode := sourceResult.ProjectedFields[key.sourceNodeID]
+		if !hasNode {
+			continue
+		}
+
+		// Get the source collection array
+		sourceCollPath := key.sourceCollection
+		if sourceCollPath == "" {
+			sourceCollPath = "data"
+		}
+		collection := navigateMap(nodeFields, sourceCollPath)
+		if collection == nil {
+			continue
+		}
+
+		collectionArray, ok := collection.([]interface{})
+		if !ok {
+			continue
+		}
+
+		arrayLen := len(collectionArray)
+
+		// Extract all fields in ONE pass
+		fieldResults := make(map[string][]interface{})
+		for _, b := range batch {
+			fieldResults[b.fieldPath] = make([]interface{}, arrayLen)
+		}
+
+		for i, item := range collectionArray {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				for _, b := range batch {
+					fieldValue := navigateMap(itemMap, b.fieldPath)
+					fieldResults[b.fieldPath][i] = fieldValue
+				}
+			}
+		}
+
+		// Now set the results for each mapping and mark as processed
+		for _, b := range batch {
+			result := fieldResults[b.fieldPath]
+			for _, destEndpoint := range b.mapping.DestinationEndpoints {
+				if strings.Contains(destEndpoint, "//") {
+					setFieldAtPath(inputData, destEndpoint, result)
+				}
+			}
+			batchProcessedMappings[mappingKey{
+				sourceNodeID:   b.mapping.SourceNodeID,
+				sourceEndpoint: b.mapping.SourceEndpoint,
+			}] = true
+		}
+	}
+
+	for _, mapping := range params.FieldMappings {
+		if mapping.IsEventTrigger {
+			continue
+		}
+
+		// Skip if already processed in batch
+		if batchProcessedMappings[mappingKey{
+			sourceNodeID:   mapping.SourceNodeID,
+			sourceEndpoint: mapping.SourceEndpoint,
+		}] {
 			continue
 		}
 
@@ -333,12 +474,11 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 
 		for _, destEndpoint := range mapping.DestinationEndpoints {
 			if destEndpoint == "" {
+				// Empty destination: only merge at root when value is a map
 				if sourceMap, ok := sourceData.(map[string]interface{}); ok {
 					for k, v := range sourceMap {
 						inputData[k] = v
 					}
-				} else {
-					inputData["data"] = sourceData
 				}
 			} else {
 				setFieldAtPath(inputData, destEndpoint, sourceData)
@@ -396,12 +536,11 @@ func setFieldAtPath(data map[string]interface{}, path string, value interface{})
 
 	path = strings.TrimPrefix(path, "/")
 	if path == "" {
+		// Only merge at root when value is a map; no hardcoded key
 		if valueMap, ok := value.(map[string]interface{}); ok {
 			for k, v := range valueMap {
 				data[k] = v
 			}
-		} else {
-			data["data"] = value
 		}
 		return
 	}
@@ -557,6 +696,13 @@ func extractFromPath(fields map[string]interface{}, path string) interface{} {
 }
 
 func extractWithCollectionTraversal(fields map[string]interface{}, path string) interface{} {
+	// Check cache first to avoid re-traversing large arrays
+	// Use path only as key since fields map is the same ProjectedFields map for all extractions in one build
+	cacheKey := path
+	if cached, exists := extractionCache.cache[cacheKey]; exists {
+		return cached
+	}
+
 	parts := strings.SplitN(path, "//", 2)
 	if len(parts) != 2 {
 		return extractFromPath(fields, path)
@@ -581,7 +727,9 @@ func extractWithCollectionTraversal(fields map[string]interface{}, path string) 
 		return nil
 	}
 
-	result := make([]interface{}, len(collectionArray))
+	arrayLen := len(collectionArray)
+
+	result := make([]interface{}, arrayLen)
 	hasValues := false
 	for i, item := range collectionArray {
 		if itemMap, ok := item.(map[string]interface{}); ok {
@@ -594,9 +742,12 @@ func extractWithCollectionTraversal(fields map[string]interface{}, path string) 
 	}
 
 	if !hasValues {
+		extractionCache.cache[cacheKey] = nil
 		return nil
 	}
 
+	// Cache the result to avoid reprocessing for subsequent field mappings
+	extractionCache.cache[cacheKey] = result
 	return result
 }
 

@@ -22,13 +22,13 @@
 //
 // # Output Format
 //
-// The processor produces StandardUnitOutput with flattened keys:
-//   - Single objects: "nodeId-/path" (e.g., "abc-/name")
-//   - Array items: "nodeId-/arrayPath//field" (e.g., "abc-/data//name")
+// The processor produces StandardUnitOutput as a flat map with keys:
+//   - Non-iterated: "nodeId-/path" (e.g., "abc-/name")
+//   - Single-level iteration: "nodeId-/path[0]" (e.g., "abc-/name[0]", "abc-/name[1]")
+//   - Nested iteration: "nodeId-/path[0][1][2]" (e.g., "abc-/chapter[0][0][0]")
 //
-// The StandardUnitOutput has two fields:
-//   - Single: Contains pre-iteration outputs (shared across iterations)
-//   - Array: Contains per-iteration outputs (one entry per array item)
+// All output is in a single flat map. Array indices in keys indicate iteration.
+// This format allows for flexible nested iteration while maintaining a simple structure.
 //
 // # Depth-Based Parallel Processing
 //

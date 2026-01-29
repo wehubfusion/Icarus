@@ -212,21 +212,19 @@ func (s *Service) ResolveMappedInputWithConsumerGraph(
 					if err := json.Unmarshal(location.InlineData, &inlineData); err == nil {
 						var nodeFields map[string]interface{}
 
-						// Check if this is StandardUnitOutput format (has "single" and "array" fields)
-						singleMap, hasSingle := inlineData["single"].(map[string]interface{})
-						arraySlice, hasArray := inlineData["array"].([]interface{})
-						isStandardUnitOutput := hasSingle && hasArray
+						// Check if this is StandardUnitOutput format (flat map with "nodeId-/" prefixed keys)
+						isStandardUnitOutput := isStandardUnitOutputFormat(inlineData)
 
 						if isStandardUnitOutput {
 							// Extract and restructure data from StandardUnitOutput format
-							nodeFields = extractNodeDataFromStandardOutput(singleMap, arraySlice, nodeID)
-							// Handle empty extraction case (same logic as sourceResultsFromBlob)
+							nodeFields = extractNodeDataFromStandardOutputFlat(inlineData, nodeID)
+							// Handle empty extraction case
 							if len(nodeFields) == 0 {
-								if len(singleMap) == 0 && len(arraySlice) == 0 {
+								if len(inlineData) == 0 {
 									// Empty StandardUnitOutput - use inlineData as fallback
 									nodeFields = inlineData
 								} else {
-									// Single/array has data but no keys for this nodeID
+									// Has data but no keys for this nodeID
 									nodeFields = make(map[string]interface{})
 								}
 							}
@@ -370,10 +368,8 @@ func sourceResultsFromBlob(blobData []byte, sourceNodeIDs map[string]bool, conta
 		status = s
 	}
 
-	// Check if blob is in StandardUnitOutput format (has "single" and "array" fields)
-	singleMap, hasSingle := blobContent["single"].(map[string]interface{})
-	arraySlice, hasArray := blobContent["array"].([]interface{})
-	isStandardUnitOutput := hasSingle && hasArray
+	// Check if blob is in StandardUnitOutput format (flat map with "nodeId-/" prefixed keys)
+	isStandardUnitOutput := isStandardUnitOutputFormat(blobContent)
 
 	// Build source results map for each node ID in containsNodes that matches sourceNodeIDs
 	result := make(map[string]*SourceResult)
@@ -387,18 +383,14 @@ func sourceResultsFromBlob(blobData []byte, sourceNodeIDs map[string]bool, conta
 
 		if isStandardUnitOutput {
 			// Extract and restructure data from StandardUnitOutput format
-			nodeFields = extractNodeDataFromStandardOutput(singleMap, arraySlice, nodeID)
-			// If extraction returned empty (no matching keys), check if single map has any keys
-			// If single map is empty or has no matching keys, this blob doesn't contain data for this node
-			// In that case, return empty map so field mapping can handle it appropriately
+			nodeFields = extractNodeDataFromStandardOutputFlat(blobContent, nodeID)
+			// If extraction returned empty (no matching keys)
 			if len(nodeFields) == 0 {
-				// Check if single map has any keys at all (might be empty StandardUnitOutput)
-				if len(singleMap) == 0 && len(arraySlice) == 0 {
+				if len(blobContent) == 0 {
 					// Empty StandardUnitOutput - use blob content as fallback
 					nodeFields = blobContent
 				} else {
-					// Single/array has data but no keys for this nodeID
-					// Return empty map - this blob doesn't contain data for this node
+					// Has data but no keys for this nodeID
 					nodeFields = make(map[string]interface{})
 				}
 			}
@@ -423,157 +415,223 @@ func sourceResultsFromBlob(blobData []byte, sourceNodeIDs map[string]bool, conta
 	return result
 }
 
-// extractNodeDataFromStandardOutput extracts and restructures data from StandardUnitOutput format.
-// Converts flattened keys like "nodeId-/path" to nested structure like {"path": value}.
-// Handles both single map and array slice data.
-func extractNodeDataFromStandardOutput(single map[string]interface{}, array []interface{}, nodeID string) map[string]interface{} {
+// isStandardUnitOutputFormat checks if a map is in StandardUnitOutput format
+// by looking for keys with the pattern "nodeId-/path" or "nodeId-/path[index]"
+func isStandardUnitOutputFormat(data map[string]interface{}) bool {
+	// Check for at least one key with the StandardUnitOutput pattern
+	for key := range data {
+		// Look for keys with "-/" pattern (nodeId-/path format)
+		if strings.Contains(key, "-/") {
+			return true
+		}
+	}
+	return false
+}
+
+// ExtractNodeDataFromFlatOutput is the canonical way to get per-node data from flat StandardUnitOutput.
+// It extracts and restructures data for a given nodeID: keys like "nodeId-/path" or "nodeId-/path[0]"
+// become nested structures and arrays. Consumers (e.g. Zeus) should use this instead of reimplementing
+// flat-format parsing so that key-format or index-notation changes are handled in one place.
+func ExtractNodeDataFromFlatOutput(flatOutput map[string]interface{}, nodeID string) map[string]interface{} {
+	return extractNodeDataFromStandardOutputFlat(flatOutput, nodeID)
+}
+
+// extractNodeDataFromStandardOutputFlat extracts and restructures data from flat StandardUnitOutput format.
+// Converts flattened keys like "nodeId-/path" or "nodeId-/path[0]" to nested structure.
+func extractNodeDataFromStandardOutputFlat(flatOutput map[string]interface{}, nodeID string) map[string]interface{} {
 	result := make(map[string]interface{})
 	prefix := nodeID + "-/"
 
-	// Extract from single map - keys are formatted as "nodeId-/path"
-	for key, value := range single {
-		if strings.HasPrefix(key, prefix) {
-			// Extract path (everything after "nodeId-/")
-			path := key[len(prefix):]
-			if path != "" {
-				// Build nested structure from path
-				setNestedValue(result, path, value)
+	// First pass: collect all keys and determine array sizes to pre-allocate
+	arraySizes := make(map[string]int)
+	keysToProcess := make([]struct {
+		path  string
+		value interface{}
+	}, 0, len(flatOutput)/2)
+
+	for key, value := range flatOutput {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+
+		pathWithIndex := key[len(prefix):]
+		if pathWithIndex == "" {
+			continue
+		}
+
+		keysToProcess = append(keysToProcess, struct {
+			path  string
+			value interface{}
+		}{pathWithIndex, value})
+
+		// Detect array fields and track max index for pre-allocation (optimized)
+		bracketIdx := -1
+		for i := 0; i < len(pathWithIndex); i++ {
+			if pathWithIndex[i] == '[' {
+				bracketIdx = i
+				break
+			}
+		}
+		if bracketIdx > 0 {
+			fieldName := pathWithIndex[:bracketIdx]
+			// Find closing bracket
+			closeBracketIdx := -1
+			for i := bracketIdx + 1; i < len(pathWithIndex); i++ {
+				if pathWithIndex[i] == ']' {
+					closeBracketIdx = i
+					break
+				}
+			}
+			if closeBracketIdx > bracketIdx {
+				// Parse index manually
+				index := 0
+				for i := bracketIdx + 1; i < closeBracketIdx; i++ {
+					if pathWithIndex[i] < '0' || pathWithIndex[i] > '9' {
+						index = -1
+						break
+					}
+					index = index*10 + int(pathWithIndex[i]-'0')
+				}
+				if index >= 0 && index+1 > arraySizes[fieldName] {
+					arraySizes[fieldName] = index + 1
+				}
 			}
 		}
 	}
 
-	// Extract from array slice if present
-	// Array items contain keys formatted as "nodeId-/arrayPath//field" or "nodeId-/field"
-	if len(array) > 0 {
-		// First, collect simple paths (no "//") from array items
-		// For embedded node outputs like "9f250ca5.../result", we collect all simple fields per item
-		simpleArrayItems := make([]map[string]interface{}, 0)
-		for _, item := range array {
-			itemMap, ok := item.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			// For each array item, collect all simple fields (no "//") with this node prefix
-			simpleFields := make(map[string]interface{})
-			for key, value := range itemMap {
-				if strings.HasPrefix(key, prefix) {
-					path := key[len(prefix):]
-					if path != "" && !strings.Contains(path, "//") {
-						// Simple field - add directly to this item's object
-						simpleFields[path] = value
-					}
-				}
-			}
-			// If this item has any simple fields for this node, add to array
-			if len(simpleFields) > 0 {
-				simpleArrayItems = append(simpleArrayItems, simpleFields)
-			}
-		}
+	// Pre-allocate arrays to avoid O(n²) resizing
+	for fieldName, size := range arraySizes {
+		result[fieldName] = make([]interface{}, size)
+	}
 
-		// If we have simple array items, determine the array path
-		// For embedded nodes with simple fields, we typically want a root-level array
-		if len(simpleArrayItems) > 0 {
-			// Check if all items have the same field(s) - if so, this is a simple array
-			// For now, add as root-level array if there's only one field, otherwise merge into result
-			if len(simpleArrayItems[0]) == 1 {
-				// Single field per item - create array with that field name
-				for fieldName := range simpleArrayItems[0] {
-					values := make([]interface{}, len(simpleArrayItems))
-					for i, item := range simpleArrayItems {
-						values[i] = item[fieldName]
-					}
-					result[fieldName] = values
-				}
-			} else {
-				// Multiple fields per item - keep as array of objects
-				// Use empty string as key to indicate root-level array
-				result[""] = convertToInterfaceSlice(simpleArrayItems)
-			}
-		}
-
-		// Group array items by array path
-		arrayStructures := buildArrayStructure(array, nodeID, prefix)
-		// Merge array structures into result
-		for arrayPath, arrayData := range arrayStructures {
-			// Check for path conflicts - if arrayPath already exists as a single field
-			if existing, exists := result[arrayPath]; exists {
-				// If existing is not an array, we have a conflict
-				// Prefer array structure over single field
-				if _, isArray := existing.([]interface{}); !isArray {
-					// Remove single field and use array instead
-					delete(result, arrayPath)
-				}
-			}
-			result[arrayPath] = arrayData
-		}
+	// Second pass: set values using pre-allocated arrays
+	for _, item := range keysToProcess {
+		setValueWithIndices(result, item.path, item.value)
 	}
 
 	return result
 }
 
-// buildArrayStructure builds array structure from array items.
-// Groups keys by array path and builds arrays of objects.
-func buildArrayStructure(array []interface{}, nodeID, prefix string) map[string][]interface{} {
-	arrayStructures := make(map[string][]interface{})
+// setValueWithIndices sets a value in a nested structure, handling array indices.
+// Path format: "/data[0]/field" or "/field[0]" or "/field"
+func setValueWithIndices(result map[string]interface{}, path string, value interface{}) {
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return
+	}
 
-	// Process each array item
-	for itemIndex, item := range array {
-		if itemMap, ok := item.(map[string]interface{}); ok {
-			// Group keys by array path
-			itemsByArrayPath := make(map[string]map[string]interface{})
+	// Safety check: prevent infinite recursion
+	if len(path) > 1000 {
+		// Path too long, likely a bug
+		return
+	}
 
-			for key, value := range itemMap {
-				if strings.HasPrefix(key, prefix) {
-					path := key[len(prefix):]
-					if path != "" {
-						// Check if it's an array item path (contains "//")
-						if strings.Contains(path, "//") {
-							// Array item path: "arrayPath//field" or "arrayPath//parent/field"
-							parts := strings.SplitN(path, "//", 2)
-							if len(parts) == 2 {
-								arrayPath := strings.Trim(parts[0], "/")
-								fieldPath := parts[1]
+	// Find the first [index] notation (manual search - faster than strings.Index)
+	bracketIdx := -1
+	for i := 0; i < len(path); i++ {
+		if path[i] == '[' {
+			bracketIdx = i
+			break
+		}
+	}
 
-								// Initialize array path structure if needed
-								if itemsByArrayPath[arrayPath] == nil {
-									itemsByArrayPath[arrayPath] = make(map[string]interface{})
-								}
+	if bracketIdx < 0 {
+		// No index - simple nested path
+		setNestedValue(result, "/"+path, value)
+		return
+	}
 
-								// Set nested value in the item map
-								setNestedValue(itemsByArrayPath[arrayPath], fieldPath, value)
-							}
-						} else {
-							// Regular path (not array item) - this shouldn't happen in array items
-							// but handle it gracefully by treating as root-level field
-							// Skip it to avoid conflicts
-						}
-					}
+	// Safety: field name before bracket should not be empty
+	if bracketIdx == 0 {
+		return
+	}
+
+	// Extract the field name before the index
+	fieldName := path[:bracketIdx]
+
+	// Find the closing ] (manual search)
+	closeBracketIdx := -1
+	for i := bracketIdx + 1; i < len(path); i++ {
+		if path[i] == ']' {
+			closeBracketIdx = i
+			break
+		}
+	}
+	if closeBracketIdx < 0 {
+		// Malformed - skip
+		return
+	}
+
+	// Parse the index manually (faster than fmt.Sscanf)
+	index := 0
+	for i := bracketIdx + 1; i < closeBracketIdx; i++ {
+		if path[i] < '0' || path[i] > '9' {
+			return // Invalid index
+		}
+		index = index*10 + int(path[i]-'0')
+	}
+
+	// Get or create the array
+	if result[fieldName] == nil {
+		// Array wasn't pre-allocated, create it now (shouldn't happen often)
+		result[fieldName] = make([]interface{}, index+1)
+	}
+	arr, ok := result[fieldName].([]interface{})
+	if !ok {
+		// Type conflict - overwrite
+		result[fieldName] = make([]interface{}, index+1)
+		arr = result[fieldName].([]interface{})
+	}
+
+	// Ensure array is large enough (only needed if pre-allocation missed this case)
+	if index >= len(arr) {
+		newArr := make([]interface{}, index+1)
+		copy(newArr, arr)
+		arr = newArr
+		result[fieldName] = arr
+	}
+
+	// Check if there's more path after the index
+	remainingPath := path[closeBracketIdx+1:]
+	remainingPath = strings.TrimPrefix(remainingPath, "/")
+
+	if remainingPath == "" {
+		// No more path - set value directly
+		arr[index] = value
+		return
+	}
+
+	// Path like "data[0]/Actual_Termination_Date[0]" leaves remainingPath "Actual_Termination_Date[0]".
+	// When that is a single segment "FieldName[index]" (redundant row index), set scalar on the item at arr[index].
+	if strings.IndexByte(remainingPath, '/') < 0 {
+		if idx := strings.Index(remainingPath, "["); idx > 0 {
+			suffix := remainingPath[idx:]
+			if len(suffix) >= 3 && suffix[len(suffix)-1] == ']' {
+				// Ensure item at arr[index] is a map, then set scalar field on it
+				if arr[index] == nil {
+					arr[index] = make(map[string]interface{})
 				}
-			}
-
-			// Add items to their respective arrays
-			for arrayPath, itemData := range itemsByArrayPath {
-				if arrayStructures[arrayPath] == nil {
-					arrayStructures[arrayPath] = make([]interface{}, len(array))
-					// Initialize all items as empty maps
-					for i := range arrayStructures[arrayPath] {
-						arrayStructures[arrayPath][i] = make(map[string]interface{})
-					}
+				itemMap, ok := arr[index].(map[string]interface{})
+				if !ok {
+					itemMap = make(map[string]interface{})
+					arr[index] = itemMap
 				}
-				// Merge item data into the appropriate index
-				if itemIndex < len(arrayStructures[arrayPath]) {
-					if existingItem, ok := arrayStructures[arrayPath][itemIndex].(map[string]interface{}); ok {
-						// Merge maps
-						for k, v := range itemData {
-							existingItem[k] = v
-						}
-					}
-				}
+				itemMap[remainingPath[:idx]] = value
+				return
 			}
 		}
 	}
 
-	return arrayStructures
+	// More path - recurse into object at this index
+	if arr[index] == nil {
+		arr[index] = make(map[string]interface{})
+	}
+	itemMap, ok := arr[index].(map[string]interface{})
+	if !ok {
+		itemMap = make(map[string]interface{})
+		arr[index] = itemMap
+	}
+	setValueWithIndices(itemMap, remainingPath, value)
 }
 
 // setNestedValue sets a value in a nested map structure using a path like "/payload" or "/data/field".
@@ -610,15 +668,6 @@ func setNestedValue(m map[string]interface{}, path string, value interface{}) {
 			}
 		}
 	}
-}
-
-// convertToInterfaceSlice converts a slice of maps to a slice of interfaces.
-func convertToInterfaceSlice(items []map[string]interface{}) []interface{} {
-	result := make([]interface{}, len(items))
-	for i, item := range items {
-		result[i] = item
-	}
-	return result
 }
 
 // CreateResult decides whether to return inline data or upload it to blob storage.

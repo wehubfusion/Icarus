@@ -175,7 +175,7 @@ func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 	ctx context.Context,
 	parentOutput map[string]interface{},
 	unit ExecutionUnit,
-) (*StandardUnitOutput, error) {
+) (StandardUnitOutput, error) {
 	p.logger.Debug("processing embedded nodes",
 		Field{Key: "unit_id", Value: unit.NodeId},
 		Field{Key: "unit_label", Value: unit.Label},
@@ -237,7 +237,7 @@ func (p *EmbeddedProcessor) processSingleObject(
 	ctx context.Context,
 	parentOutput map[string]interface{},
 	unit ExecutionUnit,
-) (*StandardUnitOutput, error) {
+) (StandardUnitOutput, error) {
 	// Create subflow processor with concurrency support for mid-flow iteration
 	subflowCfg := SubflowConfig{
 		ParentNodeId:     unit.NodeId,
@@ -262,10 +262,16 @@ func (p *EmbeddedProcessor) processSingleObject(
 		return nil, result.Error
 	}
 
-	return &StandardUnitOutput{
-		Single: result.Output,
-		Array:  result.Items,
-	}, nil
+	// Merge output and items into flat map.
+	// If there are Items, their keys already include path-level indices; do not append [i] again.
+	output := NewSingleOutput(result.Output)
+	for _, item := range result.Items {
+		for k, v := range item {
+			output[k] = v
+		}
+	}
+
+	return output, nil
 }
 
 // processWithConcurrency handles parent-level array iteration with worker pool.
@@ -277,15 +283,13 @@ func (p *EmbeddedProcessor) processSingleObject(
 // 2. Preserves non-array fields from parent for the Single output
 // 3. Creates a SubflowProcessor to run all embedded nodes for each item
 // 4. Uses a worker pool for concurrent processing
-// 5. Returns StandardUnitOutput where:
-//   - Single contains parent's non-array fields (shared across all items)
-//   - Array contains per-item outputs from embedded nodes
+// 5. Returns StandardUnitOutput as a flat map: shared keys plus per-item keys with [index] notation.
 func (p *EmbeddedProcessor) processWithConcurrency(
 	ctx context.Context,
 	parentOutput map[string]interface{},
 	unit ExecutionUnit,
 	iterCtx IterationContext,
-) (*StandardUnitOutput, error) {
+) (StandardUnitOutput, error) {
 	// Extract array from parent output
 	arrayData, ok := parentOutput[iterCtx.ArrayPath]
 	if !ok {
@@ -307,13 +311,10 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 
 	if len(items) == 0 {
 		p.logger.Debug("empty array, returning empty result")
-		// Extract and flatten parent's non-array fields for Single output
+		// Extract and flatten parent's non-array fields
 		nonArrayFields := p.extractNonArrayFields(parentOutput, iterCtx.ArrayPath)
 		flatSingle := FlattenMap(nonArrayFields, unit.NodeId, "")
-		return &StandardUnitOutput{
-			Single: flatSingle,
-			Array:  []map[string]interface{}{},
-		}, nil
+		return NewSingleOutput(flatSingle), nil
 	}
 
 	p.logger.Info("processing array items",
@@ -428,10 +429,23 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 	var processErr error
 
 	// Add overall timeout to prevent indefinite hanging
-	overallTimeout := 2 * time.Minute
-	overallTimer := time.NewTimer(overallTimeout)
+	// Use adaptive timeout based on batch size to match collectResultsWithContext
+	overallTimeoutDuration := 10 * time.Minute
+	if len(items) > 10000 {
+		// For very large batches (10k+), allow up to 60 minutes
+		overallTimeoutDuration = 60 * time.Minute
+	} else if len(items) > 1000 {
+		// For medium batches (1k-10k), allow 30 minutes
+		overallTimeoutDuration = 30 * time.Minute
+	} else if len(items) > 100 {
+		// For small-medium batches (100-1k), allow 20 minutes
+		overallTimeoutDuration = 20 * time.Minute
+	}
+	overallTimer := time.NewTimer(overallTimeoutDuration)
 	defer overallTimer.Stop()
-	p.logger.Info("waiting for results or timeout", Field{Key: "overall_timeout", Value: overallTimeout})
+	p.logger.Info("waiting for results or timeout",
+		Field{Key: "batch_size", Value: len(items)},
+		Field{Key: "overall_timeout", Value: overallTimeoutDuration})
 
 	select {
 	case <-ctx.Done():
@@ -450,7 +464,8 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 	case <-overallTimer.C:
 		// Overall timeout - something is stuck, return error with partial results if available
 		p.logger.Error("overall timeout reached - workflow is hanging",
-			Field{Key: "timeout", Value: overallTimeout},
+			Field{Key: "timeout", Value: overallTimeoutDuration},
+			Field{Key: "batch_size", Value: len(items)},
 		)
 		pool.Close()
 		// Try to get partial results if available
@@ -459,13 +474,13 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 			results = result.results
 			resultItems = result.resultItems
 			if result.err != nil {
-				processErr = fmt.Errorf("overall timeout after %v: %w", overallTimeout, result.err)
+				processErr = fmt.Errorf("overall timeout after %v: %w", overallTimeoutDuration, result.err)
 			} else {
-				processErr = fmt.Errorf("overall timeout after %v: processing incomplete", overallTimeout)
+				processErr = fmt.Errorf("overall timeout after %v: processing incomplete", overallTimeoutDuration)
 			}
 		default:
 			// No results available yet
-			processErr = fmt.Errorf("overall timeout after %v: no results received", overallTimeout)
+			processErr = fmt.Errorf("overall timeout after %v: no results received", overallTimeoutDuration)
 		}
 		// Wait for goroutines with timeout
 		select {
@@ -531,44 +546,63 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 		finalItems[i] = results[i]
 	}
 
-	// Extract and flatten parent's non-array fields for Single output
+	// Extract and flatten parent's non-array fields
 	nonArrayFields := p.extractNonArrayFields(parentOutput, iterCtx.ArrayPath)
-	flatSingle := FlattenMap(nonArrayFields, unit.NodeId, "")
+	flatShared := FlattenMap(nonArrayFields, unit.NodeId, "")
 
-	return &StandardUnitOutput{
-		Single: flatSingle,
-		Array:  finalItems,
-	}, nil
-}
-
-// flattenParentOnly handles case with no embedded nodes.
-// If parent has an array, it flattens the array items into Array and non-array fields into Single.
-// If parent is a single object, it flattens everything into Single.
-func (p *EmbeddedProcessor) flattenParentOnly(
-	parentOutput map[string]interface{},
-	parentNodeId string,
-) (*StandardUnitOutput, error) {
-	// Check for array at top level
-	for key, value := range parentOutput {
-		if arr, ok := value.([]interface{}); ok {
-			// Flatten array items into Array
-			results := make([]map[string]interface{}, 0, len(arr))
-			for _, item := range arr {
-				if itemMap, ok := item.(map[string]interface{}); ok {
-					flat := FlattenWithArrayPath(itemMap, parentNodeId, key)
-					results = append(results, flat)
-				}
-			}
-			// Extract and flatten non-array fields into Single
-			nonArrayFields := p.extractNonArrayFields(parentOutput, key)
-			flatSingle := FlattenMap(nonArrayFields, parentNodeId, "")
-			return &StandardUnitOutput{Single: flatSingle, Array: results}, nil
+	// Merge shared fields and per-item output into flat map.
+	// Keys from the subflow already include the path index (e.g. nodeId-/data[i]/Field),
+	// so we must not append [i] again to avoid duplicated indices like .../Field[i][i].
+	output := NewSingleOutput(flatShared)
+	for _, item := range finalItems {
+		for k, v := range item {
+			output[k] = v
 		}
 	}
 
-	// Single object - all goes to Single
+	return output, nil
+}
+
+// flattenParentOnly handles case with no embedded nodes.
+// If parent has an array, it flattens array items with index notation.
+// If parent is a single object, it flattens everything without indices.
+func (p *EmbeddedProcessor) flattenParentOnly(
+	parentOutput map[string]interface{},
+	parentNodeId string,
+) (StandardUnitOutput, error) {
+	// Check for array at top level
+	for key, value := range parentOutput {
+		if arr, ok := value.([]interface{}); ok {
+			// Flatten array items with index notation, preserving the array path
+			output := make(StandardUnitOutput)
+
+			// Add non-array fields
+			nonArrayFields := p.extractNonArrayFields(parentOutput, key)
+			flatShared := FlattenMap(nonArrayFields, parentNodeId, "")
+			for k, v := range flatShared {
+				output[k] = v
+			}
+
+			// Add indexed array items with array path preserved
+			// Creates keys like "nodeId-/arrayName[i]/field" to maintain structure
+			for i, item := range arr {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					// Use array path as base, so keys become nodeId-/arrayName[i]/field
+					basePath := "/" + key + fmt.Sprintf("[%d]", i)
+					flatItem := FlattenMap(itemMap, parentNodeId, basePath)
+					for k, v := range flatItem {
+						output[k] = v
+					}
+				}
+			}
+
+			return output, nil
+		}
+	}
+
+	// Single object - flatten without indices
 	flat := FlattenMap(parentOutput, parentNodeId, "")
-	return &StandardUnitOutput{Single: flat, Array: []map[string]interface{}{}}, nil
+	return NewSingleOutput(flat), nil
 }
 
 // extractNonArrayFields returns a copy of parentOutput without the specified array field.
