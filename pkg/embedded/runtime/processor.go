@@ -314,6 +314,7 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 		// Extract and flatten parent's non-array fields
 		nonArrayFields := p.extractNonArrayFields(parentOutput, iterCtx.ArrayPath)
 		flatSingle := FlattenMap(nonArrayFields, unit.NodeId, "")
+		FilterRootKeys(flatSingle)
 		return NewSingleOutput(flatSingle), nil
 	}
 
@@ -549,6 +550,7 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 	// Extract and flatten parent's non-array fields
 	nonArrayFields := p.extractNonArrayFields(parentOutput, iterCtx.ArrayPath)
 	flatShared := FlattenMap(nonArrayFields, unit.NodeId, "")
+	FilterRootKeys(flatShared)
 
 	// Merge shared fields and per-item output into flat map.
 	// Keys from the subflow already include the path index (e.g. nodeId-/data[i]/Field),
@@ -579,6 +581,7 @@ func (p *EmbeddedProcessor) flattenParentOnly(
 			// Add non-array fields
 			nonArrayFields := p.extractNonArrayFields(parentOutput, key)
 			flatShared := FlattenMap(nonArrayFields, parentNodeId, "")
+			FilterRootKeys(flatShared)
 			for k, v := range flatShared {
 				output[k] = v
 			}
@@ -590,6 +593,7 @@ func (p *EmbeddedProcessor) flattenParentOnly(
 					// Use array path as base, so keys become nodeId-/arrayName[i]/field
 					basePath := "/" + key + fmt.Sprintf("[%d]", i)
 					flatItem := FlattenMap(itemMap, parentNodeId, basePath)
+					FilterRootKeys(flatItem)
 					for k, v := range flatItem {
 						output[k] = v
 					}
@@ -602,6 +606,7 @@ func (p *EmbeddedProcessor) flattenParentOnly(
 
 	// Single object - flatten without indices
 	flat := FlattenMap(parentOutput, parentNodeId, "")
+	FilterRootKeys(flat)
 	return NewSingleOutput(flat), nil
 }
 

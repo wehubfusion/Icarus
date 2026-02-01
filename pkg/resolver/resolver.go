@@ -83,6 +83,7 @@ type SourceResult struct {
 	Status            string
 	ProjectedFields   map[string]map[string]interface{}
 	IterationMetadata map[string]*IterationContext
+	RawFlatKeys       map[string]interface{} // Direct access to flat keys from StandardUnitOutput format
 }
 
 // IterationContext mirrors array metadata used for coordinated iteration.
@@ -211,11 +212,15 @@ func (s *Service) ResolveMappedInputWithConsumerGraph(
 					var inlineData map[string]interface{}
 					if err := json.Unmarshal(location.InlineData, &inlineData); err == nil {
 						var nodeFields map[string]interface{}
+						var rawFlatKeys map[string]interface{}
 
 						// Check if this is StandardUnitOutput format (flat map with "nodeId-/" prefixed keys)
 						isStandardUnitOutput := isStandardUnitOutputFormat(inlineData)
 
 						if isStandardUnitOutput {
+							// Store raw flat keys for direct extraction in field mapping
+							rawFlatKeys = inlineData
+
 							// Extract and restructure data from StandardUnitOutput format
 							nodeFields = extractNodeDataFromStandardOutputFlat(inlineData, nodeID)
 							// Handle empty extraction case
@@ -239,6 +244,7 @@ func (s *Service) ResolveMappedInputWithConsumerGraph(
 							Status:            "success", // Assume success for inline data
 							ProjectedFields:   map[string]map[string]interface{}{nodeID: nodeFields},
 							IterationMetadata: nil,
+							RawFlatKeys:       rawFlatKeys,
 						}
 					}
 				}
@@ -380,8 +386,12 @@ func sourceResultsFromBlob(blobData []byte, sourceNodeIDs map[string]bool, conta
 		}
 
 		var nodeFields map[string]interface{}
+		var rawFlatKeys map[string]interface{}
 
 		if isStandardUnitOutput {
+			// Store raw flat keys for direct extraction in field mapping
+			rawFlatKeys = blobContent
+
 			// Extract and restructure data from StandardUnitOutput format
 			nodeFields = extractNodeDataFromStandardOutputFlat(blobContent, nodeID)
 			// If extraction returned empty (no matching keys)
@@ -405,6 +415,7 @@ func sourceResultsFromBlob(blobData []byte, sourceNodeIDs map[string]bool, conta
 			Status:            status,
 			ProjectedFields:   map[string]map[string]interface{}{nodeID: nodeFields},
 			IterationMetadata: nil,
+			RawFlatKeys:       rawFlatKeys,
 		}
 	}
 
@@ -438,9 +449,14 @@ func ExtractNodeDataFromFlatOutput(flatOutput map[string]interface{}, nodeID str
 
 // extractNodeDataFromStandardOutputFlat extracts and restructures data from flat StandardUnitOutput format.
 // Converts flattened keys like "nodeId-/path" or "nodeId-/path[0]" to nested structure.
+// When the only key for the node is "nodeId-/" (root key, path ""), returns that value as the node data
+// (map as-is, or wrapped as map[""] for arrays) so stage-object and similar single-blob outputs are correct.
 func extractNodeDataFromStandardOutputFlat(flatOutput map[string]interface{}, nodeID string) map[string]interface{} {
 	result := make(map[string]interface{})
 	prefix := nodeID + "-/"
+
+	// Root key "nodeId-/" (path "") holds the whole payload for single-output nodes (e.g. stage object).
+	var rootValue interface{}
 
 	// First pass: collect all keys and determine array sizes to pre-allocate
 	arraySizes := make(map[string]int)
@@ -456,6 +472,7 @@ func extractNodeDataFromStandardOutputFlat(flatOutput map[string]interface{}, no
 
 		pathWithIndex := key[len(prefix):]
 		if pathWithIndex == "" {
+			rootValue = value
 			continue
 		}
 
@@ -497,6 +514,14 @@ func extractNodeDataFromStandardOutputFlat(flatOutput map[string]interface{}, no
 				}
 			}
 		}
+	}
+
+	// Only root key "nodeId-/": return payload as node data (map as-is, or under "" for array/scalar).
+	if rootValue != nil && len(keysToProcess) == 0 {
+		if m, ok := rootValue.(map[string]interface{}); ok {
+			return m
+		}
+		return map[string]interface{}{"": rootValue}
 	}
 
 	// Pre-allocate arrays to avoid O(n²) resizing

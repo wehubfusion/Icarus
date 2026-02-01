@@ -8,8 +8,17 @@ import (
 // FlattenMap flattens a nested map with nodeId prefix.
 // Example: {"name": "david", "age": 19} with nodeId "abc" becomes:
 // {"abc-/name": "david", "abc-/age": 19}
+// Additionally stores the complete structure at root key "nodeId-/" when basePath is empty,
+// enabling "" → "" field mappings to access the entire node output.
 func FlattenMap(data map[string]interface{}, nodeId, basePath string) map[string]interface{} {
 	result := make(map[string]interface{})
+
+	// Store complete structure at root key when at base level
+	// This enables "" → "" field mappings to access the entire node output
+	if basePath == "" {
+		rootKey := nodeId + "-/"
+		result[rootKey] = data
+	}
 
 	for key, value := range data {
 		var fullPath string
@@ -31,6 +40,51 @@ func FlattenMap(data map[string]interface{}, nodeId, basePath string) map[string
 		default:
 			result[flatKey] = value
 		}
+	}
+
+	return result
+}
+
+// UnflattenMap reconstructs the original structure from flattened keys.
+// This provides a fallback mechanism when the root key is not available.
+//
+// Example input (flattened):
+//   "nodeId-/name": "alex"
+//   "nodeId-/contact/email": "alex@example.com"
+//
+// Example output (reconstructed):
+//   {"name": "alex", "contact": {"email": "alex@example.com"}}
+func UnflattenMap(flatKeys map[string]interface{}, nodeId string) map[string]interface{} {
+	prefix := nodeId + "-/"
+
+	// First check if root key exists with complete structure
+	if rootVal, exists := flatKeys[prefix]; exists {
+		if rootMap, ok := rootVal.(map[string]interface{}); ok {
+			return rootMap
+		}
+	}
+
+	// Reconstruct from individual flattened keys
+	result := make(map[string]interface{})
+
+	for key, value := range flatKeys {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+
+		// Skip keys with array indices - those represent iteration results
+		if strings.Contains(key, "[") {
+			continue
+		}
+
+		// Extract path after prefix (e.g., "name" or "contact/email")
+		path := strings.TrimPrefix(key, prefix)
+		if path == "" {
+			continue
+		}
+
+		// Build nested structure from path
+		SetNestedValue(result, path, value)
 	}
 
 	return result
@@ -163,12 +217,24 @@ func GetNestedValue(data map[string]interface{}, path string) interface{} {
 
 // SetNestedValue sets a value at a nested path in the map.
 // Creates intermediate maps as needed.
+// When path is empty, merges the value (if it's a map) into data.
 func SetNestedValue(data map[string]interface{}, path string, value interface{}) {
 	path = strings.TrimPrefix(path, "/")
 
 	// Handle // in path - use only the part after //
 	if idx := strings.Index(path, "//"); idx >= 0 {
 		path = path[idx+2:]
+	}
+
+	// Handle empty path - merge value into data root
+	if path == "" {
+		if valueMap, ok := value.(map[string]interface{}); ok {
+			// Merge all keys from value into data
+			for k, v := range valueMap {
+				data[k] = v
+			}
+		}
+		return
 	}
 
 	parts := strings.Split(path, "/")
@@ -203,6 +269,17 @@ func ExtractArrayPath(endpoint string) (arrayPath, fieldPath string, hasArray bo
 	}
 
 	return "", endpoint, false
+}
+
+// FilterRootKeys removes root keys (ending with "-/") from output.
+// Root keys are used internally for "" → "" field mappings but shouldn't appear in final output.
+func FilterRootKeys(output map[string]interface{}) {
+	for key := range output {
+		// Remove keys that end with "-/" (root keys with complete node structure)
+		if strings.HasSuffix(key, "-/") {
+			delete(output, key)
+		}
+	}
 }
 
 // ExtractFieldFromDestination extracts the final field name from a destination path.

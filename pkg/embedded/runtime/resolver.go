@@ -112,6 +112,28 @@ func (r *DefaultOutputResolver) buildSingleInput(
 			}
 		}
 
+		// Handle empty source endpoint - pass entire node output
+		// Supports all relationships: parent→embedded, embedded→embedded, embedded→parent
+		if mapping.SourceNodeId != "" && (mapping.SourceEndpoint == "" || mapping.SourceEndpoint == "/") {
+			// Use UnflattenMap to reconstruct complete source structure
+			sourceStructure := UnflattenMap(output, mapping.SourceNodeId)
+
+			if len(sourceStructure) > 0 {
+				for _, dest := range mapping.DestinationEndpoints {
+					if dest == "" || dest == "/" {
+						// Destination is root - merge complete structure into result
+						for k, v := range sourceStructure {
+							result[k] = v
+						}
+					} else {
+						// Destination is specific path - set complete structure there
+						SetNestedValue(result, dest, sourceStructure)
+					}
+				}
+				continue
+			}
+		}
+
 		// Original skip logic for truly empty mappings
 		if mapping.SourceNodeId == "" || mapping.SourceEndpoint == "" {
 			continue

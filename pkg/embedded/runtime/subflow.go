@@ -174,6 +174,9 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 		return res
 	}
 
+	// Remove root keys from output (they're only needed internally for "" → "" mappings)
+	FilterRootKeys(res.Output)
+
 	sp.metrics.RecordProcessed(time.Since(start).Nanoseconds())
 	return res
 }
