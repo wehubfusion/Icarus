@@ -15,38 +15,38 @@ func NewOutputResolver() *DefaultOutputResolver {
 
 // ResolveValue finds a value in the output based on source mapping.
 func (r *DefaultOutputResolver) ResolveValue(
-	output *StandardUnitOutput,
+	output StandardUnitOutput,
 	sourceNodeId string,
 	sourceEndpoint string,
 ) (interface{}, error) {
-	key := sourceNodeId + "-" + sourceEndpoint
-	// If there are per-item results, collect values from all items
-	if len(output.Array) > 0 {
-		values := make([]interface{}, 0, len(output.Array))
-		for _, item := range output.Array {
-			if val, exists := item[key]; exists {
-				values = append(values, val)
-			}
-		}
-		if len(values) > 0 {
-			return values, nil
-		}
-		return nil, fmt.Errorf("%w: %s not found in array output", ErrKeyNotFound, key)
-	}
+	baseKey := sourceNodeId + "-" + sourceEndpoint
 
-	// Single object
-	if output.Single != nil {
-		if val, exists := output.Single[key]; exists {
-			return val, nil
+	// Check for indexed values (iteration)
+	var values []interface{}
+	for i := 0; ; i++ {
+		indexedKey := fmt.Sprintf("%s[%d]", baseKey, i)
+		if val, exists := output[indexedKey]; exists {
+			values = append(values, val)
+		} else {
+			break
 		}
 	}
 
-	return nil, fmt.Errorf("%w: %s not found in output", ErrKeyNotFound, key)
+	if len(values) > 0 {
+		return values, nil
+	}
+
+	// Fallback to non-indexed key
+	if val, exists := output[baseKey]; exists {
+		return val, nil
+	}
+
+	return nil, fmt.Errorf("%w: %s not found in output", ErrKeyNotFound, baseKey)
 }
 
 // BuildInputForUnit builds the complete input for a unit based on its field mappings.
 func (r *DefaultOutputResolver) BuildInputForUnit(
-	previousOutput *StandardUnitOutput,
+	previousOutput StandardUnitOutput,
 	unit ExecutionUnit,
 ) (map[string]interface{}, error) {
 	destStructure := r.analyzeDestinationStructure(unit.FieldMappings)
@@ -81,7 +81,7 @@ func (r *DefaultOutputResolver) analyzeDestinationStructure(mappings []FieldMapp
 
 // buildSingleInput builds input as a single object.
 func (r *DefaultOutputResolver) buildSingleInput(
-	output *StandardUnitOutput,
+	output StandardUnitOutput,
 	unit ExecutionUnit,
 ) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
@@ -91,11 +91,11 @@ func (r *DefaultOutputResolver) buildSingleInput(
 		if mapping.SourceNodeId != "" && mapping.SourceEndpoint == "" {
 			// Check if source node has isWrappedArray metadata
 			isWrappedKey := mapping.SourceNodeId + "-/isWrappedArray"
-			if wrapped, ok := output.Single[isWrappedKey]; ok {
+			if wrapped, ok := output[isWrappedKey]; ok {
 				if isWrapped, ok := wrapped.(bool); ok && isWrapped {
 					// Auto-unwrap: get the items array
 					itemsKey := mapping.SourceNodeId + "-/items"
-					if items, ok := output.Single[itemsKey]; ok {
+					if items, ok := output[itemsKey]; ok {
 						// Pass the raw array directly to destination endpoints
 						for _, dest := range mapping.DestinationEndpoints {
 							// Handle empty destination - means pass as "input" or root
@@ -109,6 +109,28 @@ func (r *DefaultOutputResolver) buildSingleInput(
 						continue
 					}
 				}
+			}
+		}
+
+		// Handle empty source endpoint - pass entire node output
+		// Supports all relationships: parent→embedded, embedded→embedded, embedded→parent
+		if mapping.SourceNodeId != "" && (mapping.SourceEndpoint == "" || mapping.SourceEndpoint == "/") {
+			// Use UnflattenMap to reconstruct complete source structure
+			sourceStructure := UnflattenMap(output, mapping.SourceNodeId)
+
+			if len(sourceStructure) > 0 {
+				for _, dest := range mapping.DestinationEndpoints {
+					if dest == "" || dest == "/" {
+						// Destination is root - merge complete structure into result
+						for k, v := range sourceStructure {
+							result[k] = v
+						}
+					} else {
+						// Destination is specific path - set complete structure there
+						SetNestedValue(result, dest, sourceStructure)
+					}
+				}
+				continue
 			}
 		}
 
@@ -132,12 +154,14 @@ func (r *DefaultOutputResolver) buildSingleInput(
 
 // buildArrayInput builds input with array structure.
 func (r *DefaultOutputResolver) buildArrayInput(
-	output *StandardUnitOutput,
+	output StandardUnitOutput,
 	unit ExecutionUnit,
 	destStructure DestinationStructure,
 ) (map[string]interface{}, error) {
-	// If there are no per-item results, wrap the single object into an array
-	if len(output.Array) == 0 {
+	// Check if there are indexed values to determine array length
+	length := output.Len()
+	if length == 1 && !output.HasIteration() {
+		// No iteration - wrap single object into array
 		single, err := r.buildSingleInput(output, unit)
 		if err != nil {
 			return nil, err
@@ -147,8 +171,8 @@ func (r *DefaultOutputResolver) buildArrayInput(
 		}, nil
 	}
 
-	// Build array of objects matching source items length
-	resultArray := make([]map[string]interface{}, len(output.Array))
+	// Build array of objects matching indexed items
+	resultArray := make([]map[string]interface{}, length)
 	for i := range resultArray {
 		resultArray[i] = make(map[string]interface{})
 	}
@@ -158,11 +182,12 @@ func (r *DefaultOutputResolver) buildArrayInput(
 			continue
 		}
 
-		sourceKey := mapping.SourceNodeId + "-" + mapping.SourceEndpoint
+		baseKey := mapping.SourceNodeId + "-" + mapping.SourceEndpoint
 
-		// Get value from each item
-		for i, item := range output.Array {
-			if val, exists := item[sourceKey]; exists {
+		// Get value from each indexed key
+		for i := 0; i < length; i++ {
+			indexedKey := fmt.Sprintf("%s[%d]", baseKey, i)
+			if val, exists := output[indexedKey]; exists {
 				for _, dest := range mapping.DestinationEndpoints {
 					fieldName := ExtractFieldFromDestination(dest)
 					resultArray[i][fieldName] = val
@@ -183,22 +208,13 @@ func (r *DefaultOutputResolver) buildArrayInput(
 }
 
 // GetAllKeysForNode returns all output keys belonging to a specific node.
-func (r *DefaultOutputResolver) GetAllKeysForNode(output *StandardUnitOutput, nodeId string) []string {
+func (r *DefaultOutputResolver) GetAllKeysForNode(output StandardUnitOutput, nodeId string) []string {
 	prefix := nodeId + "-"
 	var keys []string
 
-	if len(output.Array) > 0 {
-		// Get keys from first item (all items have same structure)
-		for key := range output.Array[0] {
-			if strings.HasPrefix(key, prefix) {
-				keys = append(keys, key)
-			}
-		}
-	} else if output.Single != nil {
-		for key := range output.Single {
-			if strings.HasPrefix(key, prefix) {
-				keys = append(keys, key)
-			}
+	for key := range output {
+		if strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
 		}
 	}
 
@@ -206,24 +222,12 @@ func (r *DefaultOutputResolver) GetAllKeysForNode(output *StandardUnitOutput, no
 }
 
 // GetNodeIdsInOutput returns all unique node IDs present in the output.
-func (r *DefaultOutputResolver) GetNodeIdsInOutput(output *StandardUnitOutput) []string {
+func (r *DefaultOutputResolver) GetNodeIdsInOutput(output StandardUnitOutput) []string {
 	nodeIds := make(map[string]struct{})
 
-	extractNodeId := func(key string) {
+	for key := range output {
 		if idx := strings.Index(key, "-/"); idx > 0 {
 			nodeIds[key[:idx]] = struct{}{}
-		}
-	}
-
-	if len(output.Array) > 0 {
-		for _, item := range output.Array {
-			for key := range item {
-				extractNodeId(key)
-			}
-		}
-	} else if output.Single != nil {
-		for key := range output.Single {
-			extractNodeId(key)
 		}
 	}
 

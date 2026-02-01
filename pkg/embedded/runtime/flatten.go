@@ -8,8 +8,17 @@ import (
 // FlattenMap flattens a nested map with nodeId prefix.
 // Example: {"name": "david", "age": 19} with nodeId "abc" becomes:
 // {"abc-/name": "david", "abc-/age": 19}
+// Additionally stores the complete structure at root key "nodeId-/" when basePath is empty,
+// enabling "" → "" field mappings to access the entire node output.
 func FlattenMap(data map[string]interface{}, nodeId, basePath string) map[string]interface{} {
 	result := make(map[string]interface{})
+
+	// Store complete structure at root key when at base level
+	// This enables "" → "" field mappings to access the entire node output
+	if basePath == "" {
+		rootKey := nodeId + "-/"
+		result[rootKey] = data
+	}
 
 	for key, value := range data {
 		var fullPath string
@@ -36,46 +45,80 @@ func FlattenMap(data map[string]interface{}, nodeId, basePath string) map[string
 	return result
 }
 
-// FlattenWithArrayPath flattens a map that came from an array item.
-// Uses // notation: {"name": "david"} from array "data" becomes:
-// {"nodeId-/data//name": "david"}
-func FlattenWithArrayPath(item map[string]interface{}, nodeId, arrayPath string) map[string]interface{} {
+// UnflattenMap reconstructs the original structure from flattened keys.
+// This provides a fallback mechanism when the root key is not available.
+//
+// Example input (flattened):
+//   "nodeId-/name": "alex"
+//   "nodeId-/contact/email": "alex@example.com"
+//
+// Example output (reconstructed):
+//   {"name": "alex", "contact": {"email": "alex@example.com"}}
+func UnflattenMap(flatKeys map[string]interface{}, nodeId string) map[string]interface{} {
+	prefix := nodeId + "-/"
+
+	// First check if root key exists with complete structure
+	if rootVal, exists := flatKeys[prefix]; exists {
+		if rootMap, ok := rootVal.(map[string]interface{}); ok {
+			return rootMap
+		}
+	}
+
+	// Reconstruct from individual flattened keys
 	result := make(map[string]interface{})
 
-	for key, value := range item {
-		flatKey := fmt.Sprintf("%s-/%s//%s", nodeId, arrayPath, key)
-
-		switch v := value.(type) {
-		case map[string]interface{}:
-			// Nested object within array item
-			nested := flattenNestedInArrayItem(v, nodeId, arrayPath, key)
-			for nk, nv := range nested {
-				result[nk] = nv
-			}
-		default:
-			result[flatKey] = value
+	for key, value := range flatKeys {
+		if !strings.HasPrefix(key, prefix) {
+			continue
 		}
+
+		// Skip keys with array indices - those represent iteration results
+		if strings.Contains(key, "[") {
+			continue
+		}
+
+		// Extract path after prefix (e.g., "name" or "contact/email")
+		path := strings.TrimPrefix(key, prefix)
+		if path == "" {
+			continue
+		}
+
+		// Build nested structure from path
+		SetNestedValue(result, path, value)
 	}
 
 	return result
 }
 
-// flattenNestedInArrayItem handles nested objects within array items.
-func flattenNestedInArrayItem(data map[string]interface{}, nodeId, arrayPath, parentKey string) map[string]interface{} {
-	result := make(map[string]interface{})
+// FlattenWithIndex flattens a map and adds an index suffix to all keys.
+// Example: {"name": "david"} with index 0 becomes: {"nodeId-/name[0]": "david"}
+func FlattenWithIndex(data map[string]interface{}, nodeId string, index int) map[string]interface{} {
+	flat := FlattenMap(data, nodeId, "")
+	result := make(map[string]interface{}, len(flat))
 
-	for key, value := range data {
-		flatKey := fmt.Sprintf("%s-/%s//%s/%s", nodeId, arrayPath, parentKey, key)
+	for k, v := range flat {
+		indexedKey := fmt.Sprintf("%s[%d]", k, index)
+		result[indexedKey] = v
+	}
 
-		switch v := value.(type) {
-		case map[string]interface{}:
-			nested := flattenNestedInArrayItem(v, nodeId, arrayPath, parentKey+"/"+key)
-			for nk, nv := range nested {
-				result[nk] = nv
-			}
-		default:
-			result[flatKey] = value
-		}
+	return result
+}
+
+// FlattenWithNestedIndices flattens a map and adds multiple index suffixes.
+// Example: {"name": "david"} with indices [0, 1] becomes: {"nodeId-/name[0][1]": "david"}
+func FlattenWithNestedIndices(data map[string]interface{}, nodeId string, indices []int) map[string]interface{} {
+	flat := FlattenMap(data, nodeId, "")
+	result := make(map[string]interface{}, len(flat))
+
+	// Build index suffix like [0][1][2]
+	var indexSuffix string
+	for _, idx := range indices {
+		indexSuffix += fmt.Sprintf("[%d]", idx)
+	}
+
+	for k, v := range flat {
+		indexedKey := k + indexSuffix
+		result[indexedKey] = v
 	}
 
 	return result
@@ -90,25 +133,59 @@ func GenerateOutputKey(nodeId, path string) string {
 	return nodeId + "-" + path
 }
 
-// GenerateArrayOutputKey creates a key for array item output.
-// Example: GenerateArrayOutputKey("node-123", "data", "name") -> "node-123-/data//name"
-func GenerateArrayOutputKey(nodeId, arrayPath, fieldPath string) string {
-	return fmt.Sprintf("%s-/%s//%s", nodeId, arrayPath, fieldPath)
+// BuildIndexedKey creates a key with index notation.
+// Example: BuildIndexedKey("node-123", "/name", []int{0, 1}) -> "node-123-/name[0][1]"
+func BuildIndexedKey(nodeId, path string, indices []int) string {
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	key := nodeId + "-" + path
+	for _, idx := range indices {
+		key += fmt.Sprintf("[%d]", idx)
+	}
+	return key
 }
 
-// ParseOutputKey parses a flattened key back to nodeId and path.
-// Returns nodeId, path, isArrayItem, error
-func ParseOutputKey(key string) (nodeId string, path string, isArrayItem bool, err error) {
+// ParseIndexedKey parses a key to extract nodeId, path, and indices.
+// Returns: nodeId, path, indices, error
+// Example: "node-123-/name[0][1]" -> "node-123", "/name", [0, 1]
+func ParseIndexedKey(key string) (nodeId, path string, indices []int, err error) {
 	idx := strings.Index(key, "-/")
 	if idx == -1 {
-		return "", "", false, fmt.Errorf("%w: invalid key format: %s", ErrInvalidInput, key)
+		return "", "", nil, fmt.Errorf("%w: invalid key format: %s", ErrInvalidInput, key)
 	}
 
 	nodeId = key[:idx]
-	path = key[idx+1:] // includes leading /
-	isArrayItem = strings.Contains(path, "//")
+	pathAndIndices := key[idx+1:] // includes leading /
 
-	return nodeId, path, isArrayItem, nil
+	// Check for indices
+	if bracketIdx := strings.Index(pathAndIndices, "["); bracketIdx >= 0 {
+		path = pathAndIndices[:bracketIdx]
+
+		// Parse all [n] patterns
+		remaining := pathAndIndices[bracketIdx:]
+		for {
+			if len(remaining) == 0 || remaining[0] != '[' {
+				break
+			}
+
+			endIdx := strings.Index(remaining, "]")
+			if endIdx < 0 {
+				break
+			}
+
+			var index int
+			if _, parseErr := fmt.Sscanf(remaining[1:endIdx], "%d", &index); parseErr == nil {
+				indices = append(indices, index)
+			}
+
+			remaining = remaining[endIdx+1:]
+		}
+	} else {
+		path = pathAndIndices
+	}
+
+	return nodeId, path, indices, nil
 }
 
 // GetNestedValue gets a value from a nested map using a path.
@@ -140,12 +217,24 @@ func GetNestedValue(data map[string]interface{}, path string) interface{} {
 
 // SetNestedValue sets a value at a nested path in the map.
 // Creates intermediate maps as needed.
+// When path is empty, merges the value (if it's a map) into data.
 func SetNestedValue(data map[string]interface{}, path string, value interface{}) {
 	path = strings.TrimPrefix(path, "/")
 
 	// Handle // in path - use only the part after //
 	if idx := strings.Index(path, "//"); idx >= 0 {
 		path = path[idx+2:]
+	}
+
+	// Handle empty path - merge value into data root
+	if path == "" {
+		if valueMap, ok := value.(map[string]interface{}); ok {
+			// Merge all keys from value into data
+			for k, v := range valueMap {
+				data[k] = v
+			}
+		}
+		return
 	}
 
 	parts := strings.Split(path, "/")
@@ -180,6 +269,17 @@ func ExtractArrayPath(endpoint string) (arrayPath, fieldPath string, hasArray bo
 	}
 
 	return "", endpoint, false
+}
+
+// FilterRootKeys removes root keys (ending with "-/") from output.
+// Root keys are used internally for "" → "" field mappings but shouldn't appear in final output.
+func FilterRootKeys(output map[string]interface{}) {
+	for key := range output {
+		// Remove keys that end with "-/" (root keys with complete node structure)
+		if strings.HasSuffix(key, "-/") {
+			delete(output, key)
+		}
+	}
 }
 
 // ExtractFieldFromDestination extracts the final field name from a destination path.
@@ -283,4 +383,35 @@ func FlattenMapWithIndex(data map[string]interface{}, nodeId, basePath string, i
 	}
 
 	return result
+}
+
+// ArrayPathSegment represents a segment in a nested array path
+type ArrayPathSegment struct {
+	Path    string // Field path (e.g., "data", "assignments")
+	IsArray bool   // True if this segment has // notation
+}
+
+// ParseNestedArrayPath parses a path like "/data//assignments//topics//name"
+func ParseNestedArrayPath(path string) []ArrayPathSegment {
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return nil
+	}
+
+	var segments []ArrayPathSegment
+	parts := strings.Split(path, "//")
+
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+
+		seg := ArrayPathSegment{
+			Path:    part,
+			IsArray: i < len(parts)-1, // All but last are arrays
+		}
+		segments = append(segments, seg)
+	}
+
+	return segments
 }

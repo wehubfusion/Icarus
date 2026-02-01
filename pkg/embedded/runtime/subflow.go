@@ -23,6 +23,7 @@ type SubflowProcessor struct {
 	logger           Logger
 	metrics          MetricsCollector
 	workerPoolConfig WorkerPoolConfig
+	config           NestedIterationConfig // Nested iteration config
 }
 
 // NewSubflowProcessor creates a new subflow processor.
@@ -67,6 +68,15 @@ func NewSubflowProcessor(config SubflowConfig) (*SubflowProcessor, error) {
 	workerPoolCfg := config.WorkerPoolConfig
 	workerPoolCfg.Validate()
 
+	// Set default values for nested iteration config if not provided
+	nestedIterCfg := config.Config
+	if nestedIterCfg.MaxIterationDepth == 0 {
+		nestedIterCfg.MaxIterationDepth = 10
+	}
+	if nestedIterCfg.MaxActiveCombinations == 0 {
+		nestedIterCfg.MaxActiveCombinations = 100000
+	}
+
 	return &SubflowProcessor{
 		parentNodeId:     config.ParentNodeId,
 		nodes:            nodes,
@@ -76,6 +86,7 @@ func NewSubflowProcessor(config SubflowConfig) (*SubflowProcessor, error) {
 		logger:           logger,
 		metrics:          metrics,
 		workerPoolConfig: workerPoolCfg,
+		config:           nestedIterCfg,
 	}, nil
 }
 
@@ -114,14 +125,12 @@ type SubflowConfig struct {
 	ArrayPath        string
 	Logger           Logger
 	Metrics          MetricsCollector
-	WorkerPoolConfig WorkerPoolConfig // Config for mid-flow worker pool
+	WorkerPoolConfig WorkerPoolConfig      // Config for mid-flow worker pool
+	Config           NestedIterationConfig // Nested iteration config
 }
 
 // ProcessItem processes a single parent item through all embedded nodes.
-// Nodes are processed by depth level with parallel execution within each depth.
-// It handles mid-flow iteration by:
-// Phase 1: Process depth levels until we find one that starts iteration (parallel within depth)
-// Phase 2: For each array item, process ALL remaining depth levels (parallel within depth)
+// Uses DFS (depth-first search) for nested array iteration.
 func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) BatchResult {
 	start := time.Now()
 	res := BatchResult{
@@ -137,81 +146,461 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 	default:
 	}
 
-	// Pre-iteration store holds outputs from nodes before iteration starts
-	preIterStore := NewNodeOutputStore()
-	preIterStore.SetSingleOutput(sp.parentNodeId, item.Data)
+	// Initialize iteration stack (empty = root level)
+	iterStack := NewIterationStack()
+
+	// Initialize store with parent data
+	store := NewNodeOutputStore()
+	store.SetSingleOutput(sp.parentNodeId, item.Data)
 
 	// Flatten parent data into shared output
+	var parentFlat map[string]interface{}
 	if sp.arrayPath != "" {
-		parentFlat := FlattenWithArrayPath(item.Data, sp.parentNodeId, sp.arrayPath)
-		MergeMaps(res.Output, parentFlat)
+		// Parent-level array iteration: include array path and index in keys
+		// Creates keys like "nodeId-/data[0]/FieldName" for array items
+		basePath := "/" + sp.arrayPath + fmt.Sprintf("[%d]", item.Index)
+		parentFlat = FlattenMap(item.Data, sp.parentNodeId, basePath)
 	} else {
-		parentFlat := FlattenMap(item.Data, sp.parentNodeId, "")
-		MergeMaps(res.Output, parentFlat)
+		// Single parent object (no array iteration): no index or array path
+		// Creates keys like "nodeId-/FieldName"
+		parentFlat = FlattenMap(item.Data, sp.parentNodeId, "")
+	}
+	MergeMaps(res.Output, parentFlat)
+
+	// Process all depth levels recursively with DFS
+	err := sp.processDepthLevelsRecursive(ctx, 0, store, iterStack, &res)
+	if err != nil {
+		res.Error = err
+		return res
 	}
 
-	// Phase 1: Process depth levels until we find one that starts iteration
-	var iterStartDepth int = -1
-	var iterState IterationState
+	// Remove root keys from output (they're only needed internally for "" → "" mappings)
+	FilterRootKeys(res.Output)
 
-	for depth, nodeIndices := range sp.depthGroups {
+	sp.metrics.RecordProcessed(time.Since(start).Nanoseconds())
+	return res
+}
+
+// filterNodesByIterationDepth filters nodes to only process those whose mapping depth
+// matches the current iteration stack depth. This ensures nodes only run at their
+// appropriate nesting level.
+func (sp *SubflowProcessor) filterNodesByIterationDepth(nodeIndices []int, currentStackDepth int) []int {
+	var filtered []int
+
+	for _, idx := range nodeIndices {
+		config := sp.nodeConfigs[idx]
+
+		// Get the expected iteration depth for this node by counting array markers in mappings
+		expectedDepth := sp.getNodeIterationDepth(config)
+
+		// Node should only process when iteration depth matches its expected depth
+		// Depth 0 means no iteration (process at root level)
+		if expectedDepth == currentStackDepth {
+			filtered = append(filtered, idx)
+		}
+	}
+
+	return filtered
+}
+
+// getNodeIterationDepth determines the iteration depth for a node based on its mappings
+// by counting the number of array markers (//) in source endpoints
+func (sp *SubflowProcessor) getNodeIterationDepth(config EmbeddedNodeConfig) int {
+	maxDepth := 0
+
+	// Check all field mappings for array notation
+	for _, m := range config.GetFieldMappings() {
+		// Count array markers (//) in the source endpoint
+		depth := strings.Count(m.SourceEndpoint, "//")
+
+		if depth > maxDepth {
+			maxDepth = depth
+		}
+	}
+
+	return maxDepth
+}
+
+// processDepthLevelsRecursive processes depth levels starting from startDepth using DFS.
+func (sp *SubflowProcessor) processDepthLevelsRecursive(
+	ctx context.Context,
+	startDepth int,
+	store *NodeOutputStore,
+	iterStack *IterationStack,
+	res *BatchResult,
+) error {
+	// DFS: Process each depth level
+	for depth := startDepth; depth < len(sp.depthGroups); depth++ {
 		select {
 		case <-ctx.Done():
-			res.Error = ctx.Err()
-			return res
+			return ctx.Err()
 		default:
 		}
 
+		nodeIndices := sp.depthGroups[depth]
 		if len(nodeIndices) == 0 {
 			continue
 		}
 
-		// Check if any node at this depth starts iteration
-		for _, idx := range nodeIndices {
-			config := sp.nodeConfigs[idx]
-			needsIter, state := sp.analyzeNodeIteration(config, preIterStore, nil)
-			if needsIter {
-				iterStartDepth = depth
-				iterState = state
-				sp.logger.Debug("iteration detected at depth, starting per-item subflow processing",
-					Field{Key: "node_id", Value: config.NodeId},
-					Field{Key: "depth", Value: depth},
-					Field{Key: "total_items", Value: state.TotalItems},
+		// Check if any node at this depth starts new iteration
+		newIterCtx := sp.detectNewIteration(nodeIndices, store, iterStack, sp.config)
+
+		if newIterCtx != nil {
+			// DFS: Found new iteration - expand and recurse for each item
+			sp.logger.Debug("detected new iteration, expanding DFS",
+				Field{Key: "depth", Value: depth},
+				Field{Key: "nesting_level", Value: iterStack.Depth()},
+				Field{Key: "total_items", Value: newIterCtx.TotalItems},
+				Field{Key: "source_node", Value: newIterCtx.SourceNodeId},
+			)
+
+			// Process the iteration, which will recursively handle nested levels
+			err := sp.expandAndProcessIteration(ctx, depth, store, iterStack, newIterCtx, res)
+			if err != nil {
+				return err
+			}
+
+			// DON'T continue - fall through to process nodes at this depth too
+			// This ensures nodes get processed even after iterations are expanded
+		}
+
+		// No iteration at this depth - process nodes normally
+		var shared map[string]interface{}
+		if iterStack.IsActive() {
+			// Inside iteration - prepare indexed output
+			shared = make(map[string]interface{})
+		} else {
+			// Root level - use res.Output directly
+			shared = res.Output
+		}
+
+		// Convert IterationStack to old API for processDepthLevelParallel
+		var iter *IterationState
+		var itemIndex int = -1
+		currentStackDepth := iterStack.Depth()
+		if iterStack.IsActive() {
+			current := iterStack.Current()
+			iter = &IterationState{
+				IsActive:          true,
+				ArrayPath:         current.ArrayPath,
+				SourceNodeId:      current.SourceNodeId,
+				InitiatedByNodeId: current.InitiatedByNodeId,
+				TotalItems:        current.TotalItems,
+				Items:             current.Items,
+			}
+			itemIndex = current.CurrentIndex
+		}
+
+		// Filter nodes by iteration depth - only process nodes whose iteration depth matches current stack depth
+		filteredNodeIndices := sp.filterNodesByIterationDepth(nodeIndices, currentStackDepth)
+
+		if len(filteredNodeIndices) == 0 {
+			continue // No nodes match this iteration depth
+		}
+
+		var pathPrefix string
+		if iterStack.IsActive() {
+			pathPrefix = iterStack.BuildIterationPathPrefix()
+		}
+		err := sp.processDepthLevelParallel(ctx, depth, filteredNodeIndices, store, shared, iter, itemIndex, pathPrefix)
+		if err != nil {
+			return err
+		}
+
+		// If we're in iteration context, merge indexed output to result
+		if iterStack.IsActive() {
+			indices := iterStack.GetCurrentIndices()
+			sp.mergeIndexedOutputToResult(shared, indices, res)
+		}
+	}
+
+	return nil
+}
+
+// detectNewIteration checks if any node at this depth starts a new iteration.
+// Returns nil if no new iteration needed.
+func (sp *SubflowProcessor) detectNewIteration(
+	nodeIndices []int,
+	store *NodeOutputStore,
+	iterStack *IterationStack,
+	config NestedIterationConfig,
+) *NestedIterationContext {
+	for _, idx := range nodeIndices {
+		nodeConfig := sp.nodeConfigs[idx]
+
+		mappings := nodeConfig.GetIterateMappings()
+		if len(mappings) == 0 {
+			continue
+		}
+
+		for _, m := range mappings {
+			sp.logger.Debug("checking iterate mapping",
+				Field{Key: "node", Value: nodeConfig.NodeId},
+				Field{Key: "source_node", Value: m.SourceNodeId},
+				Field{Key: "endpoint", Value: m.SourceEndpoint},
+				Field{Key: "stack_depth", Value: iterStack.Depth()},
+			)
+
+			// Get source output from store (context-aware)
+			sourceOut := store.GetOutputAtContext(m.SourceNodeId, iterStack)
+			if sourceOut == nil {
+				sp.logger.Debug("source output not found",
+					Field{Key: "source_node", Value: m.SourceNodeId},
 				)
-				break
+				continue
+			}
+
+			// Parse nested array path
+			segments := ParseNestedArrayPath(m.SourceEndpoint)
+			sp.logger.Debug("parsed segments",
+				Field{Key: "endpoint", Value: m.SourceEndpoint},
+				Field{Key: "segment_count", Value: len(segments)},
+			)
+
+			// Navigate to the array, respecting current iteration context
+			arr, arrayPath := sp.navigateToArrayWithContext(sourceOut, segments, iterStack)
+
+			sp.logger.Debug("navigation result",
+				Field{Key: "found_array", Value: arr != nil},
+				Field{Key: "array_path", Value: arrayPath},
+				Field{Key: "array_len", Value: len(arr)},
+			)
+
+			// NOW check if we're already iterating from this source and array path
+			// This prevents creating duplicate iteration contexts when multiple field mappings
+			// target the same array (e.g., /data//name and /data//age both iterate "data")
+			if iterStack.IsIteratingFrom(m.SourceNodeId, arrayPath) {
+				continue
+			}
+
+			if len(arr) > 0 {
+				// Check depth limit
+				if iterStack.Depth() >= config.MaxIterationDepth {
+					sp.logger.Warn("max iteration depth exceeded",
+						Field{Key: "current_depth", Value: iterStack.Depth()},
+						Field{Key: "max_depth", Value: config.MaxIterationDepth},
+						Field{Key: "source_node", Value: m.SourceNodeId},
+					)
+					continue
+				}
+
+				sp.logger.Debug("found new iteration opportunity",
+					Field{Key: "source_node", Value: m.SourceNodeId},
+					Field{Key: "array_path", Value: arrayPath},
+					Field{Key: "items_count", Value: len(arr)},
+					Field{Key: "current_nesting", Value: iterStack.Depth()},
+				)
+
+				return &NestedIterationContext{
+					SourceNodeId:      m.SourceNodeId,
+					InitiatedByNodeId: nodeConfig.NodeId,
+					ArrayPath:         arrayPath,
+					TotalItems:        len(arr),
+					Items:             arr,
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// navigateToArrayWithContext navigates to an array respecting current iteration context
+func (sp *SubflowProcessor) navigateToArrayWithContext(
+	data map[string]interface{},
+	segments []ArrayPathSegment,
+	iterStack *IterationStack,
+) ([]interface{}, string) {
+	current := interface{}(data)
+
+	// Track which segment we're at vs current iteration depth
+	stackDepth := iterStack.Depth()
+
+	sp.logger.Debug("navigating to array",
+		Field{Key: "stack_depth", Value: stackDepth},
+		Field{Key: "segment_count", Value: len(segments)},
+	)
+
+	for segIdx, seg := range segments {
+		sp.logger.Debug("processing segment",
+			Field{Key: "seg_idx", Value: segIdx},
+			Field{Key: "seg_path", Value: seg.Path},
+			Field{Key: "seg_is_array", Value: seg.IsArray},
+		)
+		// If we're already iterating at this depth level, skip the field navigation
+		// because 'data' already represents the current item (e.g., data[0])
+		if segIdx < stackDepth {
+			iterCtx := iterStack.GetContextForDepth(segIdx)
+			if iterCtx != nil && iterCtx.ArrayPath == seg.Path {
+				// We're already inside this array level
+				// 'current' already represents the current item
+				// Just continue to next segment
+				if seg.IsArray {
+					continue
+				}
 			}
 		}
 
-		if iterStartDepth >= 0 {
-			break
+		// Navigate to the field
+		if m, ok := current.(map[string]interface{}); ok && seg.Path != "" {
+			current = GetNestedValue(m, seg.Path)
 		}
 
-		// Process all nodes at this depth in parallel
-		err := sp.processDepthLevelParallel(ctx, depth, nodeIndices, preIterStore, res.Output, nil, -1)
-		if err != nil {
-			res.Error = err
-			return res
+		if seg.IsArray {
+			// Check if it's actually an array
+			if arr, ok := current.([]interface{}); ok {
+				// This is a NEW array to iterate (not already in the stack)
+				return arr, seg.Path
+			}
+			// Not an array - continue
+			continue
 		}
 	}
 
-	// Phase 2: If iteration found, process entire subflow for each item concurrently
-	if iterStartDepth >= 0 {
-		// Prepare res.Items with empty maps for each iteration
-		res.Items = make([]map[string]interface{}, iterState.TotalItems)
+	return nil, ""
+}
+
+// expandAndProcessIteration expands an iteration and processes each item recursively
+func (sp *SubflowProcessor) expandAndProcessIteration(
+	ctx context.Context,
+	currentDepth int,
+	parentStore *NodeOutputStore,
+	iterStack *IterationStack,
+	newIterCtx *NestedIterationContext,
+	res *BatchResult,
+) error {
+	// Check for combinatorial explosion
+	estimatedCombinations := newIterCtx.TotalItems
+	for i := 0; i < iterStack.Depth(); i++ {
+		ctx := iterStack.GetContextForDepth(i)
+		if ctx != nil {
+			estimatedCombinations *= ctx.TotalItems
+		}
+	}
+
+	if estimatedCombinations > sp.config.MaxActiveCombinations {
+		return fmt.Errorf("estimated %d combinations exceeds limit %d",
+			estimatedCombinations,
+			sp.config.MaxActiveCombinations,
+		)
+	}
+
+	// DFS: Push iteration context onto stack
+	iterStack.Push(newIterCtx)
+	defer iterStack.Pop() // DFS: Backtrack when done
+
+	sp.logger.Debug("expanding iteration (DFS forward)",
+		Field{Key: "depth", Value: currentDepth},
+		Field{Key: "nesting_level", Value: iterStack.Depth()},
+		Field{Key: "total_items", Value: newIterCtx.TotalItems},
+	)
+
+	// Initialize result structure for first-level iteration
+	if iterStack.Depth() == 1 && len(res.Items) == 0 {
+		res.Items = make([]map[string]interface{}, newIterCtx.TotalItems)
 		for i := range res.Items {
 			res.Items[i] = make(map[string]interface{})
 		}
+	}
 
-		// Process items concurrently using worker pool pattern
-		err := sp.processMidFlowConcurrently(ctx, iterStartDepth, preIterStore, iterState, &res)
+	// Sequential DFS traversal of items
+	return sp.processIterationSequential(ctx, currentDepth, parentStore, iterStack, newIterCtx, res)
+}
+
+// processIterationSequential processes iteration items sequentially (DFS in order)
+func (sp *SubflowProcessor) processIterationSequential(
+	ctx context.Context,
+	currentDepth int,
+	parentStore *NodeOutputStore,
+	iterStack *IterationStack,
+	iterCtx *NestedIterationContext,
+	res *BatchResult,
+) error {
+	for i := 0; i < iterCtx.TotalItems; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// DFS: Update current index and item data
+		iterCtx.CurrentIndex = i
+		iterCtx.ItemData = sp.extractItemDataAsMap(iterCtx.Items[i])
+
+		sp.logger.Debug("processing item (DFS)",
+			Field{Key: "item_index", Value: i},
+			Field{Key: "total_items", Value: iterCtx.TotalItems},
+			Field{Key: "nesting_level", Value: iterStack.Depth()},
+			Field{Key: "indices", Value: iterStack.GetCurrentIndices()},
+		)
+
+		// Create isolated store for this item
+		itemStore := sp.createNestedItemStore(parentStore, iterStack)
+
+		// DFS: Recursive call to process remaining depths
+		// Start from currentDepth (not currentDepth+1) because:
+		// - The IsIteratingFrom check prevents duplicate iteration contexts
+		// - We need to process the nodes at this depth within the iteration context
+		err := sp.processDepthLevelsRecursive(ctx, currentDepth, itemStore, iterStack, res)
 		if err != nil {
-			res.Error = err
-			return res
+			return err
 		}
 	}
 
-	sp.metrics.RecordProcessed(time.Since(start).Nanoseconds())
-	return res
+	sp.logger.Debug("completed DFS iteration (backtrack)",
+		Field{Key: "nesting_level", Value: iterStack.Depth()},
+		Field{Key: "total_items", Value: iterCtx.TotalItems},
+	)
+
+	return nil
+}
+
+// extractItemDataAsMap converts an item to map[string]interface{}
+func (sp *SubflowProcessor) extractItemDataAsMap(item interface{}) map[string]interface{} {
+	if m, ok := item.(map[string]interface{}); ok {
+		return m
+	}
+	// Wrap non-map items
+	return map[string]interface{}{"value": item}
+}
+
+// createNestedItemStore creates an isolated store for an iteration item
+func (sp *SubflowProcessor) createNestedItemStore(
+	parentStore *NodeOutputStore,
+	iterStack *IterationStack,
+) *NodeOutputStore {
+	itemStore := NewNodeOutputStore()
+
+	// Copy all outputs from parent store
+	for nodeId, output := range parentStore.GetAllSingleOutputs() {
+		itemStore.SetSingleOutput(nodeId, output)
+	}
+
+	// Store current iteration items for all active contexts
+	if iterStack != nil && iterStack.Depth() > 0 {
+		// Get the deepest (most recent) context's item
+		// This represents the "current view" of the data at this nesting level
+		deepestCtx := iterStack.Current()
+		if deepestCtx != nil && deepestCtx.CurrentIndex >= 0 && deepestCtx.CurrentIndex < len(deepestCtx.Items) {
+			itemData := sp.extractItemDataAsMap(deepestCtx.Items[deepestCtx.CurrentIndex])
+
+			// Store as the source node's output for this context
+			// This makes the current item available for value extraction
+			itemStore.SetSingleOutput(deepestCtx.SourceNodeId, itemData)
+			itemStore.SetCurrentIterationItem(deepestCtx.SourceNodeId, itemData, deepestCtx.CurrentIndex)
+		}
+
+		// Also store all context items for potential use
+		for i := 0; i < iterStack.Depth(); i++ {
+			ctx := iterStack.GetContextForDepth(i)
+			if ctx != nil && ctx.CurrentIndex >= 0 && ctx.CurrentIndex < len(ctx.Items) {
+				itemData := sp.extractItemDataAsMap(ctx.Items[ctx.CurrentIndex])
+				itemStore.SetCurrentIterationItem(ctx.SourceNodeId, itemData, ctx.CurrentIndex)
+			}
+		}
+	}
+
+	return itemStore
 }
 
 // depthNodeResult holds the result of processing a single node at a depth level
@@ -223,7 +612,7 @@ type depthNodeResult struct {
 }
 
 // processDepthLevelParallel processes all nodes at a depth level in parallel.
-// For iteration context, pass iter and itemIndex; otherwise pass nil and -1.
+// For iteration context, pass iter and itemIndex; pathPrefix is the iteration path for flat keys (e.g. /data[0]/assignments[0]).
 func (sp *SubflowProcessor) processDepthLevelParallel(
 	ctx context.Context,
 	depth int,
@@ -232,6 +621,7 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 	shared map[string]interface{},
 	iter *IterationState,
 	itemIndex int,
+	pathPrefix string,
 ) error {
 	if len(nodeIndices) == 0 {
 		return nil
@@ -240,7 +630,7 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 	// Single node - process directly without goroutine overhead
 	if len(nodeIndices) == 1 {
 		idx := nodeIndices[0]
-		return sp.processSingleNodeAtDepth(ctx, idx, store, shared, iter, itemIndex)
+		return sp.processSingleNodeAtDepth(ctx, idx, store, shared, iter, itemIndex, pathPrefix)
 	}
 
 	sp.logger.Debug("processing depth level in parallel",
@@ -381,14 +771,9 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 		// Store output for downstream nodes
 		store.SetSingleOutput(config.NodeId, result.output)
 
-		// Flatten and merge to shared
-		if iter != nil && itemIndex >= 0 {
-			flat := FlattenMapWithIndex(result.output, config.NodeId, "", itemIndex)
-			MergeMaps(shared, flat)
-		} else {
-			flat := FlattenMap(result.output, config.NodeId, "")
-			MergeMaps(shared, flat)
-		}
+		// Flatten and merge to shared. When in iteration, pathPrefix gives path-style keys (e.g. /data[0]/assignments[0]/...).
+		flat := FlattenMap(result.output, config.NodeId, pathPrefix)
+		MergeMaps(shared, flat)
 	}
 
 	return firstErr
@@ -402,6 +787,7 @@ func (sp *SubflowProcessor) processSingleNodeAtDepth(
 	shared map[string]interface{},
 	iter *IterationState,
 	itemIndex int,
+	pathPrefix string,
 ) error {
 	node := sp.nodes[nodeIdx]
 	config := sp.nodeConfigs[nodeIdx]
@@ -466,497 +852,30 @@ func (sp *SubflowProcessor) processSingleNodeAtDepth(
 	// Store output for downstream nodes
 	store.SetSingleOutput(config.NodeId, out.Data)
 
-	// Flatten and merge to shared
-	if iter != nil && itemIndex >= 0 {
-		flat := FlattenMapWithIndex(out.Data, config.NodeId, "", itemIndex)
-		MergeMaps(shared, flat)
-	} else {
-		flat := FlattenMap(out.Data, config.NodeId, "")
-		MergeMaps(shared, flat)
-	}
+	// Flatten and merge to shared. When in iteration, pathPrefix gives path-style keys.
+	flat := FlattenMap(out.Data, config.NodeId, pathPrefix)
+	MergeMaps(shared, flat)
 
 	return nil
 }
 
-// midFlowItemProcessor implements ItemProcessor for mid-flow iteration.
-// It captures the context needed to process mid-flow items.
-type midFlowItemProcessor struct {
-	subflow      *SubflowProcessor
-	startDepth   int
-	preIterStore *NodeOutputStore
-	iter         IterationState
-}
-
-// ProcessItem processes a single mid-flow item.
-func (p *midFlowItemProcessor) ProcessItem(ctx context.Context, item BatchItem) BatchResult {
-	return p.subflow.processOneMidFlowItem(ctx, item, p.startDepth, p.preIterStore, p.iter)
-}
-
-// newMidFlowItemProcessor creates an ItemProcessor for mid-flow iteration.
-func (sp *SubflowProcessor) newMidFlowItemProcessor(
-	startDepth int,
-	preIterStore *NodeOutputStore,
-	iter IterationState,
-) ItemProcessor {
-	return &midFlowItemProcessor{
-		subflow:      sp,
-		startDepth:   startDepth,
-		preIterStore: preIterStore,
-		iter:         iter,
-	}
-}
-
-// processMidFlowConcurrently processes mid-flow iteration items concurrently.
-// It uses WorkerPool for consistent concurrency handling.
-func (sp *SubflowProcessor) processMidFlowConcurrently(
-	ctx context.Context,
-	startDepth int,
-	preIterStore *NodeOutputStore,
-	iter IterationState,
+// mergeIndexedOutputToResult merges indexed output into result structure.
+// When in iteration, keys are built with path-style indices (e.g. nodeId-/data[0]/assignments[0]/.../chapter[0])
+// so we only append the current level's index to the key (key already has path prefix from flatten).
+func (sp *SubflowProcessor) mergeIndexedOutputToResult(
+	indexed map[string]interface{},
+	indices []int,
 	res *BatchResult,
-) error {
-	totalItems := iter.TotalItems
-
-	sp.logger.Debug("starting concurrent mid-flow processing",
-		Field{Key: "total_items", Value: totalItems},
-		Field{Key: "workers", Value: sp.workerPoolConfig.NumWorkers},
-		Field{Key: "start_depth", Value: startDepth},
-	)
-
-	// Create ItemProcessor for mid-flow items
-	processor := sp.newMidFlowItemProcessor(startDepth, preIterStore, iter)
-
-	// Create worker pool
-	pool := NewWorkerPool(sp.workerPoolConfig, processor, sp.logger)
-	sp.logger.Debug("created worker pool for mid-flow", Field{Key: "num_workers", Value: sp.workerPoolConfig.NumWorkers})
-
-	// Start workers
-	pool.Start(ctx)
-	sp.logger.Debug("started worker pool for mid-flow")
-
-	// Convert iter.Items to BatchItems
-	batchItems := make([]BatchItem, 0, totalItems)
-	for itemIdx := 0; itemIdx < totalItems; itemIdx++ {
-		currentItem := iter.Items[itemIdx]
-		currentItemMap, ok := currentItem.(map[string]interface{})
-		if !ok {
-			currentItemMap = map[string]interface{}{"value": currentItem}
-		}
-		batchItems = append(batchItems, BatchItem{
-			Index: itemIdx,
-			Data:  currentItemMap,
-		})
-	}
-
-	// Submit items and wait for completion in a goroutine
-	submitDone := make(chan struct{})
-	go func() {
-		defer close(submitDone)
-		sp.logger.Debug("submitting batch items to worker pool")
-		pool.SubmitAll(ctx, batchItems)
-		sp.logger.Debug("submitted all batch items, waiting for workers to complete")
-		pool.Wait()
-	}()
-
-	// Collect results with context cancellation support
-	collectedResults, collectedItems, collectErr := collectResultsWithContext(ctx, pool.Results(), totalItems)
-
-	// Wait for submission to complete
-	select {
-	case <-submitDone:
-	case <-ctx.Done():
-		pool.Close()
-		return ctx.Err()
-	case <-time.After(10 * time.Second):
-		// Submission taking too long, but continue with results we have
-	}
-
-	if collectErr != nil {
-		return collectErr
-	}
-
-	// Merge results into res.Items and res.Output
-	// collectedResults[i] contains BatchResult.Output (sharedMerge with index notation)
-	// collectedItems[i] contains BatchResult.Items (where [0] is itemOutput)
-	for i := 0; i < totalItems && i < len(collectedResults); i++ {
-		// Merge item-specific output (Items[0] from BatchResult) into res.Items[i]
-		if i < len(res.Items) && len(collectedItems) > i && len(collectedItems[i]) > 0 {
-			// collectedItems[i] is []map[string]interface{} from BatchResult.Items
-			// Merge each item in the slice (typically just [0]) into res.Items[i]
-			for _, item := range collectedItems[i] {
-				MergeMaps(res.Items[i], item)
-			}
-		}
-		// Merge shared output (Output from BatchResult) into res.Output
-		if collectedResults[i] != nil {
-			// The Output contains sharedMerge with index notation - merge into res.Output
-			MergeMaps(res.Output, collectedResults[i])
+) {
+	for key, val := range indexed {
+		if len(indices) == 0 {
+			res.Output[key] = val
+		} else {
+			// Path-style: key is already nodeId-/path[0]/path[1]/.../field; append current index only.
+			indexedKey := key + fmt.Sprintf("[%d]", indices[len(indices)-1])
+			res.Output[indexedKey] = val
 		}
 	}
-
-	return nil
-}
-
-// processOneMidFlowItem processes a single mid-flow item through remaining depth levels.
-// Uses parallel processing within each depth level.
-// Returns BatchResult where:
-//   - Output contains sharedMerge (output with index notation to merge into shared)
-//   - Items[0] contains itemOutput (flattened output for this specific item)
-func (sp *SubflowProcessor) processOneMidFlowItem(
-	ctx context.Context,
-	item BatchItem,
-	startDepth int,
-	preIterStore *NodeOutputStore,
-	iter IterationState,
-) BatchResult {
-	result := BatchResult{
-		Index:  item.Index,
-		Output: make(map[string]interface{}),                           // sharedMerge with index notation
-		Items:  []map[string]interface{}{make(map[string]interface{})}, // itemOutput
-	}
-
-	// Create isolated store for this item
-	itemStore := sp.createItemStore(preIterStore, item.Data, iter, item.Index)
-
-	sp.logger.Debug("processing mid-flow item by depth",
-		Field{Key: "item_index", Value: item.Index},
-		Field{Key: "start_depth", Value: startDepth},
-		Field{Key: "total_depths", Value: len(sp.depthGroups) - startDepth},
-	)
-
-	// Process remaining depth levels (from startDepth to end)
-	for depth := startDepth; depth < len(sp.depthGroups); depth++ {
-		select {
-		case <-ctx.Done():
-			result.Error = ctx.Err()
-			return result
-		default:
-		}
-
-		nodeIndices := sp.depthGroups[depth]
-		if len(nodeIndices) == 0 {
-			continue
-		}
-
-		// Process all nodes at this depth in parallel
-		err := sp.processDepthLevelForItem(ctx, depth, nodeIndices, itemStore, &iter, item.Index, &result)
-		if err != nil {
-			result.Error = err
-			return result
-		}
-	}
-
-	return result
-}
-
-// processDepthLevelForItem processes all nodes at a depth level for a specific item.
-// Outputs are merged into the result's Items[0] (itemOutput) and Output (sharedMerge with index notation).
-func (sp *SubflowProcessor) processDepthLevelForItem(
-	ctx context.Context,
-	depth int,
-	nodeIndices []int,
-	itemStore *NodeOutputStore,
-	iter *IterationState,
-	itemIndex int,
-	result *BatchResult,
-) error {
-	if len(nodeIndices) == 0 {
-		return nil
-	}
-
-	// Single node - process directly
-	if len(nodeIndices) == 1 {
-		idx := nodeIndices[0]
-		return sp.processSingleNodeForItem(ctx, idx, itemStore, iter, itemIndex, result)
-	}
-
-	sp.logger.Debug("processing depth level in parallel for item",
-		Field{Key: "depth", Value: depth},
-		Field{Key: "node_count", Value: len(nodeIndices)},
-		Field{Key: "item_index", Value: itemIndex},
-	)
-
-	// Multiple nodes - process in parallel
-	var wg sync.WaitGroup
-	resultChan := make(chan depthNodeResult, len(nodeIndices))
-
-	for _, idx := range nodeIndices {
-		wg.Add(1)
-		go func(nodeIdx int) {
-			defer wg.Done()
-
-			nodeResult := depthNodeResult{nodeIndex: nodeIdx}
-
-			// Check context cancellation before starting
-			select {
-			case <-ctx.Done():
-				nodeResult.err = ctx.Err()
-				resultChan <- nodeResult
-				return
-			default:
-			}
-
-			node := sp.nodes[nodeIdx]
-			config := sp.nodeConfigs[nodeIdx]
-
-			// Check if should skip
-			if sp.shouldSkipNodeForItem(config, itemStore, *iter, itemIndex) {
-				sp.logger.Debug("skipping node at depth for item",
-					Field{Key: "node_id", Value: config.NodeId},
-					Field{Key: "depth", Value: depth},
-					Field{Key: "item_index", Value: itemIndex},
-				)
-				nodeResult.skipped = true
-				resultChan <- nodeResult
-				return
-			}
-
-			// Build input
-			input := sp.buildItemInput(config, itemStore, *iter, itemIndex)
-
-			procInput := ProcessInput{
-				Ctx:           ctx,
-				Data:          input,
-				Config:        nil,
-				RawConfig:     config.NodeConfig.Config,
-				NodeId:        config.NodeId,
-				PluginType:    config.PluginType,
-				Label:         config.Label,
-				ItemIndex:     itemIndex,
-				TotalItems:    iter.TotalItems,
-				IsIteration:   true,
-				IterationPath: iter.ArrayPath,
-			}
-
-			// Process node in a goroutine with timeout to prevent indefinite blocking
-			processDone := make(chan struct{})
-			var out ProcessOutput
-			var dur int64
-			go func() {
-				defer close(processDone)
-				startTime := time.Now()
-				out = node.Process(procInput)
-				dur = time.Since(startTime).Nanoseconds()
-			}()
-
-			// Wait for processing with context cancellation
-			select {
-			case <-ctx.Done():
-				nodeResult.err = fmt.Errorf("context cancelled while processing node %s at item %d: %w", config.Label, itemIndex, ctx.Err())
-				resultChan <- nodeResult
-				return
-			case <-processDone:
-				// Processing completed
-			}
-
-			if out.Error != nil {
-				sp.metrics.RecordError()
-				nodeResult.err = fmt.Errorf("node %s failed at item %d: %w", config.Label, itemIndex, out.Error)
-				resultChan <- nodeResult
-				return
-			}
-
-			if out.Skipped {
-				sp.metrics.RecordSkipped()
-				nodeResult.skipped = true
-				resultChan <- nodeResult
-				return
-			}
-
-			sp.metrics.RecordProcessed(dur)
-			nodeResult.output = out.Data
-			resultChan <- nodeResult
-		}(idx)
-	}
-
-	// Wait for all goroutines to complete, then close channel
-	// The channel buffer size equals the number of goroutines, so all sends
-	// will succeed before the channel is closed
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	// Collect results
-	var firstErr error
-	for nodeResult := range resultChan {
-		if nodeResult.err != nil && firstErr == nil {
-			firstErr = nodeResult.err
-			continue
-		}
-		if nodeResult.skipped || nodeResult.output == nil {
-			continue
-		}
-
-		config := sp.nodeConfigs[nodeResult.nodeIndex]
-
-		// Store output for downstream nodes
-		itemStore.SetSingleOutput(config.NodeId, nodeResult.output)
-
-		// Flatten with index notation for shared output
-		flatWithIndex := FlattenMapWithIndex(nodeResult.output, config.NodeId, "", itemIndex)
-		MergeMaps(result.Output, flatWithIndex)
-
-		// Flatten without index for this item's output
-		flatItem := FlattenMap(nodeResult.output, config.NodeId, "")
-		if len(result.Items) == 0 {
-			result.Items = []map[string]interface{}{make(map[string]interface{})}
-		}
-		MergeMaps(result.Items[0], flatItem)
-	}
-
-	return firstErr
-}
-
-// processSingleNodeForItem processes a single node for a specific item (optimization)
-func (sp *SubflowProcessor) processSingleNodeForItem(
-	ctx context.Context,
-	nodeIdx int,
-	itemStore *NodeOutputStore,
-	iter *IterationState,
-	itemIndex int,
-	result *BatchResult,
-) error {
-	node := sp.nodes[nodeIdx]
-	config := sp.nodeConfigs[nodeIdx]
-
-	// Check if should skip
-	if sp.shouldSkipNodeForItem(config, itemStore, *iter, itemIndex) {
-		sp.logger.Debug("skipping single node for item",
-			Field{Key: "node_id", Value: config.NodeId},
-			Field{Key: "item_index", Value: itemIndex},
-		)
-		return nil
-	}
-
-	// Build input
-	input := sp.buildItemInput(config, itemStore, *iter, itemIndex)
-
-	procInput := ProcessInput{
-		Ctx:           ctx,
-		Data:          input,
-		Config:        nil,
-		RawConfig:     config.NodeConfig.Config,
-		NodeId:        config.NodeId,
-		PluginType:    config.PluginType,
-		Label:         config.Label,
-		ItemIndex:     itemIndex,
-		TotalItems:    iter.TotalItems,
-		IsIteration:   true,
-		IterationPath: iter.ArrayPath,
-	}
-
-	startTime := time.Now()
-	out := node.Process(procInput)
-	dur := time.Since(startTime).Nanoseconds()
-
-	if out.Error != nil {
-		sp.metrics.RecordError()
-		return fmt.Errorf("node %s failed at item %d: %w", config.Label, itemIndex, out.Error)
-	}
-
-	if out.Skipped {
-		sp.metrics.RecordSkipped()
-		return nil
-	}
-
-	sp.metrics.RecordProcessed(dur)
-
-	// Store output for downstream nodes
-	itemStore.SetSingleOutput(config.NodeId, out.Data)
-
-	// Flatten with index notation for shared output
-	flatWithIndex := FlattenMapWithIndex(out.Data, config.NodeId, "", itemIndex)
-	MergeMaps(result.Output, flatWithIndex)
-
-	// Flatten without index for this item's output
-	flatItem := FlattenMap(out.Data, config.NodeId, "")
-	if len(result.Items) == 0 {
-		result.Items = []map[string]interface{}{make(map[string]interface{})}
-	}
-	MergeMaps(result.Items[0], flatItem)
-
-	return nil
-}
-
-// analyzeNodeIteration determines if a node should start iterating.
-func (sp *SubflowProcessor) analyzeNodeIteration(
-	config EmbeddedNodeConfig,
-	store *NodeOutputStore,
-	active *IterationState,
-) (bool, IterationState) {
-	mappings := config.GetIterateMappings()
-	if len(mappings) == 0 {
-		return false, IterationState{}
-	}
-
-	for _, m := range mappings {
-		// if active and source matches, skip
-		if active != nil && active.SourceNodeId == m.SourceNodeId {
-			continue
-		}
-
-		// get source output (single)
-		sourceOutput, ok := store.GetOutput(m.SourceNodeId, -1)
-		if !ok {
-			continue
-		}
-
-		arrayPath, _, hasArray := ExtractArrayPath(m.SourceEndpoint)
-		if !hasArray {
-			// check if any field in sourceOutput is an array
-			for _, v := range sourceOutput {
-				if arr, ok := v.([]interface{}); ok && len(arr) > 0 {
-					return true, IterationState{
-						IsActive:          true,
-						ArrayPath:         "",
-						SourceNodeId:      m.SourceNodeId,
-						InitiatedByNodeId: config.NodeId,
-						TotalItems:        len(arr),
-						Items:             arr,
-					}
-				}
-			}
-			continue
-		}
-
-		// get value at arrayPath
-		val := GetNestedValue(sourceOutput, arrayPath)
-		if arr, ok := val.([]interface{}); ok && len(arr) > 0 {
-			return true, IterationState{
-				IsActive:          true,
-				ArrayPath:         arrayPath,
-				SourceNodeId:      m.SourceNodeId,
-				InitiatedByNodeId: config.NodeId,
-				TotalItems:        len(arr),
-				Items:             arr,
-			}
-		}
-	}
-
-	return false, IterationState{}
-}
-
-// createItemStore creates an isolated NodeOutputStore for processing one item.
-// It inherits all pre-iteration outputs and stores the current iteration item.
-func (sp *SubflowProcessor) createItemStore(
-	preIterStore *NodeOutputStore,
-	currentItem map[string]interface{},
-	iter IterationState,
-	itemIndex int,
-) *NodeOutputStore {
-	itemStore := NewNodeOutputStore()
-
-	// Copy all pre-iteration single outputs
-	for nodeId, output := range preIterStore.GetAllSingleOutputs() {
-		itemStore.SetSingleOutput(nodeId, output)
-	}
-
-	// Store the current item as a special entry for the iteration source
-	// This allows nodes to reference the current item via the source node ID
-	itemStore.SetCurrentIterationItem(iter.SourceNodeId, currentItem, itemIndex)
-
-	return itemStore
 }
 
 // buildItemInput builds input for a node processing a specific item.
@@ -973,30 +892,76 @@ func (sp *SubflowProcessor) buildItemInput(
 ) map[string]interface{} {
 	input := make(map[string]interface{})
 
+	sp.logger.Debug("building item input",
+		Field{Key: "node", Value: config.NodeId},
+		Field{Key: "item_index", Value: itemIndex},
+		Field{Key: "iter_source", Value: iter.SourceNodeId},
+	)
+
 	for _, m := range config.GetFieldMappings() {
 		var val interface{}
+
+		sp.logger.Debug("processing field mapping",
+			Field{Key: "source_node", Value: m.SourceNodeId},
+			Field{Key: "endpoint", Value: m.SourceEndpoint},
+		)
 
 		// Check if this is from the iteration source's current item
 		if m.SourceNodeId == iter.SourceNodeId {
 			// Get current item from store
 			currentItem, idx := itemStore.GetCurrentIterationItem(m.SourceNodeId)
 			if currentItem != nil && idx == itemIndex {
-				_, fieldPath, hasArray := ExtractArrayPath(m.SourceEndpoint)
-				if hasArray && fieldPath != "" {
-					val = GetNestedValue(currentItem, fieldPath)
+				// For nested paths, extract the field relevant to THIS iteration level
+				if strings.Contains(m.SourceEndpoint, "//") {
+					// Parse the full nested path to find which segment we're at
+					segments := ParseNestedArrayPath(m.SourceEndpoint)
+
+					// The last segment (non-array) is the field to extract from current item
+					if len(segments) > 0 {
+						lastSeg := segments[len(segments)-1]
+						if !lastSeg.IsArray && lastSeg.Path != "" {
+							// Extract this field from the current item
+							val = GetNestedValue(currentItem, lastSeg.Path)
+						} else {
+							// No final field, return the whole item
+							val = currentItem
+						}
+					}
 				} else {
-					val = currentItem
+					// Simple path, no nesting
+					_, fieldPath, _ := ExtractArrayPath(m.SourceEndpoint)
+					if fieldPath != "" {
+						val = GetNestedValue(currentItem, fieldPath)
+					} else {
+						val = currentItem
+					}
 				}
 			}
 		} else if sourceOut, ok := itemStore.GetOutput(m.SourceNodeId, -1); ok {
-			// Source exists in itemStore (either pre-iteration or processed in this subflow)
-			// Use extractValueAtIndex to handle array notation vs direct path
-			val = sp.extractValueAtIndex(sourceOut, m.SourceEndpoint, itemIndex)
+			// Source exists in itemStore
+			// Check if this has nested array notation
+			if strings.Contains(m.SourceEndpoint, "//") {
+				// Parse the nested path and extract value considering current context
+				val = sp.extractNestedValueFromSource(sourceOut, m.SourceEndpoint, itemStore, itemIndex)
+			} else {
+				// Simple path extraction
+				val = sp.extractValue(sourceOut, m.SourceEndpoint)
+			}
 		}
 
 		if val == nil {
+			sp.logger.Debug("extracted value is nil",
+				Field{Key: "source_node", Value: m.SourceNodeId},
+				Field{Key: "endpoint", Value: m.SourceEndpoint},
+			)
 			continue
 		}
+
+		sp.logger.Debug("extracted value successfully",
+			Field{Key: "source_node", Value: m.SourceNodeId},
+			Field{Key: "endpoint", Value: m.SourceEndpoint},
+			Field{Key: "value_type", Value: fmt.Sprintf("%T", val)},
+		)
 
 		for _, dest := range m.DestinationEndpoints {
 			SetNestedValue(input, dest, val)
@@ -1004,6 +969,57 @@ func (sp *SubflowProcessor) buildItemInput(
 	}
 
 	return input
+}
+
+// extractNestedValueFromSource extracts value from source considering nested context
+// This handles paths like /data//assignments//topics//name when we're in nested iteration
+func (sp *SubflowProcessor) extractNestedValueFromSource(
+	source map[string]interface{},
+	endpoint string,
+	_ *NodeOutputStore,
+	_ int,
+) interface{} {
+	endpoint = strings.TrimPrefix(endpoint, "/")
+
+	// Parse into segments: data, assignments/details/topics, name
+	parts := strings.Split(endpoint, "//")
+	if len(parts) == 1 {
+		// No array notation, simple extraction
+		return GetNestedValue(source, endpoint)
+	}
+
+	current := interface{}(source)
+
+	// Navigate through each // segment
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+
+		// Navigate to this part
+		if m, ok := current.(map[string]interface{}); ok {
+			current = GetNestedValue(m, part)
+			if current == nil {
+				return nil
+			}
+		}
+
+		// If this is not the last part, it should be an array
+		if i < len(parts)-1 {
+			if arr, ok := current.([]interface{}); ok {
+				// Check if we have context for this array level
+				// Look for current item in itemStore based on the path
+				// For now, use the first item as a fallback
+				if len(arr) > 0 {
+					current = arr[0]
+				} else {
+					return nil
+				}
+			}
+		}
+	}
+
+	return current
 }
 
 // shouldSkipNodeForItem checks event triggers for a specific item.
@@ -1143,39 +1159,6 @@ func (sp *SubflowProcessor) extractValue(source map[string]interface{}, endpoint
 		return GetNestedValue(source, fieldPath)
 	}
 
-	return GetNestedValue(source, endpoint)
-}
-
-// extractValueAtIndex extracts a value from a source at a specific array index.
-// Used when inheriting iteration from a non-iterated source that contains array data.
-// For endpoint "/data//Hire_Date" at index 2, this navigates to data[2].Hire_Date
-func (sp *SubflowProcessor) extractValueAtIndex(source map[string]interface{}, endpoint string, index int) interface{} {
-	endpoint = strings.TrimPrefix(endpoint, "/")
-
-	// Check for array notation
-	if idx := strings.Index(endpoint, "//"); idx >= 0 {
-		arrayPath := endpoint[:idx]
-		fieldPath := endpoint[idx+2:]
-
-		// Get the array at arrayPath
-		arrVal := GetNestedValue(source, arrayPath)
-		if arr, ok := arrVal.([]interface{}); ok && index < len(arr) {
-			// Get the item at index
-			item := arr[index]
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				// Extract field from item
-				if fieldPath != "" {
-					return GetNestedValue(itemMap, fieldPath)
-				}
-				return itemMap
-			}
-			// If item is not a map, return it directly
-			return item
-		}
-		return nil
-	}
-
-	// No array notation - just extract the value directly
 	return GetNestedValue(source, endpoint)
 }
 
