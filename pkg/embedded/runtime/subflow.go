@@ -24,6 +24,7 @@ type SubflowProcessor struct {
 	metrics          MetricsCollector
 	workerPoolConfig WorkerPoolConfig
 	config           NestedIterationConfig // Nested iteration config
+	priorUnitOutputs map[string]map[string]interface{}
 }
 
 // NewSubflowProcessor creates a new subflow processor.
@@ -87,6 +88,7 @@ func NewSubflowProcessor(config SubflowConfig) (*SubflowProcessor, error) {
 		metrics:          metrics,
 		workerPoolConfig: workerPoolCfg,
 		config:           nestedIterCfg,
+		priorUnitOutputs: config.PriorUnitOutputs,
 	}, nil
 }
 
@@ -117,6 +119,19 @@ func groupNodesByDepth(configs []EmbeddedNodeConfig) [][]int {
 	return groups
 }
 
+// hasDownstreamPluginErrorListener returns true if any embedded node has an event mapping
+// from sourceNodeId's pluginError section (so error output should be stored and flow continued).
+func (sp *SubflowProcessor) hasDownstreamPluginErrorListener(sourceNodeId string) bool {
+	for _, cfg := range sp.nodeConfigs {
+		for _, m := range cfg.GetEventMappings() {
+			if m.SourceNodeId == sourceNodeId && m.SourceSectionId == SectionPluginError {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // SubflowConfig holds configuration for creating a SubflowProcessor
 type SubflowConfig struct {
 	ParentNodeId     string
@@ -127,6 +142,9 @@ type SubflowConfig struct {
 	Metrics          MetricsCollector
 	WorkerPoolConfig WorkerPoolConfig      // Config for mid-flow worker pool
 	Config           NestedIterationConfig // Nested iteration config
+	// PriorUnitOutputs seeds the store with per-node outputs from prior units so embedded nodes
+	// can reference those node IDs in field mappings (e.g. Unit A node IDs when Unit B runs).
+	PriorUnitOutputs map[string]map[string]interface{}
 }
 
 // ProcessItem processes a single parent item through all embedded nodes.
@@ -152,6 +170,15 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 	// Initialize store with parent data
 	store := NewNodeOutputStore()
 	store.SetSingleOutput(sp.parentNodeId, item.Data)
+
+	// Seed store with prior unit outputs so embedded nodes can reference prior unit node IDs
+	if len(sp.priorUnitOutputs) > 0 {
+		for nodeId, output := range sp.priorUnitOutputs {
+			if output != nil {
+				store.SetSingleOutput(nodeId, output)
+			}
+		}
+	}
 
 	// Flatten parent data into shared output
 	var parentFlat map[string]interface{}
@@ -729,6 +756,16 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 
 			if out.Error != nil {
 				sp.metrics.RecordError()
+				if sp.hasDownstreamPluginErrorListener(config.NodeId) {
+					result.output = map[string]interface{}{
+						ErrorOutputKeyError:       true,
+						ErrorOutputKeyDescription: out.Error.Error(),
+					}
+					result.err = nil
+					result.skipped = false
+					resultChan <- result
+					return
+				}
 				result.err = fmt.Errorf("node %s failed: %w", config.Label, out.Error)
 				resultChan <- result
 				return
@@ -839,6 +876,16 @@ func (sp *SubflowProcessor) processSingleNodeAtDepth(
 
 	if out.Error != nil {
 		sp.metrics.RecordError()
+		if sp.hasDownstreamPluginErrorListener(config.NodeId) {
+			errorOutput := map[string]interface{}{
+				ErrorOutputKeyError:       true,
+				ErrorOutputKeyDescription: out.Error.Error(),
+			}
+			store.SetSingleOutput(config.NodeId, errorOutput)
+			flat := FlattenMap(errorOutput, config.NodeId, pathPrefix)
+			MergeMaps(shared, flat)
+			return nil
+		}
 		return fmt.Errorf("node %s failed: %w", config.Label, out.Error)
 	}
 
@@ -939,7 +986,9 @@ func (sp *SubflowProcessor) buildItemInput(
 			}
 		} else if sourceOut, ok := itemStore.GetOutput(m.SourceNodeId, -1); ok {
 			// Source exists in itemStore
-			// Check if this has nested array notation
+			if m.SourceSectionId == SectionDefault && IsErrorOnlyOutput(sourceOut) {
+				continue
+			}
 			if strings.Contains(m.SourceEndpoint, "//") {
 				// Parse the nested path and extract value considering current context
 				val = sp.extractNestedValueFromSource(sourceOut, m.SourceEndpoint, itemStore, itemIndex)
@@ -1022,8 +1071,9 @@ func (sp *SubflowProcessor) extractNestedValueFromSource(
 	return current
 }
 
-// shouldSkipNodeForItem checks event triggers for a specific item.
-// Handles three cases:
+// shouldSkipNodeForItem checks event triggers for a specific item, and skips when
+// all default-section sources have error-only output.
+// Handles three cases for events:
 // 1. Event source is the iteration source -> check current item
 // 2. Event source in itemStore -> check value
 // 3. Event source not found -> skip
@@ -1066,7 +1116,26 @@ func (sp *SubflowProcessor) shouldSkipNodeForItem(
 		}
 	}
 
-	return false
+	// Skip if this node only consumes default (success) section and all such sources have error-only output
+	defaultMappings := config.GetDefaultSectionFieldMappings()
+	if len(defaultMappings) == 0 || len(defaultMappings) != len(config.GetFieldMappings()) {
+		return false
+	}
+	seen := make(map[string]bool)
+	for _, m := range defaultMappings {
+		if seen[m.SourceNodeId] {
+			continue
+		}
+		seen[m.SourceNodeId] = true
+		sourceOut, ok := itemStore.GetOutput(m.SourceNodeId, -1)
+		if !ok {
+			return false
+		}
+		if !IsErrorOnlyOutput(sourceOut) {
+			return false
+		}
+	}
+	return true
 }
 
 // buildSingleNodeInput builds input for a non-iterated node.
@@ -1079,6 +1148,9 @@ func (sp *SubflowProcessor) buildSingleNodeInput(
 	for _, m := range config.GetFieldMappings() {
 		sourceOut, ok := store.GetOutput(m.SourceNodeId, -1)
 		if !ok {
+			continue
+		}
+		if m.SourceSectionId == SectionDefault && IsErrorOnlyOutput(sourceOut) {
 			continue
 		}
 
@@ -1118,7 +1190,8 @@ func (sp *SubflowProcessor) buildSingleNodeInput(
 	return input
 }
 
-// shouldSkipNode checks if a node should be skipped due to event triggers.
+// shouldSkipNode checks if a node should be skipped due to event triggers
+// or because all its default-section sources emitted error-only output.
 func (sp *SubflowProcessor) shouldSkipNode(
 	config EmbeddedNodeConfig,
 	store *NodeOutputStore,
@@ -1147,7 +1220,26 @@ func (sp *SubflowProcessor) shouldSkipNode(
 		}
 	}
 
-	return false
+	// Skip if this node only consumes default (success) section and all such sources have error-only output
+	defaultMappings := config.GetDefaultSectionFieldMappings()
+	if len(defaultMappings) == 0 || len(defaultMappings) != len(config.GetFieldMappings()) {
+		return false
+	}
+	seen := make(map[string]bool)
+	for _, m := range defaultMappings {
+		if seen[m.SourceNodeId] {
+			continue
+		}
+		seen[m.SourceNodeId] = true
+		sourceOut, ok := store.GetOutput(m.SourceNodeId, -1)
+		if !ok {
+			return false
+		}
+		if !IsErrorOnlyOutput(sourceOut) {
+			return false
+		}
+	}
+	return true
 }
 
 // extractValue extracts a value from a source output based on endpoint.

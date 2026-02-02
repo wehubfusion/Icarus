@@ -175,6 +175,7 @@ func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 	ctx context.Context,
 	parentOutput map[string]interface{},
 	unit ExecutionUnit,
+	priorUnitOutputs map[string]map[string]interface{},
 ) (StandardUnitOutput, error) {
 	p.logger.Debug("processing embedded nodes",
 		Field{Key: "unit_id", Value: unit.NodeId},
@@ -194,11 +195,11 @@ func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 		p.logger.Debug("processing with array iteration",
 			Field{Key: "array_path", Value: iterCtx.ArrayPath},
 		)
-		return p.processWithConcurrency(ctx, parentOutput, unit, iterCtx)
+		return p.processWithConcurrency(ctx, parentOutput, unit, iterCtx, priorUnitOutputs)
 	}
 
 	p.logger.Debug("processing single object")
-	return p.processSingleObject(ctx, parentOutput, unit)
+	return p.processSingleObject(ctx, parentOutput, unit, priorUnitOutputs)
 }
 
 // analyzeIterationContext determines if parent-level array iteration is needed.
@@ -237,6 +238,7 @@ func (p *EmbeddedProcessor) processSingleObject(
 	ctx context.Context,
 	parentOutput map[string]interface{},
 	unit ExecutionUnit,
+	priorUnitOutputs map[string]map[string]interface{},
 ) (StandardUnitOutput, error) {
 	// Create subflow processor with concurrency support for mid-flow iteration
 	subflowCfg := SubflowConfig{
@@ -246,6 +248,7 @@ func (p *EmbeddedProcessor) processSingleObject(
 		ArrayPath:        "",
 		Logger:           p.logger,
 		WorkerPoolConfig: p.config.WorkerPool,
+		PriorUnitOutputs: priorUnitOutputs,
 	}
 	subflow, err := NewSubflowProcessor(subflowCfg)
 	if err != nil {
@@ -289,6 +292,7 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 	parentOutput map[string]interface{},
 	unit ExecutionUnit,
 	iterCtx IterationContext,
+	priorUnitOutputs map[string]map[string]interface{},
 ) (StandardUnitOutput, error) {
 	// Extract array from parent output
 	arrayData, ok := parentOutput[iterCtx.ArrayPath]
@@ -331,6 +335,7 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 		ArrayPath:        iterCtx.ArrayPath,
 		Logger:           p.logger,
 		WorkerPoolConfig: p.config.WorkerPool,
+		PriorUnitOutputs: priorUnitOutputs,
 	}
 	subflow, err := NewSubflowProcessor(subflowCfg)
 	if err != nil {

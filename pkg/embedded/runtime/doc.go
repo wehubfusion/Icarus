@@ -106,7 +106,7 @@
 //	processor := runtime.NewEmbeddedProcessor(factory, cfg)
 //
 //	// Process embedded nodes
-//	output, err := processor.ProcessEmbeddedNodes(ctx, parentOutput, unit)
+//	output, err := processor.ProcessEmbeddedNodes(ctx, parentOutput, unit, priorUnitOutputs)
 //
 // # Implementing Custom Nodes
 //

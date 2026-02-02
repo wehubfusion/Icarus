@@ -447,6 +447,65 @@ func ExtractNodeDataFromFlatOutput(flatOutput map[string]interface{}, nodeID str
 	return extractNodeDataFromStandardOutputFlat(flatOutput, nodeID)
 }
 
+// BuildPriorUnitOutputsFromFlat converts flat StandardUnitOutput (keys like "nodeId-/path") into
+// per-node outputs map[nodeID]output so a downstream unit's subflow can seed its store and reference
+// prior unit node IDs in field mappings. Elysium embedded-unit-executor uses this when building
+// priorUnitOutputs from ConsumerGraph ResultLocations.
+func BuildPriorUnitOutputsFromFlat(flat map[string]interface{}) map[string]map[string]interface{} {
+	if len(flat) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	for k := range flat {
+		if idx := strings.Index(k, "-/"); idx > 0 {
+			seen[k[:idx]] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]interface{}, len(seen))
+	for nodeID := range seen {
+		out[nodeID] = extractNodeDataFromStandardOutputFlat(flat, nodeID)
+	}
+	return out
+}
+
+// BuildPriorUnitOutputsFromConsumerGraph builds priorUnitOutputs from ConsumerGraph ResultLocations
+// so a downstream unit's subflow can reference prior unit node IDs. For each ResultLocation with
+// inline data, if the data is StandardUnitOutput flat form, extracts all node outputs; otherwise
+// treats it as that single node's output.
+func BuildPriorUnitOutputsFromConsumerGraph(cg *ConsumerGraph) map[string]map[string]interface{} {
+	if cg == nil || cg.ResultLocations == nil {
+		return nil
+	}
+	var prior map[string]map[string]interface{}
+	for nodeID, loc := range cg.ResultLocations {
+		if loc == nil || !loc.HasInlineData || len(loc.InlineData) == 0 {
+			continue
+		}
+		var data map[string]interface{}
+		if err := json.Unmarshal(loc.InlineData, &data); err != nil {
+			continue
+		}
+		if isStandardUnitOutputFormat(data) {
+			flatPrior := BuildPriorUnitOutputsFromFlat(data)
+			if prior == nil {
+				prior = make(map[string]map[string]interface{})
+			}
+			for nid, out := range flatPrior {
+				prior[nid] = out
+			}
+		} else {
+			if prior == nil {
+				prior = make(map[string]map[string]interface{})
+			}
+			prior[nodeID] = data
+		}
+	}
+	return prior
+}
+
 // extractNodeDataFromStandardOutputFlat extracts and restructures data from flat StandardUnitOutput format.
 // Converts flattened keys like "nodeId-/path" or "nodeId-/path[0]" to nested structure.
 // When the only key for the node is "nodeId-/" (root key, path ""), returns that value as the node data
