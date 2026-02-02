@@ -43,6 +43,23 @@ func (f FieldMapping) HasArrayNotation() bool {
 	return strings.Contains(f.SourceEndpoint, "//")
 }
 
+// Output section names and error-output keys (aligned with execution plan sourceSectionId / endpoints).
+const (
+	SectionDefault            = "default"          // success output section
+	SectionPluginError        = "pluginError"      // error output section
+	ErrorOutputKeyError       = "error"            // boolean, true when output is error-only
+	ErrorOutputKeyDescription = "errorDescription" // string, error message
+)
+
+// IsErrorOnlyOutput returns true if output represents error-only payload (node failed and emitted error output).
+func IsErrorOnlyOutput(output map[string]interface{}) bool {
+	if output == nil {
+		return false
+	}
+	v, ok := output[ErrorOutputKeyError].(bool)
+	return ok && v
+}
+
 // EmbeddedNodeConfig represents the configuration for an embedded node in the execution plan.
 type EmbeddedNodeConfig struct {
 	// NodeId is the unique identifier for this node
@@ -104,6 +121,17 @@ func (e EmbeddedNodeConfig) GetFieldMappings() []FieldMapping {
 		}
 	}
 	return fields
+}
+
+// GetDefaultSectionFieldMappings returns field mappings that read from the source's default (success) section.
+func (e EmbeddedNodeConfig) GetDefaultSectionFieldMappings() []FieldMapping {
+	var mappings []FieldMapping
+	for _, m := range e.FieldMappings {
+		if !m.IsEvent() && m.SourceSectionId == SectionDefault {
+			mappings = append(mappings, m)
+		}
+	}
+	return mappings
 }
 
 // NodeConfig contains the detailed configuration for a node.

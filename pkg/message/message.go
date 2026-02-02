@@ -63,7 +63,9 @@ type Output struct {
 type FieldMapping struct {
 	SourceNodeID         string   `json:"sourceNodeId"`
 	SourceEndpoint       string   `json:"sourceEndpoint"`
+	SourceSectionId      string   `json:"sourceSectionId,omitempty"` // e.g. "default" or "pluginError" for error-event handling
 	DestinationEndpoints []string `json:"destinationEndpoints"`
+	DestinationSectionId string   `json:"destinationSectionId,omitempty"`
 	DataType             string   `json:"dataType"`
 	Iterate              bool     `json:"iterate"`
 	IsEventTrigger       bool     `json:"isEventTrigger,omitempty"` // True when this mapping is an event trigger (conditional execution)
