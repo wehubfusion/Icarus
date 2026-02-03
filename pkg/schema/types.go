@@ -1,6 +1,10 @@
 package schema
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 // Schema represents a complete schema definition
 type Schema struct {
@@ -86,11 +90,35 @@ type ValidationResult struct {
 	Errors []ValidationError `json:"errors,omitempty"`
 }
 
+// ErrorMessage returns a single well-formatted error string for the validation result.
+// Empty if valid or no errors. Single error: "schema validation failed: <path>: <message>".
+// Multiple: "schema validation failed with N errors: ..." (first 10 joined by "; ", then "... and M more" if N > 10).
+func (r *ValidationResult) ErrorMessage() string {
+	if r == nil || r.Valid || len(r.Errors) == 0 {
+		return ""
+	}
+	n := len(r.Errors)
+	if n == 1 {
+		return fmt.Sprintf("schema validation failed: %s: %s", r.Errors[0].Path, r.Errors[0].Message)
+	}
+	const maxShow = 10
+	parts := make([]string, 0, maxShow+1)
+	for i := 0; i < n && i < maxShow; i++ {
+		parts = append(parts, fmt.Sprintf("%s: %s", r.Errors[i].Path, r.Errors[i].Message))
+	}
+	msg := fmt.Sprintf("schema validation failed with %d errors: %s", n, strings.Join(parts, "; "))
+	if n > maxShow {
+		msg += fmt.Sprintf(" ... and %d more", n-maxShow)
+	}
+	return msg
+}
+
 // ProcessOptions controls schema processing behavior
 type ProcessOptions struct {
 	ApplyDefaults    bool // Apply default values from schema
 	StructureData    bool // Remove fields not in schema
 	StrictValidation bool // Fail on validation errors
+	CollectAllErrors bool // When false (default), stop after first validation error; when true, collect all errors
 }
 
 // ProcessResult contains the result of schema processing

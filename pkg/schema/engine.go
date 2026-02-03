@@ -72,7 +72,7 @@ func (e *Engine) ProcessWithSchema(
 	}
 
 	// Step 5: Validate data against schema
-	validationResult := e.validator.Validate(data, schema)
+	validationResult := e.validator.ValidateWithOptions(data, schema, options.CollectAllErrors)
 
 	// Step 6: Check if validation failed in strict mode
 	if !validationResult.Valid && options.StrictValidation {
@@ -82,7 +82,7 @@ func (e *Engine) ProcessWithSchema(
 			Valid:  false,
 			Data:   outputData,
 			Errors: validationResult.Errors,
-		}, fmt.Errorf("validation failed with %d errors", len(validationResult.Errors))
+		}, fmt.Errorf("%s", validationResult.ErrorMessage())
 	}
 
 	// Step 7: Marshal output data
@@ -134,7 +134,7 @@ func (e *Engine) ProcessCSVWithSchema(
 	}
 
 	// Step 5: Validate rows
-	validationResult := e.validator.ValidateCSVRows(rows, csvSchema)
+	validationResult := e.validator.ValidateCSVRowsWithOptions(rows, csvSchema, options.CollectAllErrors)
 
 	// Step 6: Strict mode handling
 	if !validationResult.Valid && options.StrictValidation {
@@ -143,7 +143,7 @@ func (e *Engine) ProcessCSVWithSchema(
 			Valid:  false,
 			Data:   outputData,
 			Errors: validationResult.Errors,
-		}, fmt.Errorf("csv validation failed with %d errors", len(validationResult.Errors))
+		}, fmt.Errorf("%s", validationResult.ErrorMessage())
 	}
 
 	// Step 7: Marshal output
