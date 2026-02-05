@@ -18,14 +18,16 @@ type Config struct {
 	// Script is the JavaScript code to execute
 	Script string `json:"script"`
 
-	// InputSchemaID is the ID of the input schema (enriched to inputSchema by Elysium)
-	InputSchemaID string `json:"inputSchemaID,omitempty"`
+	// InputSchemaID is the ID of the input schema (enriched to inputSchema by Elysium).
+	// JSON key is input_schema_id per seed-node-schemas.sql.
+	InputSchemaID string `json:"input_schema_id,omitempty"`
 
-	// InputSchema is the inline JSON schema for input validation (enriched from inputSchemaID)
+	// InputSchema is the inline JSON schema for input validation (enriched from input_schema_id)
 	InputSchema map[string]interface{} `json:"inputSchema,omitempty"`
 
-	// OutputSchemaID is the ID of the output schema (enriched to outputSchema by Elysium)
-	OutputSchemaID string `json:"outputSchemaID,omitempty"`
+	// OutputSchemaID is the ID of the output schema (enriched to outputSchema by Elysium).
+	// JSON key is output_schema_id per seed-node-schemas.sql.
+	OutputSchemaID string `json:"output_schema_id,omitempty"`
 
 	// OutputSchema is the inline JSON schema for output validation (enriched from outputSchemaID)
 	OutputSchema map[string]interface{} `json:"outputSchema,omitempty"`
