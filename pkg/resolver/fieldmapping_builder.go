@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wehubfusion/Icarus/pkg/embedded/runtime"
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
@@ -37,6 +38,9 @@ func extractFromFlatKeys(
 ) interface{} {
 	prefix := sourceNodeID + "-/"
 
+	// Normalize source endpoint: //field -> /$items//field for root-array access
+	normalizedEndpoint := runtime.NormalizeRootArrayEndpoint(sourceEndpoint)
+
 	// Handle empty source endpoint - extract entire node output
 	if sourceEndpoint == "" || sourceEndpoint == "/" {
 		// Look for root key "nodeId-/" which contains the full output
@@ -47,14 +51,25 @@ func extractFromFlatKeys(
 		// Fall through to check for other patterns
 	}
 
+	// Root-is-array: //name means resolve from nodeId-/$items and extract path from each element
+	// Now handled via normalizedEndpoint which converts //name to /$items//name
+	if strings.HasPrefix(normalizedEndpoint, "/"+runtime.RootArrayKey+"//") {
+		arrayKey := sourceNodeID + "-/" + runtime.RootArrayKey
+		if arr, ok := flatKeys[arrayKey].([]interface{}); ok {
+			// Extract the field path after /$items//
+			fieldPath := strings.TrimPrefix(normalizedEndpoint, "/"+runtime.RootArrayKey+"//")
+			return extractFromNestedStructure(arr, "", "//"+fieldPath)
+		}
+	}
+
 	// Check for complete nested structure stored at "nodeId-/path" (without indices)
 	// This handles nodes like 71bf0d05 where entire arrays are stored
-	fullPathKey := prefix + strings.TrimPrefix(sourceEndpoint, "/")
+	fullPathKey := prefix + strings.TrimPrefix(normalizedEndpoint, "/")
 	if fullPathData, exists := flatKeys[fullPathKey]; exists {
 		// Found complete nested structure
 		// If destination has collection traversal (//), extract from nested
 		if strings.Contains(destEndpoint, "//") {
-			return extractFromNestedStructure(fullPathData, sourceEndpoint, destEndpoint)
+			return extractFromNestedStructure(fullPathData, normalizedEndpoint, destEndpoint)
 		}
 		// Otherwise return directly
 		return fullPathData
@@ -119,16 +134,66 @@ func extractFromFlatKeys(
 // extractFromNestedStructure extracts values from a complete nested data structure
 // Used when flat keys contain full nested arrays instead of indexed flat keys
 // Example: "71bf0d05.../data" contains full array, need to extract "/data//chapters"
+// When destEndpoint starts with "//", data is treated as the root array (e.g. from $items).
+// Trailing slash (e.g., "//chapters/") means iterate over a primitive array and return elements directly.
 func extractFromNestedStructure(data interface{}, sourceEndpoint string, destEndpoint string) interface{} {
 	if !strings.Contains(destEndpoint, "//") {
 		return data
 	}
 
+	destPathClean := strings.TrimPrefix(destEndpoint, "/")
+
+	// Leading //: data IS the collection (root-as-array), rest is path in each item
+	if strings.HasPrefix(destPathClean, "//") {
+		collection, ok := data.([]interface{})
+		if !ok {
+			return nil
+		}
+		restPath := destPathClean[2:]
+
+		// Check for trailing slash (primitive array iteration)
+		hasTrailingSlash := strings.HasSuffix(restPath, "/")
+		restPath = strings.TrimSuffix(restPath, "/")
+
+		if strings.Contains(restPath, "//") {
+			result := make([]interface{}, len(collection))
+			for i, item := range collection {
+				result[i] = extractFromNestedStructure(item, "", "/"+restPath)
+			}
+			return result
+		}
+
+		// If restPath is empty (from trailing slash like "///"), return collection as-is
+		if restPath == "" {
+			return collection
+		}
+
+		result := make([]interface{}, len(collection))
+		for i, item := range collection {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				val := navigateMap(itemMap, restPath)
+				// If result is an array and we have trailing slash, flatten it
+				if hasTrailingSlash {
+					if arr, ok := val.([]interface{}); ok {
+						// Return the array elements directly
+						result[i] = arr
+					} else {
+						result[i] = val
+					}
+				} else {
+					result[i] = val
+				}
+			} else if hasTrailingSlash {
+				// Primitive item with trailing slash - return as is
+				result[i] = item
+			}
+		}
+		return result
+	}
+
 	// Handle multi-level collection traversal recursively
 	// "/data//assignments//title" means: for each item in data, for each assignment, get title
-
 	sourcePathClean := strings.Trim(sourceEndpoint, "/")
-	destPathClean := strings.TrimPrefix(destEndpoint, "/")
 
 	// Find the first // to split at
 	firstDoubleSlash := strings.Index(destPathClean, "//")
@@ -404,15 +469,25 @@ func setNestedValueWithIndices(
 // unwrapSingleFieldObject extracts scalar values from single-key wrapper objects
 // {"name": "ALEX"} -> "ALEX"
 // {"isHigher18": true} -> true
+// {"chapters": [{"chapter": 1}, {"chapter": 2}]} -> [1, 2] (recursive)
 func unwrapSingleFieldObject(v interface{}) interface{} {
+	// Handle arrays - recursively unwrap each element
+	if arr, isArr := v.([]interface{}); isArr {
+		unwrapped := make([]interface{}, len(arr))
+		for i, item := range arr {
+			unwrapped[i] = unwrapSingleFieldObject(item)
+		}
+		return unwrapped
+	}
+
 	m, ok := v.(map[string]interface{})
 	if !ok || len(m) != 1 {
 		return v
 	}
 
-	// Single-key object - return the value
+	// Single-key object - extract the value and recursively unwrap
 	for _, val := range m {
-		return val
+		return unwrapSingleFieldObject(val)
 	}
 	return v
 }
@@ -493,21 +568,23 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 				parts := strings.SplitN(destEndpoint, "//", 2)
 				if len(parts) == 2 {
 					collectionPath := strings.Trim(parts[0], "/")
-					if collectionPath != "" {
-						if collectionPathSources[collectionPath] == nil {
-							collectionPathSources[collectionPath] = make(map[string]*sourceInfo)
-						}
+					// Empty collectionPath means root array destination (//fieldname)
+					if collectionPath == "" {
+						collectionPath = runtime.RootArrayKey
+					}
+					if collectionPathSources[collectionPath] == nil {
+						collectionPathSources[collectionPath] = make(map[string]*sourceInfo)
+					}
 
-						if info := collectionPathSources[collectionPath][mapping.SourceNodeID]; info == nil {
-							collectionPathSources[collectionPath][mapping.SourceNodeID] = &sourceInfo{
-								count:                1,
-								sourceCollectionPath: sourceCollectionPath,
-							}
-						} else {
-							info.count++
-							if info.sourceCollectionPath == "" && sourceCollectionPath != "" {
-								info.sourceCollectionPath = sourceCollectionPath
-							}
+					if info := collectionPathSources[collectionPath][mapping.SourceNodeID]; info == nil {
+						collectionPathSources[collectionPath][mapping.SourceNodeID] = &sourceInfo{
+							count:                1,
+							sourceCollectionPath: sourceCollectionPath,
+						}
+					} else {
+						info.count++
+						if info.sourceCollectionPath == "" && sourceCollectionPath != "" {
+							info.sourceCollectionPath = sourceCollectionPath
 						}
 					}
 				}
@@ -595,18 +672,20 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 						destParts := strings.SplitN(destEndpoint, "//", 2)
 						if len(destParts) == 2 {
 							destCollectionPath := strings.Trim(destParts[0], "/")
-							if destCollectionPath != "" {
-								key := batchKey{
-									sourceNodeID:     mapping.SourceNodeID,
-									collectionPath:   destCollectionPath,
-									sourceCollection: sourceCollectionPath,
-								}
-								batchedExtractions[key] = append(batchedExtractions[key], struct {
-									mapping   message.FieldMapping
-									fieldPath string
-								}{mapping, fieldPath})
-								break
+							// Empty destCollectionPath means root array destination (//fieldname)
+							if destCollectionPath == "" {
+								destCollectionPath = runtime.RootArrayKey
 							}
+							key := batchKey{
+								sourceNodeID:     mapping.SourceNodeID,
+								collectionPath:   destCollectionPath,
+								sourceCollection: sourceCollectionPath,
+							}
+							batchedExtractions[key] = append(batchedExtractions[key], struct {
+								mapping   message.FieldMapping
+								fieldPath string
+							}{mapping, fieldPath})
+							break
 						}
 					}
 				}
@@ -781,20 +860,37 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 						hasIterationContext = iterCtx.IsArray
 						arrayLength = iterCtx.ArrayLength
 						arrayPath = iterCtx.ArrayPath
-						if arrayPath != "" {
+						// Only use arrayPath shortcut if source endpoint doesn't have field traversal (//)
+						// If it has //, we need to extract the specific field from each array item
+						if arrayPath != "" && !strings.Contains(mapping.SourceEndpoint, "//") {
 							sourceData = extractFromPath(nodeFields, arrayPath)
 						}
 					}
 				}
 
+				// Normalize source endpoint: //field -> /$items//field for root-array access
+				normalizedSourceEndpoint := runtime.NormalizeRootArrayEndpoint(mapping.SourceEndpoint)
+
 				if sourceData == nil {
-					sourceData = extractFromPath(nodeFields, mapping.SourceEndpoint)
+					sourceData = extractFromPath(nodeFields, normalizedSourceEndpoint)
+
+					// Fallback: If sourceData is nil and nodeFields has $items (root array output),
+					// return the $items array for paths like /data that expect the full payload
+					if sourceData == nil {
+						if itemsData, hasItems := nodeFields[runtime.RootArrayKey]; hasItems {
+							// For simple paths like /data or /, return the $items array
+							normalizedPath := strings.Trim(normalizedSourceEndpoint, "/")
+							if normalizedPath == "data" || normalizedPath == "" {
+								sourceData = itemsData
+							}
+						}
+					}
 
 					// Fallback: If sourceData is nil, try to find the field inside /data or /result array
 					// This handles embedded processors that output arrays stored under "data" key
 					// when the field mapping expects /field but data is at /data//field
 					if sourceData == nil {
-						sourcePath := strings.Trim(mapping.SourceEndpoint, "/")
+						sourcePath := strings.Trim(normalizedSourceEndpoint, "/")
 						if sourcePath != "" && !strings.Contains(sourcePath, "/") {
 							// Simple field path like /auth - try to extract from /data array first
 							dataArray := extractFromPath(nodeFields, "/data")
@@ -820,9 +916,22 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 									}
 								}
 							}
-						} else if strings.Contains(mapping.SourceEndpoint, "//") {
+
+							// Try $items array as well
+							if sourceData == nil {
+								itemsArray := extractFromPath(nodeFields, "/"+runtime.RootArrayKey)
+								if arr, isArr := itemsArray.([]interface{}); isArr && len(arr) > 0 {
+									if firstItem, ok := arr[0].(map[string]interface{}); ok {
+										if _, hasField := firstItem[sourcePath]; hasField {
+											traversalPath := "/" + runtime.RootArrayKey + "//" + sourcePath
+											sourceData = extractFromPath(nodeFields, traversalPath)
+										}
+									}
+								}
+							}
+						} else if strings.Contains(normalizedSourceEndpoint, "//") {
 							// Already a traversal path - try as-is
-							sourceData = extractFromPath(nodeFields, mapping.SourceEndpoint)
+							sourceData = extractFromPath(nodeFields, normalizedSourceEndpoint)
 						}
 					}
 
@@ -830,7 +939,7 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 					// a single field matching the sourcePath, extract those values.
 					// This handles /data returning [{data:0}, {data:0}] when we want [0, 0]
 					if sourceData != nil {
-						sourcePath := strings.Trim(mapping.SourceEndpoint, "/")
+						sourcePath := strings.Trim(normalizedSourceEndpoint, "/")
 						if arr, isArr := sourceData.([]interface{}); isArr && len(arr) > 0 {
 							if firstItem, ok := arr[0].(map[string]interface{}); ok {
 								// Check if items have a field matching the path we looked for
@@ -889,6 +998,14 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 			continue
 		}
 
+		// Unwrap arrays of single-field objects to arrays of scalar values
+		// This handles embedded processor outputs like [{"name": "ALEX"}] -> ["ALEX"]
+		// Now also handles recursive unwrapping: [{"chapters": [{"chapter": 1}]}] -> [[1]]
+		if arr, isArr := sourceData.([]interface{}); isArr && len(arr) > 0 {
+			// Always try unwrapping - the unwrapSingleFieldObject function handles arrays recursively
+			sourceData = unwrapSingleFieldObject(arr)
+		}
+
 		if mapping.Iterate && hasIterationContext && arrayLength > 0 {
 			if !isArray(sourceData) {
 				continue
@@ -905,12 +1022,16 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 		}
 
 		for _, destEndpoint := range mapping.DestinationEndpoints {
+			fmt.Printf("[DEBUG BuildInput] destEndpoint=%q, sourceData_type=%T, sourceData_preview=%v\n", destEndpoint, sourceData, truncateForDebug(sourceData))
 			if destEndpoint == "" {
-				// Empty destination: only merge at root when value is a map
+				// Empty destination: merge at root
 				if sourceMap, ok := sourceData.(map[string]interface{}); ok {
 					for k, v := range sourceMap {
 						inputData[k] = v
 					}
+				} else if sourceArray, ok := sourceData.([]interface{}); ok {
+					// Root array: place under $items key
+					inputData[runtime.RootArrayKey] = sourceArray
 				}
 			} else {
 				setFieldAtPath(inputData, destEndpoint, sourceData)
@@ -966,7 +1087,18 @@ func setFieldAtPath(data map[string]interface{}, path string, value interface{})
 		return
 	}
 
-	path = strings.TrimPrefix(path, "/")
+	// Root-is-array: //name → $items//name so collectionPath is $items
+	// Check BEFORE trimming prefix to correctly detect double-slash
+	if strings.HasPrefix(path, "//") {
+		path = runtime.RootArrayKey + path
+	} else {
+		path = strings.TrimPrefix(path, "/")
+		// Also check after trimming one slash (e.g., "///foo" → "//foo" after trim)
+		if strings.HasPrefix(path, "//") {
+			path = runtime.RootArrayKey + path
+		}
+	}
+
 	if path == "" {
 		// Only merge at root when value is a map; no hardcoded key
 		if valueMap, ok := value.(map[string]interface{}); ok {
@@ -1006,6 +1138,7 @@ func setFieldAtPath(data map[string]interface{}, path string, value interface{})
 }
 
 func setFieldAtPathWithCollectionTraversal(data map[string]interface{}, path string, value interface{}) {
+	fmt.Printf("[DEBUG setFieldAtPathWithCollectionTraversal] path=%q\n", path)
 	parts := strings.SplitN(path, "//", 2)
 	if len(parts) != 2 {
 		setFieldAtPath(data, path, value)
@@ -1014,8 +1147,28 @@ func setFieldAtPathWithCollectionTraversal(data map[string]interface{}, path str
 
 	collectionPath := strings.Trim(parts[0], "/")
 	fieldPath := strings.Trim(parts[1], "/")
+	fmt.Printf("[DEBUG setFieldAtPathWithCollectionTraversal] collectionPath=%q, fieldPath=%q\n", collectionPath, fieldPath)
 
 	if collectionPath == "" || fieldPath == "" {
+		return
+	}
+
+	// Root-is-array: ensure data[$items] exists when path is $items//...
+	if collectionPath == runtime.RootArrayKey {
+		if _, exists := data[runtime.RootArrayKey]; !exists {
+			if valueArray, ok := value.([]interface{}); ok && len(valueArray) > 0 {
+				items := make([]interface{}, len(valueArray))
+				for i := range valueArray {
+					items[i] = make(map[string]interface{})
+				}
+				data[runtime.RootArrayKey] = items
+			} else {
+				data[runtime.RootArrayKey] = []interface{}{make(map[string]interface{})}
+			}
+		}
+		if collection, ok := data[runtime.RootArrayKey].([]interface{}); ok && len(collection) > 0 {
+			setFieldInEachItem(collection, fieldPath, value)
+		}
 		return
 	}
 
@@ -1029,7 +1182,22 @@ func setFieldAtPathWithCollectionTraversal(data map[string]interface{}, path str
 		isLast := i == len(collectionParts)-1
 
 		if _, exists := current[part]; !exists {
-			return
+			// Collection doesn't exist - create it if we have array value to determine size
+			if isLast {
+				if valueArray, ok := value.([]interface{}); ok && len(valueArray) > 0 {
+					items := make([]interface{}, len(valueArray))
+					for j := range valueArray {
+						items[j] = make(map[string]interface{})
+					}
+					current[part] = items
+				} else {
+					// Can't create collection without knowing size
+					return
+				}
+			} else {
+				// Intermediate path doesn't exist
+				return
+			}
 		}
 
 		if isLast {
@@ -1050,6 +1218,89 @@ func setFieldAtPathWithCollectionTraversal(data map[string]interface{}, path str
 }
 
 func setFieldInEachItem(collection []interface{}, fieldPath string, value interface{}) {
+	fmt.Printf("[DEBUG setFieldInEachItem] fieldPath=%q, collection_len=%d, value_type=%T\n", fieldPath, len(collection), value)
+
+	// Check if fieldPath contains nested array marker (//)
+	// If so, we need to handle nested iteration
+	if strings.Contains(fieldPath, "//") {
+		parts := strings.SplitN(fieldPath, "//", 2)
+		nestedCollectionPath := strings.Trim(parts[0], "/")
+		nestedFieldPath := strings.Trim(parts[1], "/")
+
+		fmt.Printf("[DEBUG setFieldInEachItem] nested case: nestedCollectionPath=%q, nestedFieldPath=%q\n", nestedCollectionPath, nestedFieldPath)
+
+		if valueArray, ok := value.([]interface{}); ok && len(valueArray) == len(collection) {
+			// Value is an array matching collection length - distribute to each item
+			for i, item := range collection {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					itemValue := valueArray[i]
+
+					// Navigate/create the path to the nested collection
+					// nestedCollectionPath might be "assignments" or "details/topics"
+					var nestedCollection []interface{}
+					var collectionParent map[string]interface{}
+					var collectionKey string
+
+					if strings.Contains(nestedCollectionPath, "/") {
+						// Path has multiple components like "details/topics"
+						pathParts := strings.Split(nestedCollectionPath, "/")
+						current := itemMap
+						for j := 0; j < len(pathParts)-1; j++ {
+							part := pathParts[j]
+							if part == "" {
+								continue
+							}
+							if _, exists := current[part]; !exists {
+								current[part] = make(map[string]interface{})
+							}
+							if nextMap, ok := current[part].(map[string]interface{}); ok {
+								current = nextMap
+							} else {
+								break
+							}
+						}
+						collectionParent = current
+						collectionKey = pathParts[len(pathParts)-1]
+					} else {
+						collectionParent = itemMap
+						collectionKey = nestedCollectionPath
+					}
+
+					// Get existing collection or prepare to create it
+					if existing, exists := collectionParent[collectionKey]; exists {
+						if existingArr, ok := existing.([]interface{}); ok {
+							nestedCollection = existingArr
+						}
+					}
+
+					// If itemValue is an array, it contains values for each element in the nested collection
+					if itemValueArray, isArr := itemValue.([]interface{}); isArr {
+						// Ensure nested collection is large enough
+						for len(nestedCollection) < len(itemValueArray) {
+							nestedCollection = append(nestedCollection, make(map[string]interface{}))
+						}
+						collectionParent[collectionKey] = nestedCollection
+
+						// Recursively set field in each nested item
+						setFieldInEachItem(nestedCollection, nestedFieldPath, itemValueArray)
+					} else {
+						// Single value - set in first item of nested collection
+						if len(nestedCollection) == 0 {
+							nestedCollection = append(nestedCollection, make(map[string]interface{}))
+							collectionParent[collectionKey] = nestedCollection
+						}
+						if nestedItemMap, ok := nestedCollection[0].(map[string]interface{}); ok {
+							setFieldAtPath(nestedItemMap, nestedFieldPath, itemValue)
+						}
+					}
+					collection[i] = itemMap
+				}
+			}
+		}
+		return
+	}
+
+	// Simple case - no nested arrays in fieldPath
 	if valueArray, ok := value.([]interface{}); ok && len(valueArray) > 0 {
 		if len(valueArray) != len(collection) {
 			minLen := len(collection)
@@ -1132,12 +1383,11 @@ func extractFromPath(fields map[string]interface{}, path string) interface{} {
 }
 
 func extractWithCollectionTraversal(fields map[string]interface{}, path string) interface{} {
-	// Check cache first to avoid re-traversing large arrays
-	// Use path only as key since fields map is the same ProjectedFields map for all extractions in one build
-	cacheKey := path
-	if cached, exists := extractionCache.cache[cacheKey]; exists {
-		return cached
-	}
+	// NOTE: Cache is disabled because it used path-only keys which caused
+	// incorrect results when the same path was used with different data.
+	// The cache is now cleared at the start of each buildInputFromMappings call,
+	// but we still can't safely cache here because the same path may be used
+	// with different source data within a single mapping operation.
 
 	parts := strings.SplitN(path, "//", 2)
 	if len(parts) != 2 {
@@ -1152,7 +1402,6 @@ func extractWithCollectionTraversal(fields map[string]interface{}, path string) 
 	}
 
 	// Data is spread at root level - access collection directly
-	// For /data//Assignment_Category: collectionPath="data", fieldPath="Assignment_Category"
 	collection := navigateMap(fields, collectionPath)
 	if collection == nil {
 		return nil
@@ -1164,26 +1413,37 @@ func extractWithCollectionTraversal(fields map[string]interface{}, path string) 
 	}
 
 	arrayLen := len(collectionArray)
+	if arrayLen == 0 {
+		return []interface{}{}
+	}
 
 	result := make([]interface{}, arrayLen)
-	hasValues := false
+	hasAnyItem := false
+
 	for i, item := range collectionArray {
 		if itemMap, ok := item.(map[string]interface{}); ok {
-			fieldValue := navigateMap(itemMap, fieldPath)
-			if fieldValue != nil {
-				result[i] = fieldValue
-				hasValues = true
+			hasAnyItem = true
+			var fieldValue interface{}
+
+			// Check if fieldPath contains another // (nested collection traversal)
+			if strings.Contains(fieldPath, "//") {
+				// Recursively extract from nested collection
+				fieldValue = extractWithCollectionTraversal(itemMap, fieldPath)
+			} else {
+				// Simple field navigation
+				fieldValue = navigateMap(itemMap, fieldPath)
 			}
+
+			// Always set the result, even if nil, to maintain array index alignment
+			result[i] = fieldValue
 		}
 	}
 
-	if !hasValues {
-		extractionCache.cache[cacheKey] = nil
+	// Return nil only if no items were processable maps
+	if !hasAnyItem {
 		return nil
 	}
 
-	// Cache the result to avoid reprocessing for subsequent field mappings
-	extractionCache.cache[cacheKey] = result
 	return result
 }
 
@@ -1212,4 +1472,13 @@ func navigateMap(data map[string]interface{}, path string) interface{} {
 	}
 
 	return current
+}
+
+// truncateForDebug returns a truncated string representation of a value for logging
+func truncateForDebug(v interface{}) string {
+	s := fmt.Sprintf("%v", v)
+	if len(s) > 100 {
+		return s[:100] + "..."
+	}
+	return s
 }

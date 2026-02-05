@@ -1,6 +1,8 @@
 package tests
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/wehubfusion/Icarus/pkg/schema"
@@ -535,7 +537,7 @@ func TestSchemaTransformer(t *testing.T) {
 		inputData := map[string]interface{}{
 			"name":        "John Doe",
 			"email":       "john@example.com",
-			"internal_id": "12345",        // Extra field
+			"internal_id": "12345",         // Extra field
 			"metadata":    "should remove", // Extra field
 		}
 
@@ -1087,7 +1089,7 @@ func TestSchemaFormats(t *testing.T) {
 		// Invalid UUIDs
 		invalidUUIDs := []string{
 			"not-a-uuid",
-			"123e4567e89b12d3a456426614174000", // No dashes
+			"123e4567e89b12d3a456426614174000",     // No dashes
 			"g23e4567-e89b-41d4-a456-426614174000", // Invalid hex char
 		}
 		for _, uuid := range invalidUUIDs {
@@ -1727,3 +1729,314 @@ func TestSchemaByteType(t *testing.T) {
 	})
 }
 
+// TestValidationResultErrorMessage tests the canonical error message formatting
+func TestValidationResultErrorMessage(t *testing.T) {
+	t.Run("Empty or valid result returns empty string", func(t *testing.T) {
+		r := &schema.ValidationResult{Valid: true, Errors: nil}
+		if got := r.ErrorMessage(); got != "" {
+			t.Errorf("Expected empty, got %q", got)
+		}
+		r2 := &schema.ValidationResult{Valid: true, Errors: []schema.ValidationError{}}
+		if got := r2.ErrorMessage(); got != "" {
+			t.Errorf("Expected empty, got %q", got)
+		}
+	})
+	t.Run("Single error format", func(t *testing.T) {
+		r := &schema.ValidationResult{
+			Valid: false,
+			Errors: []schema.ValidationError{
+				{Path: "root.data[0].First_Name", Message: "expected number, got string", Code: "TYPE_MISMATCH"},
+			},
+		}
+		got := r.ErrorMessage()
+		want := "schema validation failed: root.data[0].First_Name: expected number, got string"
+		if got != want {
+			t.Errorf("ErrorMessage() = %q, want %q", got, want)
+		}
+	})
+	t.Run("Multiple errors format", func(t *testing.T) {
+		r := &schema.ValidationResult{
+			Valid: false,
+			Errors: []schema.ValidationError{
+				{Path: "root.a", Message: "msg1", Code: "X"},
+				{Path: "root.b", Message: "msg2", Code: "Y"},
+			},
+		}
+		got := r.ErrorMessage()
+		if got == "" {
+			t.Error("Expected non-empty message")
+		}
+		if !strings.HasPrefix(got, "schema validation failed with") {
+			t.Errorf("Expected message to start with 'schema validation failed with', got %q", got)
+		}
+		if len(r.Errors) != 2 {
+			t.Errorf("Expected 2 errors in result")
+		}
+	})
+}
+
+// TestProcessWithSchemaStopOnFirstError tests that default options stop after first validation error
+func TestProcessWithSchemaStopOnFirstError(t *testing.T) {
+	schemaJSON := `{
+		"type": "OBJECT",
+		"properties": {
+			"data": {
+				"type": "ARRAY",
+				"items": {
+					"type": "OBJECT",
+					"properties": {
+						"First_Name": { "type": "NUMBER" }
+					}
+				}
+			}
+		}
+	}`
+	// Data with many invalid items (same type error on each) - would produce many errors with CollectAllErrors
+	inputData := `{
+		"data": [
+			{"First_Name": "Alice"},
+			{"First_Name": "Bob"},
+			{"First_Name": "Carol"}
+		]
+	}`
+	engine := schema.NewEngine()
+	result, err := engine.ProcessWithSchema(
+		[]byte(inputData),
+		[]byte(schemaJSON),
+		schema.ProcessOptions{
+			ApplyDefaults:    false,
+			StructureData:    false,
+			StrictValidation: true,
+		},
+	)
+	if err == nil {
+		t.Fatal("Expected error in strict mode")
+	}
+	if result == nil {
+		t.Fatal("Expected result even with error")
+	}
+	if result.Valid {
+		t.Error("Expected invalid result")
+	}
+	if len(result.Errors) != 1 {
+		t.Errorf("Expected exactly one error (stop on first), got %d: %v", len(result.Errors), result.Errors)
+	}
+	if errMsg := err.Error(); !strings.HasPrefix(errMsg, "schema validation failed: ") {
+		t.Errorf("Expected err to start with 'schema validation failed: ', got %q", errMsg)
+	}
+	if len(result.Errors) > 0 && (result.Errors[0].Path != "root.data[0].First_Name" || result.Errors[0].Message != "expected number, got string") {
+		t.Errorf("Expected first error path root.data[0].First_Name and message 'expected number, got string', got path %q message %q",
+			result.Errors[0].Path, result.Errors[0].Message)
+	}
+}
+
+// TestValidationResultErrorMessageMoreThan10 tests the "... and N more" suffix when errors exceed 10
+func TestValidationResultErrorMessageMoreThan10(t *testing.T) {
+	errors := make([]schema.ValidationError, 12)
+	for i := range errors {
+		errors[i] = schema.ValidationError{
+			Path:    fmt.Sprintf("root[%d]", i),
+			Message: "invalid",
+			Code:    "ERR",
+		}
+	}
+	r := &schema.ValidationResult{Valid: false, Errors: errors}
+	got := r.ErrorMessage()
+	if got == "" {
+		t.Fatal("Expected non-empty message")
+	}
+	if !strings.HasPrefix(got, "schema validation failed with 12 errors:") {
+		t.Errorf("Expected prefix 'schema validation failed with 12 errors:', got %q", got)
+	}
+	if !strings.Contains(got, " ... and 2 more") {
+		t.Errorf("Expected ' ... and 2 more' in message, got %q", got)
+	}
+}
+
+// TestValidationResultErrorMessageNilReceiver tests that nil receiver returns empty string
+func TestValidationResultErrorMessageNilReceiver(t *testing.T) {
+	var r *schema.ValidationResult
+	got := r.ErrorMessage()
+	if got != "" {
+		t.Errorf("Expected empty string for nil receiver, got %q", got)
+	}
+}
+
+// TestProcessWithSchemaCollectAllErrors tests that CollectAllErrors true collects multiple errors
+func TestProcessWithSchemaCollectAllErrors(t *testing.T) {
+	schemaJSON := `{
+		"type": "OBJECT",
+		"properties": {
+			"data": {
+				"type": "ARRAY",
+				"items": {
+					"type": "OBJECT",
+					"properties": {
+						"First_Name": { "type": "NUMBER" }
+					}
+				}
+			}
+		}
+	}`
+	inputData := `{
+		"data": [
+			{"First_Name": "Alice"},
+			{"First_Name": "Bob"},
+			{"First_Name": "Carol"}
+		]
+	}`
+	engine := schema.NewEngine()
+	result, err := engine.ProcessWithSchema(
+		[]byte(inputData),
+		[]byte(schemaJSON),
+		schema.ProcessOptions{
+			ApplyDefaults:    false,
+			StructureData:    false,
+			StrictValidation: true,
+			CollectAllErrors: true,
+		},
+	)
+	if err == nil {
+		t.Fatal("Expected error in strict mode")
+	}
+	if result == nil {
+		t.Fatal("Expected result")
+	}
+	if len(result.Errors) != 3 {
+		t.Errorf("Expected 3 errors when CollectAllErrors true, got %d", len(result.Errors))
+	}
+	if !strings.HasPrefix(err.Error(), "schema validation failed with 3 errors:") {
+		t.Errorf("Expected error to start with 'schema validation failed with 3 errors:', got %q", err.Error())
+	}
+}
+
+// TestValidatorValidateWithOptions tests direct ValidateWithOptions stop-on-first vs collect-all
+func TestValidatorValidateWithOptions(t *testing.T) {
+	schemaObj := &schema.Schema{
+		Type: schema.TypeObject,
+		Properties: map[string]*schema.Property{
+			"items": {
+				Type: schema.TypeArray,
+				Items: &schema.Property{
+					Type: schema.TypeObject,
+					Properties: map[string]*schema.Property{
+						"x": {Type: schema.TypeNumber},
+					},
+				},
+			},
+		},
+	}
+	data := map[string]interface{}{
+		"items": []interface{}{
+			map[string]interface{}{"x": "one"},
+			map[string]interface{}{"x": "two"},
+			map[string]interface{}{"x": "three"},
+		},
+	}
+	validator := schema.NewValidator()
+
+	resultStop := validator.ValidateWithOptions(data, schemaObj, false)
+	if resultStop.Valid {
+		t.Error("Expected invalid result")
+	}
+	if len(resultStop.Errors) != 1 {
+		t.Errorf("ValidateWithOptions(..., false) expected 1 error, got %d", len(resultStop.Errors))
+	}
+	if len(resultStop.Errors) > 0 && resultStop.Errors[0].Path != "root.items[0].x" {
+		t.Errorf("Expected first error at root.items[0].x, got %q", resultStop.Errors[0].Path)
+	}
+
+	resultAll := validator.ValidateWithOptions(data, schemaObj, true)
+	if resultAll.Valid {
+		t.Error("Expected invalid result")
+	}
+	if len(resultAll.Errors) != 3 {
+		t.Errorf("ValidateWithOptions(..., true) expected 3 errors, got %d", len(resultAll.Errors))
+	}
+}
+
+// TestProcessWithSchemaStopOnFirstErrorInObject tests stop-on-first with multiple invalid properties in one object
+func TestProcessWithSchemaStopOnFirstErrorInObject(t *testing.T) {
+	schemaJSON := `{
+		"type": "OBJECT",
+		"properties": {
+			"age": { "type": "NUMBER" },
+			"score": { "type": "NUMBER" }
+		}
+	}`
+	inputData := `{"age": "not a number", "score": "also not a number"}`
+	engine := schema.NewEngine()
+	result, err := engine.ProcessWithSchema(
+		[]byte(inputData),
+		[]byte(schemaJSON),
+		schema.ProcessOptions{StrictValidation: true},
+	)
+	if err == nil {
+		t.Fatal("Expected error")
+	}
+	if len(result.Errors) != 1 {
+		t.Errorf("Expected 1 error (stop on first), got %d", len(result.Errors))
+	}
+	if len(result.Errors) > 0 && result.Errors[0].Path != "root.age" {
+		t.Errorf("Expected first error at root.age, got %q", result.Errors[0].Path)
+	}
+}
+
+// TestProcessCSVWithSchemaStopOnFirstError tests CSV validation stops after first error by default
+func TestProcessCSVWithSchemaStopOnFirstError(t *testing.T) {
+	csvSchemaJSON := `{
+		"columnHeaders": {
+			"Name": { "type": "STRING" },
+			"Age": { "type": "NUMBER" }
+		}
+	}`
+	inputData := `[
+		{"Name": "Alice", "Age": "invalid"},
+		{"Name": "Bob", "Age": "invalid"},
+		{"Name": "Carol", "Age": "invalid"}
+	]`
+	engine := schema.NewEngine()
+	result, err := engine.ProcessCSVWithSchema(
+		[]byte(inputData),
+		[]byte(csvSchemaJSON),
+		schema.ProcessOptions{StrictValidation: true},
+	)
+	if err == nil {
+		t.Fatal("Expected error")
+	}
+	if result == nil {
+		t.Fatal("Expected result")
+	}
+	if len(result.Errors) != 1 {
+		t.Errorf("Expected 1 error (stop on first row), got %d", len(result.Errors))
+	}
+	if len(result.Errors) > 0 && result.Errors[0].Path != "rows[0].Age" {
+		t.Errorf("Expected first error at rows[0].Age, got %q", result.Errors[0].Path)
+	}
+}
+
+// TestProcessCSVWithSchemaCollectAllErrors tests CSV validation collects all row errors when CollectAllErrors true
+func TestProcessCSVWithSchemaCollectAllErrors(t *testing.T) {
+	csvSchemaJSON := `{
+		"columnHeaders": {
+			"Name": { "type": "STRING" },
+			"Age": { "type": "NUMBER" }
+		}
+	}`
+	inputData := `[
+		{"Name": "Alice", "Age": "invalid"},
+		{"Name": "Bob", "Age": "invalid"}
+	]`
+	engine := schema.NewEngine()
+	result, err := engine.ProcessCSVWithSchema(
+		[]byte(inputData),
+		[]byte(csvSchemaJSON),
+		schema.ProcessOptions{StrictValidation: true, CollectAllErrors: true},
+	)
+	if err == nil {
+		t.Fatal("Expected error")
+	}
+	if len(result.Errors) != 2 {
+		t.Errorf("Expected 2 errors when CollectAllErrors true, got %d", len(result.Errors))
+	}
+}

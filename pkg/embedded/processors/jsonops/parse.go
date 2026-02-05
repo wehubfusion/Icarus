@@ -133,10 +133,9 @@ func (n *JsonOpsNode) executeParse(input runtime.ProcessInput, cfg *Config) runt
 			))
 		}
 
-		// Wrap array in a map with metadata for runtime unwrapping
+		// Wrap array under reserved key for root-as-array
 		return runtime.SuccessOutput(map[string]interface{}{
-			"items":          arrayData,
-			"isWrappedArray": true,
+			runtime.RootArrayKey: arrayData,
 		})
 	}
 

@@ -19,7 +19,9 @@ func (r *DefaultOutputResolver) ResolveValue(
 	sourceNodeId string,
 	sourceEndpoint string,
 ) (interface{}, error) {
-	baseKey := sourceNodeId + "-" + sourceEndpoint
+	// Normalize //field to /$items//field for root-array access
+	normalizedEndpoint := NormalizeRootArrayEndpoint(sourceEndpoint)
+	baseKey := sourceNodeId + "-" + normalizedEndpoint
 
 	// Check for indexed values (iteration)
 	var values []interface{}
@@ -66,8 +68,12 @@ func (r *DefaultOutputResolver) analyzeDestinationStructure(mappings []FieldMapp
 		for _, dest := range mapping.DestinationEndpoints {
 			if strings.Contains(dest, "//") {
 				ds.HasArrayDest = true
-				// Extract array path
-				parts := strings.Split(strings.TrimPrefix(dest, "/"), "//")
+				// Normalize leading // to /$items// so root-array dest is consistent
+				destNorm := dest
+				if strings.HasPrefix(strings.TrimPrefix(dest, "/"), "//") {
+					destNorm = "/" + RootArrayKey + dest
+				}
+				parts := strings.Split(strings.TrimPrefix(destNorm, "/"), "//")
 				if len(parts) > 0 && parts[0] != "" {
 					ds.ArrayPath = parts[0]
 				}
@@ -87,28 +93,22 @@ func (r *DefaultOutputResolver) buildSingleInput(
 	result := make(map[string]interface{})
 
 	for _, mapping := range unit.FieldMappings {
-		// Check for wrapped array with empty sourceEndpoint (pass-through case)
+		// Normalize source endpoint: //field -> /$items//field
+		normalizedSourceEndpoint := NormalizeRootArrayEndpoint(mapping.SourceEndpoint)
+
+		// Check for root-as-array with empty sourceEndpoint (pass-through case)
 		if mapping.SourceNodeId != "" && mapping.SourceEndpoint == "" {
-			// Check if source node has isWrappedArray metadata
-			isWrappedKey := mapping.SourceNodeId + "-/isWrappedArray"
-			if wrapped, ok := output[isWrappedKey]; ok {
-				if isWrapped, ok := wrapped.(bool); ok && isWrapped {
-					// Auto-unwrap: get the items array
-					itemsKey := mapping.SourceNodeId + "-/items"
-					if items, ok := output[itemsKey]; ok {
-						// Pass the raw array directly to destination endpoints
-						for _, dest := range mapping.DestinationEndpoints {
-							// Handle empty destination - means pass as "input" or root
-							if dest == "" {
-								// For empty destination, use "input" as the key
-								result["input"] = items
-							} else {
-								SetNestedValue(result, dest, items)
-							}
-						}
-						continue
+			itemsKey := mapping.SourceNodeId + "-/" + RootArrayKey
+			if items, ok := output[itemsKey]; ok {
+				// Pass the raw array directly to destination endpoints
+				for _, dest := range mapping.DestinationEndpoints {
+					if dest == "" {
+						result["input"] = items
+					} else {
+						SetNestedValue(result, dest, items)
 					}
 				}
+				continue
 			}
 		}
 
@@ -122,6 +122,21 @@ func (r *DefaultOutputResolver) buildSingleInput(
 				for _, dest := range mapping.DestinationEndpoints {
 					if dest == "" || dest == "/" {
 						// Destination is root - merge complete structure into result
+						// Special case: if source has a single key containing an array,
+						// and destination is root, place the array under $items for root-array handling
+						if len(sourceStructure) == 1 {
+							foundArray := false
+							for _, v := range sourceStructure {
+								if arr, isArr := v.([]interface{}); isArr {
+									result[RootArrayKey] = arr
+									foundArray = true
+									break
+								}
+							}
+							if foundArray {
+								continue
+							}
+						}
 						for k, v := range sourceStructure {
 							result[k] = v
 						}
@@ -135,11 +150,11 @@ func (r *DefaultOutputResolver) buildSingleInput(
 		}
 
 		// Original skip logic for truly empty mappings
-		if mapping.SourceNodeId == "" || mapping.SourceEndpoint == "" {
+		if mapping.SourceNodeId == "" || normalizedSourceEndpoint == "" {
 			continue
 		}
 
-		value, err := r.ResolveValue(output, mapping.SourceNodeId, mapping.SourceEndpoint)
+		value, err := r.ResolveValue(output, mapping.SourceNodeId, normalizedSourceEndpoint)
 		if err != nil {
 			continue // Skip missing values
 		}
@@ -182,7 +197,9 @@ func (r *DefaultOutputResolver) buildArrayInput(
 			continue
 		}
 
-		baseKey := mapping.SourceNodeId + "-" + mapping.SourceEndpoint
+		// Normalize source endpoint: //field -> /$items//field
+		normalizedEndpoint := NormalizeRootArrayEndpoint(mapping.SourceEndpoint)
+		baseKey := mapping.SourceNodeId + "-" + normalizedEndpoint
 
 		// Get value from each indexed key
 		for i := 0; i < length; i++ {

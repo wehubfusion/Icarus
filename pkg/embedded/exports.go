@@ -117,6 +117,9 @@ var (
 	DefaultWorkerPoolConfig = runtime.DefaultWorkerPoolConfig
 )
 
+// RootArrayKey is the reserved key for root-as-array (paths starting with "//" mean /$items//...).
+const RootArrayKey = runtime.RootArrayKey
+
 // Re-export utility functions
 var (
 	// FlattenMap flattens a nested map with nodeId prefix.

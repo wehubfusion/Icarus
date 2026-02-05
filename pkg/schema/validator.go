@@ -32,59 +32,240 @@ func (v *Validator) RegisterFormat(format string, validator FormatValidator) {
 	v.formatValidators[format] = validator
 }
 
-// Validate validates data against a schema
-func (v *Validator) Validate(data interface{}, schema *Schema) *ValidationResult {
-	result := &ValidationResult{
-		Valid:  true,
-		Errors: []ValidationError{},
-	}
+// validationState holds errors and whether to collect all or stop after first
+type validationState struct {
+	errors     []ValidationError
+	collectAll bool
+}
 
-	// Convert schema to property for unified validation
+func (s *validationState) add(e ValidationError) bool {
+	s.errors = append(s.errors, e)
+	return !s.collectAll && len(s.errors) >= 1
+}
+
+func (s *validationState) shouldStop() bool {
+	return !s.collectAll && len(s.errors) >= 1
+}
+
+// ValidateWithOptions validates data against a schema. When collectAllErrors is false (default),
+// validation stops after the first error. When true, all errors are collected.
+func (v *Validator) ValidateWithOptions(data interface{}, schema *Schema, collectAllErrors bool) *ValidationResult {
+	state := &validationState{collectAll: collectAllErrors}
 	prop := &Property{
 		Type:       schema.Type,
 		Properties: schema.Properties,
 		Items:      schema.Items,
 	}
-
-	errors := v.validateValue(data, prop, "root")
-	if len(errors) > 0 {
-		result.Valid = false
-		result.Errors = errors
+	v.validateValueIntoState(data, prop, "root", state)
+	return &ValidationResult{
+		Valid:  len(state.errors) == 0,
+		Errors: state.errors,
 	}
-
-	return result
 }
 
-// ValidateCSVRows validates a JSON array of row objects against a CSV schema
-func (v *Validator) ValidateCSVRows(rows []map[string]interface{}, schema *CSVSchema) *ValidationResult {
-	result := &ValidationResult{
-		Valid:  true,
-		Errors: []ValidationError{},
-	}
+// Validate validates data against a schema (collects all errors; backward compatible).
+func (v *Validator) Validate(data interface{}, schema *Schema) *ValidationResult {
+	return v.ValidateWithOptions(data, schema, true)
+}
 
+// ValidateCSVRowsWithOptions validates rows against a CSV schema. When collectAllErrors is false,
+// validation stops after the first error. When true, all errors are collected.
+func (v *Validator) ValidateCSVRowsWithOptions(rows []map[string]interface{}, schema *CSVSchema, collectAllErrors bool) *ValidationResult {
+	state := &validationState{collectAll: collectAllErrors}
 	if schema == nil {
-		return result
+		return &ValidationResult{Valid: true, Errors: state.errors}
 	}
-
-	// Reuse object validation against generated schema properties
 	prop := &Property{
 		Type:       TypeObject,
 		Properties: schema.ToObjectSchema().Properties,
 	}
-
 	for i, row := range rows {
+		if state.shouldStop() {
+			break
+		}
 		rowPath := fmt.Sprintf("rows[%d]", i)
-		result.Errors = append(result.Errors, v.validateValue(row, prop, rowPath)...)
+		v.validateValueIntoState(row, prop, rowPath, state)
 	}
-
-	if len(result.Errors) > 0 {
-		result.Valid = false
+	return &ValidationResult{
+		Valid:  len(state.errors) == 0,
+		Errors: state.errors,
 	}
-
-	return result
 }
 
-// validateValue validates a value against a property definition
+// ValidateCSVRows validates a JSON array of row objects against a CSV schema (collects all errors; backward compatible).
+func (v *Validator) ValidateCSVRows(rows []map[string]interface{}, schema *CSVSchema) *ValidationResult {
+	return v.ValidateCSVRowsWithOptions(rows, schema, true)
+}
+
+// validateValueIntoState validates a value and appends errors to state; stops when state is full (stop-on-first-error).
+func (v *Validator) validateValueIntoState(value interface{}, prop *Property, path string, state *validationState) {
+	if prop.Required && value == nil {
+		if state.add(ValidationError{Path: path, Message: "field is required", Code: "REQUIRED"}) {
+			return
+		}
+		return
+	}
+	if value == nil {
+		return
+	}
+	switch prop.Type {
+	case TypeString:
+		if str, ok := value.(string); ok {
+			for _, e := range v.validateString(str, prop.Validation, path) {
+				if state.add(e) {
+					return
+				}
+			}
+		} else {
+			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected string, got %T", value), Code: "TYPE_MISMATCH"}) {
+				return
+			}
+		}
+	case TypeNumber:
+		var num float64
+		switch val := value.(type) {
+		case float64:
+			num = val
+		case int:
+			num = float64(val)
+		case int64:
+			num = float64(val)
+		case int32:
+			num = float64(val)
+		default:
+			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected number, got %T", value), Code: "TYPE_MISMATCH"}) {
+				return
+			}
+			return
+		}
+		for _, e := range v.validateNumber(num, prop.Validation, path) {
+			if state.add(e) {
+				return
+			}
+		}
+	case TypeBoolean:
+		if _, ok := value.(bool); !ok {
+			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected boolean, got %T", value), Code: "TYPE_MISMATCH"}) {
+				return
+			}
+		}
+	case TypeArray:
+		if arr, ok := value.([]interface{}); ok {
+			v.validateArrayIntoState(arr, prop, path, state)
+		} else {
+			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected array, got %T", value), Code: "TYPE_MISMATCH"}) {
+				return
+			}
+		}
+	case TypeObject:
+		if obj, ok := value.(map[string]interface{}); ok {
+			v.validateObjectIntoState(obj, prop, path, state)
+		} else {
+			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected object, got %T", value), Code: "TYPE_MISMATCH"}) {
+				return
+			}
+		}
+	case TypeDate, TypeDateTime:
+		if str, ok := value.(string); ok {
+			for _, e := range v.validateString(str, prop.Validation, path) {
+				if state.add(e) {
+					return
+				}
+			}
+		} else {
+			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected string for date/datetime, got %T", value), Code: "TYPE_MISMATCH"}) {
+				return
+			}
+		}
+	case TypeByte:
+		switch val := value.(type) {
+		case string:
+			for _, e := range v.validateByte(val, prop.Validation, path) {
+				if state.add(e) {
+					return
+				}
+			}
+		case []byte:
+			for _, e := range v.validateByte(string(val), prop.Validation, path) {
+				if state.add(e) {
+					return
+				}
+			}
+		default:
+			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected string or bytes, got %T", value), Code: "TYPE_MISMATCH"}) {
+				return
+			}
+		}
+	case TypeAny:
+		// no validation
+	}
+}
+
+// validateArrayIntoState validates array and items, appending to state; stops when state is full.
+func (v *Validator) validateArrayIntoState(arr []interface{}, prop *Property, path string, state *validationState) {
+	if prop.Validation != nil {
+		if prop.Validation.MinItems != nil && len(arr) < *prop.Validation.MinItems {
+			if state.add(ValidationError{
+				Path: path, Message: fmt.Sprintf("array length %d is less than minimum %d", len(arr), *prop.Validation.MinItems), Code: "MIN_ITEMS",
+			}) {
+				return
+			}
+		}
+		if prop.Validation.MaxItems != nil && len(arr) > *prop.Validation.MaxItems {
+			if state.add(ValidationError{
+				Path: path, Message: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), *prop.Validation.MaxItems), Code: "MAX_ITEMS",
+			}) {
+				return
+			}
+		}
+		if prop.Validation.UniqueItems {
+			seen := make(map[string]bool)
+			for i, item := range arr {
+				key := fmt.Sprintf("%v", item)
+				if seen[key] {
+					if state.add(ValidationError{Path: fmt.Sprintf("%s[%d]", path, i), Message: "duplicate item found", Code: "DUPLICATE_ITEM"}) {
+						return
+					}
+					break
+				}
+				seen[key] = true
+			}
+		}
+	}
+	if prop.Items != nil {
+		for i, item := range arr {
+			if state.shouldStop() {
+				return
+			}
+			v.validateValueIntoState(item, prop.Items, fmt.Sprintf("%s[%d]", path, i), state)
+		}
+	}
+}
+
+// validateObjectIntoState validates object properties, appending to state; stops when state is full.
+func (v *Validator) validateObjectIntoState(obj map[string]interface{}, prop *Property, path string, state *validationState) {
+	if prop.Properties == nil {
+		return
+	}
+	for propName, propDef := range prop.Properties {
+		if state.shouldStop() {
+			return
+		}
+		value, exists := obj[propName]
+		propPath := fmt.Sprintf("%s.%s", path, propName)
+		if !exists && propDef.Required {
+			if state.add(ValidationError{Path: propPath, Message: "required field missing", Code: "REQUIRED"}) {
+				return
+			}
+			continue
+		}
+		if exists {
+			v.validateValueIntoState(value, propDef, propPath, state)
+		}
+	}
+}
+
+// validateValue validates a value against a property definition (used when collectAllErrors is true).
 func (v *Validator) validateValue(value interface{}, prop *Property, path string) []ValidationError {
 	var errors []ValidationError
 
@@ -118,15 +299,15 @@ func (v *Validator) validateValue(value interface{}, prop *Property, path string
 
 	case TypeNumber:
 		var num float64
-		switch v := value.(type) {
+		switch val := value.(type) {
 		case float64:
-			num = v
+			num = val
 		case int:
-			num = float64(v)
+			num = float64(val)
 		case int64:
-			num = float64(v)
+			num = float64(val)
 		case int32:
-			num = float64(v)
+			num = float64(val)
 		default:
 			errors = append(errors, ValidationError{
 				Path:    path,
