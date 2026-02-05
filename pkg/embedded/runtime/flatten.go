@@ -5,6 +5,28 @@ import (
 	"strings"
 )
 
+// RootArrayKey is the reserved key for root-as-array. When input/root is an array,
+// it is stored under this key only. Paths starting with "//" are equivalent to "/$items//...".
+const RootArrayKey = "$items"
+
+// NormalizeRootArrayEndpoint converts //field notation to /$items//field for root-array access.
+// This ensures consistent key construction when the root of the input is an array.
+// Examples:
+//   - "//name" → "/$items//name"
+//   - "///nested" → "/$items///nested" (preserves extra slashes)
+//   - "/data//name" → "/data//name" (unchanged, not root-array)
+//   - "/name" → "/name" (unchanged, no array traversal)
+func NormalizeRootArrayEndpoint(endpoint string) string {
+	// Check if path starts with // (root-is-array notation)
+	// Trim at most one leading / then check for another /
+	trimmed := strings.TrimPrefix(endpoint, "/")
+	if strings.HasPrefix(trimmed, "/") {
+		// This is //something pattern - normalize to /$items//something
+		return "/" + RootArrayKey + "/" + trimmed
+	}
+	return endpoint
+}
+
 // FlattenMap flattens a nested map with nodeId prefix.
 // Example: {"name": "david", "age": 19} with nodeId "abc" becomes:
 // {"abc-/name": "david", "abc-/age": 19}
@@ -49,11 +71,13 @@ func FlattenMap(data map[string]interface{}, nodeId, basePath string) map[string
 // This provides a fallback mechanism when the root key is not available.
 //
 // Example input (flattened):
-//   "nodeId-/name": "alex"
-//   "nodeId-/contact/email": "alex@example.com"
+//
+//	"nodeId-/name": "alex"
+//	"nodeId-/contact/email": "alex@example.com"
 //
 // Example output (reconstructed):
-//   {"name": "alex", "contact": {"email": "alex@example.com"}}
+//
+//	{"name": "alex", "contact": {"email": "alex@example.com"}}
 func UnflattenMap(flatKeys map[string]interface{}, nodeId string) map[string]interface{} {
 	prefix := nodeId + "-/"
 
@@ -218,10 +242,44 @@ func GetNestedValue(data map[string]interface{}, path string) interface{} {
 // SetNestedValue sets a value at a nested path in the map.
 // Creates intermediate maps as needed.
 // When path is empty, merges the value (if it's a map) into data.
+// When path starts with "//", treats as root-array: sets data[RootArrayKey] as array of maps with the field.
 func SetNestedValue(data map[string]interface{}, path string, value interface{}) {
 	path = strings.TrimPrefix(path, "/")
 
-	// Handle // in path - use only the part after //
+	// Root-is-array: //name means set data[$items][i][name] = value[i]; merge into existing array if present
+	if strings.HasPrefix(path, "//") {
+		rest := path[2:]
+		if rest == "" {
+			return
+		}
+		existing, _ := data[RootArrayKey].([]interface{})
+		if valueArray, ok := value.([]interface{}); ok && len(valueArray) > 0 {
+			if len(existing) == len(valueArray) {
+				for i, v := range valueArray {
+					if m, ok := existing[i].(map[string]interface{}); ok {
+						m[rest] = v
+					}
+				}
+			} else {
+				items := make([]interface{}, len(valueArray))
+				for i, v := range valueArray {
+					items[i] = map[string]interface{}{rest: v}
+				}
+				data[RootArrayKey] = items
+			}
+		} else {
+			if len(existing) == 1 {
+				if m, ok := existing[0].(map[string]interface{}); ok {
+					m[rest] = value
+				}
+			} else {
+				data[RootArrayKey] = []interface{}{map[string]interface{}{rest: value}}
+			}
+		}
+		return
+	}
+
+	// Handle // in path (not at start) - use only the part after //
 	if idx := strings.Index(path, "//"); idx >= 0 {
 		path = path[idx+2:]
 	}
@@ -229,7 +287,6 @@ func SetNestedValue(data map[string]interface{}, path string, value interface{})
 	// Handle empty path - merge value into data root
 	if path == "" {
 		if valueMap, ok := value.(map[string]interface{}); ok {
-			// Merge all keys from value into data
 			for k, v := range valueMap {
 				data[k] = v
 			}
@@ -253,7 +310,7 @@ func SetNestedValue(data map[string]interface{}, path string, value interface{})
 			if next, ok := current[part].(map[string]interface{}); ok {
 				current = next
 			} else {
-				return // Can't navigate further
+				return
 			}
 		}
 	}
@@ -261,9 +318,13 @@ func SetNestedValue(data map[string]interface{}, path string, value interface{})
 
 // ExtractArrayPath extracts the array path from a source endpoint.
 // Example: "/data//name" -> "data", "name"
+// Example: "//name" -> "$items", "name" (root-is-array)
 func ExtractArrayPath(endpoint string) (arrayPath, fieldPath string, hasArray bool) {
 	endpoint = strings.TrimPrefix(endpoint, "/")
 
+	if strings.HasPrefix(endpoint, "//") {
+		return RootArrayKey, endpoint[2:], true
+	}
 	if idx := strings.Index(endpoint, "//"); idx >= 0 {
 		return endpoint[:idx], endpoint[idx+2:], true
 	}
@@ -392,13 +453,38 @@ type ArrayPathSegment struct {
 }
 
 // ParseNestedArrayPath parses a path like "/data//assignments//topics//name"
+// For root-array paths like "//name", it inserts $items as the first segment.
 func ParseNestedArrayPath(path string) []ArrayPathSegment {
+	if path == "" {
+		return nil
+	}
+
+	// Check for root-array pattern BEFORE trimming
+	// "//name" or "//" means root is array
+	isRootArray := strings.HasPrefix(path, "//")
+
 	path = strings.TrimPrefix(path, "/")
 	if path == "" {
 		return nil
 	}
 
 	var segments []ArrayPathSegment
+
+	// If root is array, add $items as first segment
+	if isRootArray {
+		segments = append(segments, ArrayPathSegment{
+			Path:    RootArrayKey,
+			IsArray: true, // This is the root array
+		})
+		// Remove the leading / that remains after the first trim
+		// "//name" -> "/name" after first trim, now remove the second /
+		path = strings.TrimPrefix(path, "/")
+		if path == "" {
+			return segments
+		}
+	}
+
+	// Split remaining path by //
 	parts := strings.Split(path, "//")
 
 	for i, part := range parts {
@@ -406,9 +492,17 @@ func ParseNestedArrayPath(path string) []ArrayPathSegment {
 			continue
 		}
 
+		// Check for trailing slash - means iterate over this array (for primitive arrays)
+		// e.g., "//chapters/" means iterate over chapters array and extract each element
+		// vs "//chapters" which gives the whole array
+		trailingSlash := strings.HasSuffix(part, "/")
+		if trailingSlash {
+			part = strings.TrimSuffix(part, "/")
+		}
+
 		seg := ArrayPathSegment{
 			Path:    part,
-			IsArray: i < len(parts)-1, // All but last are arrays
+			IsArray: i < len(parts)-1 || trailingSlash, // Array if not last OR has trailing slash
 		}
 		segments = append(segments, seg)
 	}

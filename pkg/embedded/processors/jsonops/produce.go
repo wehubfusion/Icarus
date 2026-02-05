@@ -22,23 +22,55 @@ func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) ru
 		))
 	}
 
-	// Convert full input data to []byte for processing (root can be object or array)
+	// Parse schema to check root type
+	engine := schema.NewEngine()
+	parsedSchema, parseErr := engine.GetParser().Parse(cfg.Schema)
+
+	// Determine what data to process based on schema root type
+	var dataToMarshal interface{} = input.Data
+
+	// Debug: print what keys we have in input.Data
+	fmt.Printf("[DEBUG jsonops produce] input.Data keys: ")
+	for k := range input.Data {
+		fmt.Printf("%q ", k)
+	}
+	fmt.Printf("\n")
+
+	// Only extract $items or single-key arrays if schema expects ARRAY at root
+	schemaExpectsArray := parseErr == nil && parsedSchema != nil && parsedSchema.Type == schema.TypeArray
+
+	if items, hasItems := input.Data[runtime.RootArrayKey]; hasItems {
+		fmt.Printf("[DEBUG jsonops produce] Found $items key, len(input.Data)=%d, schemaExpectsArray=%v\n", len(input.Data), schemaExpectsArray)
+		// Only use $items as root if schema expects an array AND $items is the only key
+		if schemaExpectsArray && len(input.Data) == 1 {
+			dataToMarshal = items
+			fmt.Printf("[DEBUG jsonops produce] Using $items as root (schema expects ARRAY)\n")
+		}
+	} else if schemaExpectsArray && len(input.Data) == 1 {
+		// Also check for single key containing an array (generic case)
+		// Only extract if schema expects ARRAY at root
+		for k, v := range input.Data {
+			if arr, isArr := v.([]interface{}); isArr {
+				fmt.Printf("[DEBUG jsonops produce] Found single key %q containing array of len %d, using as root (schema expects ARRAY)\n", k, len(arr))
+				dataToMarshal = arr
+			}
+		}
+	}
+
+	// Convert data to []byte for processing (root can be object or array)
 	var dataToProcess []byte
 	var err error
 
-	dataToProcess, err = json.Marshal(input.Data)
-		if err != nil {
-			return runtime.ErrorOutput(NewProcessingError(
-				n.NodeId(),
-				"produce",
+	dataToProcess, err = json.Marshal(dataToMarshal)
+	if err != nil {
+		return runtime.ErrorOutput(NewProcessingError(
+			n.NodeId(),
+			"produce",
 			"failed to marshal input data",
-				input.ItemIndex,
-				err,
-			))
+			input.ItemIndex,
+			err,
+		))
 	}
-
-	// Create schema engine
-	engine := schema.NewEngine()
 
 	// Process with schema (no defaults on produce, structure and validate)
 	result, err := engine.ProcessWithSchema(

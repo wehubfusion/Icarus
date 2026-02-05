@@ -622,6 +622,10 @@ type NodeOutputStore struct {
 	// contextOutputs stores outputs for specific nested iteration contexts
 	// Key: nodeId:index0:index1:..., Value: output
 	contextOutputs map[string]map[string]interface{}
+	// ArrayPathItems stores current iteration items keyed by array path
+	// Key: arrayPath (e.g., "$items", "assignments", "chapters"), Value: item data
+	// This allows looking up parent iteration context data by array path
+	ArrayPathItems map[string]map[string]interface{}
 }
 
 // currentIterationItem holds the current item and its index for iteration
@@ -637,6 +641,7 @@ func NewNodeOutputStore() *NodeOutputStore {
 		IteratedOutputs:       make(map[string][]map[string]interface{}),
 		IterationInfo:         make(map[string]IterationState),
 		CurrentIterationItems: make(map[string]currentIterationItem),
+		ArrayPathItems:        make(map[string]map[string]interface{}),
 	}
 }
 
@@ -736,6 +741,21 @@ func (s *NodeOutputStore) GetCurrentIterationItem(sourceNodeId string) (map[stri
 		return ci.Item, ci.Index
 	}
 	return nil, -1
+}
+
+// SetArrayPathItem stores an iteration item keyed by its array path
+func (s *NodeOutputStore) SetArrayPathItem(arrayPath string, item map[string]interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ArrayPathItems[arrayPath] = item
+}
+
+// GetArrayPathItem retrieves an iteration item by its array path
+func (s *NodeOutputStore) GetArrayPathItem(arrayPath string) (map[string]interface{}, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	item, ok := s.ArrayPathItems[arrayPath]
+	return item, ok
 }
 
 // GetOutputAtContext retrieves output considering the iteration stack context

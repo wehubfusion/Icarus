@@ -209,9 +209,9 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 }
 
 // filterNodesByIterationDepth filters nodes to only process those whose mapping depth
-// matches the current iteration stack depth. This ensures nodes only run at their
-// appropriate nesting level.
-func (sp *SubflowProcessor) filterNodesByIterationDepth(nodeIndices []int, currentStackDepth int) []int {
+// matches the current iteration stack depth, or that consume from the current iteration
+// source (so they run inside the loop even when their path has no "//").
+func (sp *SubflowProcessor) filterNodesByIterationDepth(nodeIndices []int, currentStackDepth int, iterStack *IterationStack) []int {
 	var filtered []int
 
 	for _, idx := range nodeIndices {
@@ -220,14 +220,35 @@ func (sp *SubflowProcessor) filterNodesByIterationDepth(nodeIndices []int, curre
 		// Get the expected iteration depth for this node by counting array markers in mappings
 		expectedDepth := sp.getNodeIterationDepth(config)
 
-		// Node should only process when iteration depth matches its expected depth
-		// Depth 0 means no iteration (process at root level)
+		// Node should process when iteration depth matches its expected depth
 		if expectedDepth == currentStackDepth {
 			filtered = append(filtered, idx)
+			continue
+		}
+
+		// When inside an iteration (currentStackDepth >= 1), also include nodes that consume
+		// from the current level's iteration source. Those nodes have e.g. path "/name" from
+		// the parse node (iteration source) and would get expectedDepth 0 from "//" count,
+		// but they must run at depth 1 so they receive the current item.
+		if currentStackDepth >= 1 && iterStack != nil {
+			ctx := iterStack.GetContextForDepth(currentStackDepth - 1)
+			if ctx != nil && sp.nodeConsumesFrom(config, ctx.SourceNodeId) {
+				filtered = append(filtered, idx)
+			}
 		}
 	}
 
 	return filtered
+}
+
+// nodeConsumesFrom returns true if the node has any field mapping from the given source node.
+func (sp *SubflowProcessor) nodeConsumesFrom(config EmbeddedNodeConfig, sourceNodeId string) bool {
+	for _, m := range config.GetFieldMappings() {
+		if m.SourceNodeId == sourceNodeId {
+			return true
+		}
+	}
+	return false
 }
 
 // getNodeIterationDepth determines the iteration depth for a node based on its mappings
@@ -318,8 +339,9 @@ func (sp *SubflowProcessor) processDepthLevelsRecursive(
 			itemIndex = current.CurrentIndex
 		}
 
-		// Filter nodes by iteration depth - only process nodes whose iteration depth matches current stack depth
-		filteredNodeIndices := sp.filterNodesByIterationDepth(nodeIndices, currentStackDepth)
+		// Filter nodes by iteration depth - only process nodes whose iteration depth matches current stack depth,
+		// or nodes that consume from the current iteration source (so they run inside the loop)
+		filteredNodeIndices := sp.filterNodesByIterationDepth(nodeIndices, currentStackDepth, iterStack)
 
 		if len(filteredNodeIndices) == 0 {
 			continue // No nodes match this iteration depth
@@ -468,6 +490,19 @@ func (sp *SubflowProcessor) navigateToArrayWithContext(
 			}
 		}
 
+		// Handle root-array case: when segment path is $items, look for it in the data
+		if seg.Path == RootArrayKey {
+			if m, ok := current.(map[string]interface{}); ok {
+				if items, exists := m[RootArrayKey]; exists {
+					if arr, ok := items.([]interface{}); ok && seg.IsArray {
+						return arr, seg.Path
+					}
+					current = items
+					continue
+				}
+			}
+		}
+
 		// Navigate to the field
 		if m, ok := current.(map[string]interface{}); ok && seg.Path != "" {
 			current = GetNestedValue(m, seg.Path)
@@ -587,8 +622,8 @@ func (sp *SubflowProcessor) extractItemDataAsMap(item interface{}) map[string]in
 	if m, ok := item.(map[string]interface{}); ok {
 		return m
 	}
-	// Wrap non-map items
-	return map[string]interface{}{"value": item}
+	// Wrap non-map items with $value key (consistent with $items naming)
+	return map[string]interface{}{"$value": item}
 }
 
 // createNestedItemStore creates an isolated store for an iteration item
@@ -603,6 +638,11 @@ func (sp *SubflowProcessor) createNestedItemStore(
 		itemStore.SetSingleOutput(nodeId, output)
 	}
 
+	// Copy array path items from parent store
+	for arrayPath, item := range parentStore.ArrayPathItems {
+		itemStore.SetArrayPathItem(arrayPath, item)
+	}
+
 	// Store current iteration items for all active contexts
 	if iterStack != nil && iterStack.Depth() > 0 {
 		// Get the deepest (most recent) context's item
@@ -615,14 +655,18 @@ func (sp *SubflowProcessor) createNestedItemStore(
 			// This makes the current item available for value extraction
 			itemStore.SetSingleOutput(deepestCtx.SourceNodeId, itemData)
 			itemStore.SetCurrentIterationItem(deepestCtx.SourceNodeId, itemData, deepestCtx.CurrentIndex)
+			// Also store by array path for parent context lookups
+			itemStore.SetArrayPathItem(deepestCtx.ArrayPath, itemData)
 		}
 
-		// Also store all context items for potential use
+		// Also store all context items for potential use (including by array path)
 		for i := 0; i < iterStack.Depth(); i++ {
 			ctx := iterStack.GetContextForDepth(i)
 			if ctx != nil && ctx.CurrentIndex >= 0 && ctx.CurrentIndex < len(ctx.Items) {
 				itemData := sp.extractItemDataAsMap(ctx.Items[ctx.CurrentIndex])
 				itemStore.SetCurrentIterationItem(ctx.SourceNodeId, itemData, ctx.CurrentIndex)
+				// Store by array path for lookups from deeper levels
+				itemStore.SetArrayPathItem(ctx.ArrayPath, itemData)
 			}
 		}
 	}
@@ -709,8 +753,18 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 
 			// Build input
 			var input map[string]interface{}
+			var skipDueToDepth bool
 			if iter != nil && itemIndex >= 0 {
-				input = sp.buildItemInput(config, store, *iter, itemIndex)
+				input, skipDueToDepth = sp.buildItemInput(config, store, *iter, itemIndex)
+				// If all mappings were skipped because they need deeper iteration, skip this execution
+				if skipDueToDepth {
+					fmt.Printf("[DEBUG] skipping node execution at this level (all mappings need deeper iteration): node=%s, iter_array_path=%s\n",
+						config.NodeId, iter.ArrayPath)
+					result.output = make(map[string]interface{})
+					result.skipped = true
+					resultChan <- result
+					return
+				}
 			} else {
 				input = sp.buildSingleNodeInput(config, store)
 			}
@@ -846,8 +900,15 @@ func (sp *SubflowProcessor) processSingleNodeAtDepth(
 
 	// Build input
 	var input map[string]interface{}
+	var skipDueToDepth bool
 	if iter != nil && itemIndex >= 0 {
-		input = sp.buildItemInput(config, store, *iter, itemIndex)
+		input, skipDueToDepth = sp.buildItemInput(config, store, *iter, itemIndex)
+		// If all mappings were skipped because they need deeper iteration, skip this execution
+		if skipDueToDepth {
+			fmt.Printf("[DEBUG] skipping single node execution at this level (all mappings need deeper iteration): node=%s, iter_array_path=%s\n",
+				config.NodeId, iter.ArrayPath)
+			return nil
+		}
 	} else {
 		input = sp.buildSingleNodeInput(config, store)
 	}
@@ -931,13 +992,20 @@ func (sp *SubflowProcessor) mergeIndexedOutputToResult(
 // 2. Source was processed in this item's subflow -> get from itemStore
 // 3. Source is pre-iteration with array notation (//) -> extract at index
 // 4. Source is pre-iteration without array notation -> pass full value (shared)
+// Returns the input map and a boolean indicating if this execution should be skipped
+// (true if all mappings were skipped because they need deeper iteration level)
 func (sp *SubflowProcessor) buildItemInput(
 	config EmbeddedNodeConfig,
 	itemStore *NodeOutputStore,
 	iter IterationState,
 	itemIndex int,
-) map[string]interface{} {
+) (map[string]interface{}, bool) {
 	input := make(map[string]interface{})
+	totalMappings := 0
+	skippedMappings := 0
+
+	fmt.Printf("[DEBUG] buildItemInput START: node=%s, item_index=%d, iter_source=%s, iter_array_path=%s\n",
+		config.NodeId, itemIndex, iter.SourceNodeId, iter.ArrayPath)
 
 	sp.logger.Debug("building item input",
 		Field{Key: "node", Value: config.NodeId},
@@ -946,6 +1014,7 @@ func (sp *SubflowProcessor) buildItemInput(
 	)
 
 	for _, m := range config.GetFieldMappings() {
+		totalMappings++
 		var val interface{}
 
 		sp.logger.Debug("processing field mapping",
@@ -957,21 +1026,91 @@ func (sp *SubflowProcessor) buildItemInput(
 		if m.SourceNodeId == iter.SourceNodeId {
 			// Get current item from store
 			currentItem, idx := itemStore.GetCurrentIterationItem(m.SourceNodeId)
+
+			fmt.Printf("[DEBUG] checking current iteration item: source_node=%s, endpoint=%s, currentItem_nil=%v, idx=%d, itemIndex=%d, iter_array_path=%s\n",
+				m.SourceNodeId, m.SourceEndpoint, currentItem == nil, idx, itemIndex, iter.ArrayPath)
+
 			if currentItem != nil && idx == itemIndex {
 				// For nested paths, extract the field relevant to THIS iteration level
 				if strings.Contains(m.SourceEndpoint, "//") {
 					// Parse the full nested path to find which segment we're at
 					segments := ParseNestedArrayPath(m.SourceEndpoint)
 
-					// The last segment (non-array) is the field to extract from current item
-					if len(segments) > 0 {
-						lastSeg := segments[len(segments)-1]
-						if !lastSeg.IsArray && lastSeg.Path != "" {
-							// Extract this field from the current item
-							val = GetNestedValue(currentItem, lastSeg.Path)
-						} else {
-							// No final field, return the whole item
-							val = currentItem
+					fmt.Printf("[DEBUG] parsed nested path segments: endpoint=%s, segments=%+v, iter_array_path=%s\n",
+						m.SourceEndpoint, segments, iter.ArrayPath)
+
+					// Find our position in the segment chain based on current iteration's ArrayPath
+					// This tells us which array level we're currently at
+					currentSegIdx := -1
+					for i, seg := range segments {
+						if seg.Path == iter.ArrayPath {
+							currentSegIdx = i
+							break
+						}
+					}
+
+					fmt.Printf("[DEBUG] found current segment position: currentSegIdx=%d, segments_len=%d\n",
+						currentSegIdx, len(segments))
+
+					// If the mapping's path doesn't include the current iteration array path,
+					// this mapping is from a parent iteration level.
+					// SKIP it - the node was already processed at the appropriate parent level.
+					if currentSegIdx == -1 {
+						fmt.Printf("[DEBUG] mapping path doesn't include iter array path %s, skipping - already processed at parent level\n", iter.ArrayPath)
+						skippedMappings++
+						continue
+					} else if currentSegIdx < len(segments)-1 {
+						// We found our position - extract the REMAINING path from current item
+						remainingSegments := segments[currentSegIdx+1:]
+
+						// If ANY segment in the remaining path is an array, this mapping should be
+						// processed at a deeper iteration level. We skip it here because:
+						// 1. Trailing array (e.g., [{chapters, true}]) = primitive array iteration at chapters level
+						// 2. Array in middle (e.g., [{details/topics, true}, {name, false}]) = need to iterate topics first
+						hasArrayInRemaining := false
+						for _, seg := range remainingSegments {
+							if seg.IsArray {
+								hasArrayInRemaining = true
+								fmt.Printf("[DEBUG] remaining path contains array segment (%s), skipping - will be processed at deeper iteration level\n",
+									seg.Path)
+								break
+							}
+						}
+						if hasArrayInRemaining {
+							skippedMappings++
+							continue
+						}
+
+						// Get keys from currentItem for debug
+						var keys []string
+						for k := range currentItem {
+							keys = append(keys, k)
+						}
+						fmt.Printf("[DEBUG] extracting remaining path: remainingSegments=%+v, currentItem_keys=%v\n",
+							remainingSegments, keys)
+
+						// If there are more array segments, we need to extract nested structure
+						// e.g., for //assignments//due_date when at $items level,
+						// remainingSegments = [{assignments, true}, {due_date, false}]
+						// We need to extract "assignments" array and then "due_date" from each
+						val = sp.extractRemainingPath(currentItem, remainingSegments)
+
+						fmt.Printf("[DEBUG] extracted remaining path result: val=%v, val_type=%T\n", val, val)
+					} else {
+						// currentSegIdx is at the last segment - extract from currentItem
+						if len(segments) > 0 {
+							lastSeg := segments[len(segments)-1]
+							if !lastSeg.IsArray && lastSeg.Path != "" {
+								val = GetNestedValue(currentItem, lastSeg.Path)
+							} else if lastSeg.IsArray {
+								if wrappedVal, hasValue := currentItem["$value"]; hasValue && len(currentItem) == 1 {
+									val = wrappedVal
+								} else {
+									val = currentItem
+								}
+							} else {
+								val = currentItem
+							}
 						}
 					}
 				} else {
@@ -999,6 +1138,7 @@ func (sp *SubflowProcessor) buildItemInput(
 		}
 
 		if val == nil {
+			fmt.Printf("[DEBUG] extracted value is nil for source_node=%s, endpoint=%s\n", m.SourceNodeId, m.SourceEndpoint)
 			sp.logger.Debug("extracted value is nil",
 				Field{Key: "source_node", Value: m.SourceNodeId},
 				Field{Key: "endpoint", Value: m.SourceEndpoint},
@@ -1006,6 +1146,8 @@ func (sp *SubflowProcessor) buildItemInput(
 			continue
 		}
 
+		fmt.Printf("[DEBUG] setting value to input: endpoint=%s, dest=%v, val=%v, val_type=%T\n",
+			m.SourceEndpoint, m.DestinationEndpoints, val, val)
 		sp.logger.Debug("extracted value successfully",
 			Field{Key: "source_node", Value: m.SourceNodeId},
 			Field{Key: "endpoint", Value: m.SourceEndpoint},
@@ -1017,48 +1159,164 @@ func (sp *SubflowProcessor) buildItemInput(
 		}
 	}
 
-	return input
+	// If ALL mappings were skipped because they need deeper iteration, signal to skip this execution
+	shouldSkip := totalMappings > 0 && skippedMappings == totalMappings
+	fmt.Printf("[DEBUG] buildItemInput final result: input=%+v, totalMappings=%d, skippedMappings=%d, shouldSkip=%v\n",
+		input, totalMappings, skippedMappings, shouldSkip)
+	return input, shouldSkip
+}
+
+// extractRemainingPath extracts values from data following the remaining path segments.
+// For example, if segments = [{assignments, true}, {due_date, false}], this will:
+// 1. Get the "assignments" array from data
+// 2. For each assignment, extract "due_date"
+// 3. Return the array of due_dates
+func (sp *SubflowProcessor) extractRemainingPath(data map[string]interface{}, segments []ArrayPathSegment) interface{} {
+	if len(segments) == 0 {
+		return data
+	}
+
+	// Get the first segment
+	firstSeg := segments[0]
+
+	// Navigate to the first segment's path
+	current := GetNestedValue(data, firstSeg.Path)
+	if current == nil {
+		return nil
+	}
+
+	// If this is the last segment, return the value
+	if len(segments) == 1 {
+		// If it's an array segment (trailing slash case), return as-is
+		if firstSeg.IsArray {
+			return current
+		}
+		return current
+	}
+
+	// If this segment is an array, we need to extract from each element
+	if firstSeg.IsArray {
+		arr, ok := current.([]interface{})
+		if !ok {
+			return nil
+		}
+
+		// For each element, recursively extract the remaining path
+		remaining := segments[1:]
+		result := make([]interface{}, 0, len(arr))
+
+		for _, item := range arr {
+			itemMap, ok := item.(map[string]interface{})
+			if !ok {
+				// Primitive value - just append if we're at a terminal array
+				if len(remaining) == 0 || (len(remaining) == 1 && remaining[0].Path == "") {
+					result = append(result, item)
+				}
+				continue
+			}
+
+			extracted := sp.extractRemainingPath(itemMap, remaining)
+			if extracted != nil {
+				// If extracted is an array, flatten it into results
+				if extractedArr, ok := extracted.([]interface{}); ok {
+					result = append(result, extractedArr...)
+				} else {
+					result = append(result, extracted)
+				}
+			}
+		}
+
+		if len(result) > 0 {
+			return result
+		}
+		return nil
+	}
+
+	// Not an array segment - navigate and continue
+	if dataMap, ok := current.(map[string]interface{}); ok {
+		return sp.extractRemainingPath(dataMap, segments[1:])
+	}
+
+	return current
 }
 
 // extractNestedValueFromSource extracts value from source considering nested context
 // This handles paths like /data//assignments//topics//name when we're in nested iteration
+// and //name or //assignments//title when root is array (source[$items] or source["$value"]).
 func (sp *SubflowProcessor) extractNestedValueFromSource(
 	source map[string]interface{},
 	endpoint string,
 	_ *NodeOutputStore,
 	_ int,
 ) interface{} {
+	fmt.Printf("[DEBUG] extractNestedValueFromSource called: endpoint=%s\n", endpoint)
+
+	// Handle root-is-array notation: //field means /$items//field
+	// When endpoint starts with //, we need to look in source[$items] or source[$value]
+	if strings.HasPrefix(endpoint, "//") {
+		// This is root-array notation
+		endpoint = strings.TrimPrefix(endpoint, "//")
+		fmt.Printf("[DEBUG] extractNestedValueFromSource: root-array endpoint, trimmed to: %s\n", endpoint)
+
+		// Get the root array
+		var rootArray []interface{}
+		if arr, ok := source[RootArrayKey].([]interface{}); ok {
+			rootArray = arr
+			fmt.Printf("[DEBUG] extractNestedValueFromSource: found $items array with %d elements\n", len(arr))
+		} else if arr, ok := source["$value"].([]interface{}); ok {
+			rootArray = arr
+			fmt.Printf("[DEBUG] extractNestedValueFromSource: found $value array with %d elements\n", len(arr))
+		} else {
+			// Debug: what type is $value?
+			if v, exists := source["$value"]; exists {
+				fmt.Printf("[DEBUG] extractNestedValueFromSource: $value exists but is type %T, not []interface{}\n", v)
+			} else {
+				fmt.Printf("[DEBUG] extractNestedValueFromSource: neither $items nor $value found in source keys=%v\n", getMapKeys(source))
+			}
+			return nil
+		}
+
+		// Now extract from the root array
+		return sp.extractFromArrayPath(rootArray, endpoint)
+	}
+
+	// Regular path (not root-array notation)
 	endpoint = strings.TrimPrefix(endpoint, "/")
 
 	// Parse into segments: data, assignments/details/topics, name
 	parts := strings.Split(endpoint, "//")
+	fmt.Printf("[DEBUG] extractNestedValueFromSource: parts=%v, len=%d\n", parts, len(parts))
 	if len(parts) == 1 {
-		// No array notation, simple extraction
 		return GetNestedValue(source, endpoint)
 	}
 
 	current := interface{}(source)
 
 	// Navigate through each // segment
-	for i, part := range parts {
+	for i := 0; i < len(parts); i++ {
+		part := parts[i]
 		if part == "" {
 			continue
 		}
 
-		// Navigate to this part
-		if m, ok := current.(map[string]interface{}); ok {
+		if arr, ok := current.([]interface{}); ok {
+			// Get part from each element (e.g. //assignments from each item)
+			extracted := make([]interface{}, len(arr))
+			for j, item := range arr {
+				if m, ok := item.(map[string]interface{}); ok {
+					extracted[j] = GetNestedValue(m, part)
+				}
+			}
+			current = extracted
+		} else if m, ok := current.(map[string]interface{}); ok {
 			current = GetNestedValue(m, part)
 			if current == nil {
 				return nil
 			}
 		}
 
-		// If this is not the last part, it should be an array
 		if i < len(parts)-1 {
 			if arr, ok := current.([]interface{}); ok {
-				// Check if we have context for this array level
-				// Look for current item in itemStore based on the path
-				// For now, use the first item as a fallback
 				if len(arr) > 0 {
 					current = arr[0]
 				} else {
@@ -1154,30 +1412,25 @@ func (sp *SubflowProcessor) buildSingleNodeInput(
 			continue
 		}
 
-		// Check for wrapped array with empty sourceEndpoint (pass-through case)
+		// Normalize source endpoint: //field -> /$items//field for root-array access
+		normalizedEndpoint := NormalizeRootArrayEndpoint(m.SourceEndpoint)
+
+		// Check for root-as-array with empty sourceEndpoint (pass-through case)
 		if m.SourceEndpoint == "" {
-			// Check if source node has isWrappedArray metadata
-			if wrapped, ok := sourceOut["isWrappedArray"]; ok {
-				if isWrapped, ok := wrapped.(bool); ok && isWrapped {
-					// Auto-unwrap: get the items array
-					if items, ok := sourceOut["items"]; ok {
-						// Pass the raw array directly to destination endpoints
-						for _, dest := range m.DestinationEndpoints {
-							// Handle empty destination - means pass as "input" or root
-							if dest == "" {
-								// For empty destination, use "input" as the key
-								input["input"] = items
-							} else {
-								SetNestedValue(input, dest, items)
-							}
-						}
-						continue
+			if items, ok := sourceOut[RootArrayKey]; ok {
+				// Pass the raw array directly to destination endpoints
+				for _, dest := range m.DestinationEndpoints {
+					if dest == "" {
+						input["input"] = items
+					} else {
+						SetNestedValue(input, dest, items)
 					}
 				}
+				continue
 			}
 		}
 
-		val := sp.extractValue(sourceOut, m.SourceEndpoint)
+		val := sp.extractValue(sourceOut, normalizedEndpoint)
 		if val == nil {
 			continue
 		}
@@ -1246,12 +1499,130 @@ func (sp *SubflowProcessor) shouldSkipNode(
 func (sp *SubflowProcessor) extractValue(source map[string]interface{}, endpoint string) interface{} {
 	endpoint = strings.TrimPrefix(endpoint, "/")
 
+	// Empty endpoint (or was just "/") - check for $items to return the whole array
+	if endpoint == "" {
+		if items, ok := source[RootArrayKey]; ok {
+			return items
+		}
+		// Return the whole source if no $items key
+		return source
+	}
+
+	// Root-is-array: //name or $items//name means get field from each element of source[$items]
+	// After normalization, //name becomes $items//name
+	if strings.HasPrefix(endpoint, RootArrayKey+"//") {
+		arr, ok := source[RootArrayKey].([]interface{})
+		if !ok || len(arr) == 0 {
+			// Try extracting directly from source if $items is not present
+			rest := strings.TrimPrefix(endpoint, RootArrayKey+"//")
+			return GetNestedValue(source, rest)
+		}
+		rest := strings.TrimPrefix(endpoint, RootArrayKey+"//")
+		result := make([]interface{}, len(arr))
+		for i, item := range arr {
+			if m, ok := item.(map[string]interface{}); ok {
+				result[i] = GetNestedValue(m, rest)
+			}
+		}
+		return result
+	}
+
+	// Legacy support: //name without normalization (endpoint already trimmed of leading /)
+	if strings.HasPrefix(endpoint, "/") {
+		arr, ok := source[RootArrayKey].([]interface{})
+		if !ok || len(arr) == 0 {
+			return GetNestedValue(source, endpoint[1:])
+		}
+		rest := endpoint[1:]
+		result := make([]interface{}, len(arr))
+		for i, item := range arr {
+			if m, ok := item.(map[string]interface{}); ok {
+				result[i] = GetNestedValue(m, rest)
+			}
+		}
+		return result
+	}
+
 	if idx := strings.Index(endpoint, "//"); idx >= 0 {
 		fieldPath := endpoint[idx+2:]
 		return GetNestedValue(source, fieldPath)
 	}
 
 	return GetNestedValue(source, endpoint)
+}
+
+// getMapKeys returns the keys of a map for debugging
+func getMapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// extractFromArrayPath extracts values from an array following a path that may contain nested arrays.
+// For example, with endpoint "assignments//due_date" and an array of persons:
+// 1. Gets "assignments" from each person (which is an array)
+// 2. Gets "due_date" from each assignment
+// Returns a nested array structure.
+func (sp *SubflowProcessor) extractFromArrayPath(arr []interface{}, endpoint string) interface{} {
+	if len(arr) == 0 {
+		return nil
+	}
+
+	// Check if there are nested arrays in the path
+	parts := strings.Split(endpoint, "//")
+	fmt.Printf("[DEBUG] extractFromArrayPath: endpoint=%s, parts=%v\n", endpoint, parts)
+
+	if len(parts) == 1 {
+		// Simple path, no nested arrays
+		// Extract the field from each element
+		result := make([]interface{}, 0, len(arr))
+		for _, item := range arr {
+			if m, ok := item.(map[string]interface{}); ok {
+				val := GetNestedValue(m, parts[0])
+				if val != nil {
+					result = append(result, val)
+				}
+			}
+		}
+		fmt.Printf("[DEBUG] extractFromArrayPath: simple path result len=%d\n", len(result))
+		return result
+	}
+
+	// Nested path: first part is a field that contains an array, remaining parts continue
+	firstPart := parts[0]
+	remainingPath := strings.Join(parts[1:], "//")
+
+	fmt.Printf("[DEBUG] extractFromArrayPath: firstPart=%s, remainingPath=%s\n", firstPart, remainingPath)
+
+	// Extract the first part from each element
+	result := make([]interface{}, 0)
+	for _, item := range arr {
+		if m, ok := item.(map[string]interface{}); ok {
+			val := GetNestedValue(m, firstPart)
+			if val == nil {
+				continue
+			}
+
+			// If the value is an array, recursively extract from it
+			if nestedArr, ok := val.([]interface{}); ok {
+				nestedResult := sp.extractFromArrayPath(nestedArr, remainingPath)
+				if nestedResult != nil {
+					result = append(result, nestedResult)
+				}
+			} else if nestedMap, ok := val.(map[string]interface{}); ok {
+				// Single map - wrap in array and extract
+				nestedResult := sp.extractFromArrayPath([]interface{}{nestedMap}, remainingPath)
+				if nestedResult != nil {
+					result = append(result, nestedResult)
+				}
+			}
+		}
+	}
+
+	fmt.Printf("[DEBUG] extractFromArrayPath: nested path result len=%d\n", len(result))
+	return result
 }
 
 // Ensure SubflowProcessor implements ItemProcessor
