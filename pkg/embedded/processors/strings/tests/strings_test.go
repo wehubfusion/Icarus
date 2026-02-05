@@ -152,7 +152,7 @@ func TestProcessInvalidManualInputs(t *testing.T) {
 		t.Fatalf("expected ConfigError, got %T", output.Error)
 	}
 
-	// Test with empty type
+	// Empty type is allowed and defaults to "string" (seed-node-schemas.sql concatenate/join only define name)
 	config = stringsproc.Config{
 		Operation: "concatenate",
 		Params:    map[string]interface{}{},
@@ -166,10 +166,9 @@ func TestProcessInvalidManualInputs(t *testing.T) {
 		rawConfig,
 		0,
 	)
-
 	output = node.Process(input)
-	if output.Error == nil {
-		t.Fatalf("expected error for empty manual input type")
+	if output.Error != nil {
+		t.Fatalf("empty type defaults to string, expected success: %v", output.Error)
 	}
 
 	// Test with invalid type

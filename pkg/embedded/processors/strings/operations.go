@@ -25,7 +25,7 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		return concatenate(separator, parts...), nil
 
 	case "split":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		delimiter := getString(params, "delimiter", "")
 		return split(str, delimiter), nil
 
@@ -35,12 +35,12 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		return join(items, separator), nil
 
 	case "trim":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		cutset := getString(params, "cutset", "")
 		return trim(str, cutset), nil
 
 	case "replace":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		old := getString(params, "old", "")
 		newVal := getString(params, "new", "")
 		count := getInt(params, "count", -1)
@@ -52,29 +52,29 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		return replaced, nil
 
 	case "substring":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		start := getInt(params, "start", 0)
 		end := getInt(params, "end", 0)
 		return substring(str, start, end), nil
 
 	case "to_upper":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		return toUpper(str), nil
 
 	case "to_lower":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		return toLower(str), nil
 
 	case "title_case":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		return titleCase(str), nil
 
 	case "capitalize":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		return capitalize(str), nil
 
 	case "contains":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		sub := getString(params, "substring", "")
 		useRegex := getBool(params, "use_regex", false)
 		ok, err := contains(str, sub, useRegex)
@@ -84,11 +84,11 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		return ok, nil
 
 	case "length":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		return length(str), nil
 
 	case "regex_extract":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		pattern := getString(params, "pattern", "")
 		matches, err := regexExtract(str, pattern)
 		if err != nil {
@@ -102,11 +102,11 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		return format(template, data), nil
 
 	case "base64_encode":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		return base64Encode(str), nil
 
 	case "base64_decode":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		decoded, err := base64Decode(str)
 		if err != nil {
 			return nil, NewOperationError(nodeID, itemIndex, operation, fmt.Sprintf("base64_decode failed: %v", err), err)
@@ -114,11 +114,11 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		return decoded, nil
 
 	case "uri_encode":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		return uriEncode(str), nil
 
 	case "uri_decode":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		decoded, err := uriDecode(str)
 		if err != nil {
 			return nil, NewOperationError(nodeID, itemIndex, operation, fmt.Sprintf("uri_decode failed: %v", err), err)
@@ -126,7 +126,7 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		return decoded, nil
 
 	case "normalize":
-		str := getString(params, "string", getString(input, "string", ""))
+		str := getInputString(params, input, "")
 		return normalize(str), nil
 
 	default:
@@ -353,6 +353,15 @@ func removeDiacritics(s string) string {
 }
 
 // --- map helpers ---
+
+// getInputString returns the main string for an operation: params["string"] if set,
+// else input["value"] (seed-node-schemas.sql input field key), else input["string"].
+func getInputString(params, input map[string]interface{}, defaultVal string) string {
+	if s := getString(params, "string", ""); s != "" {
+		return s
+	}
+	return getString(input, "value", getString(input, "string", defaultVal))
+}
 
 func getString(m map[string]interface{}, key string, defaultValue string) string {
 	if v, ok := m[key]; ok {

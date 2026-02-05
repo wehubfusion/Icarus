@@ -174,7 +174,7 @@ func TestProcess_InputSchemaValidationError(t *testing.T) {
 	}
 }
 
-// TestProcess_InputSchemaIDConfigured tests that input schema path is checked when InputSchemaID is set
+// TestProcess_InputSchemaIDConfigured tests that input schema path is checked when input_schema_id is set
 func TestProcess_InputSchemaIDConfigured(t *testing.T) {
 	node, err := jsrunner.NewJSRunnerNode(runtime.EmbeddedNodeConfig{
 		NodeId:     "test-node",
@@ -184,11 +184,11 @@ func TestProcess_InputSchemaIDConfigured(t *testing.T) {
 		t.Fatalf("failed to create node: %v", err)
 	}
 
-	// Config with inputSchemaID but no enriched inputSchema (will fail validation check)
+	// Config with input_schema_id but no enriched inputSchema (will fail validation check)
 	rawConfig, _ := json.Marshal(map[string]interface{}{
-		"script":        "({ output: input.value })",
-		"timeout":       "5s",
-		"inputSchemaID": "some-schema-id",
+		"script":          "({ output: input.value })",
+		"timeout":         "5s",
+		"input_schema_id": "some-schema-id",
 	})
 
 	input := runtime.ProcessInput{
@@ -200,7 +200,7 @@ func TestProcess_InputSchemaIDConfigured(t *testing.T) {
 
 	output := node.Process(input)
 
-	// Should fail because inputSchemaID is set but schema is not enriched
+	// Should fail because input_schema_id is set but schema is not enriched
 	if output.Error == nil {
 		t.Fatalf("expected error due to missing enriched schema, got success")
 	}
@@ -306,7 +306,7 @@ func TestProcess_OutputSchemaValidationError(t *testing.T) {
 	}
 }
 
-// TestProcess_OutputSchemaIDConfigured tests that output schema path is checked when OutputSchemaID is set
+// TestProcess_OutputSchemaIDConfigured tests that output schema path is checked when output_schema_id is set
 func TestProcess_OutputSchemaIDConfigured(t *testing.T) {
 	node, err := jsrunner.NewJSRunnerNode(runtime.EmbeddedNodeConfig{
 		NodeId:     "test-node",
@@ -316,11 +316,11 @@ func TestProcess_OutputSchemaIDConfigured(t *testing.T) {
 		t.Fatalf("failed to create node: %v", err)
 	}
 
-	// Config with outputSchemaID but no enriched outputSchema (will fail validation check)
+	// Config with output_schema_id but no enriched outputSchema (will fail validation check)
 	rawConfig, _ := json.Marshal(map[string]interface{}{
-		"script":         "({ output: 'test result' })",
-		"timeout":        "5s",
-		"outputSchemaID": "some-schema-id",
+		"script":           "({ output: 'test result' })",
+		"timeout":          "5s",
+		"output_schema_id": "some-schema-id",
 	})
 
 	input := runtime.ProcessInput{
@@ -332,7 +332,7 @@ func TestProcess_OutputSchemaIDConfigured(t *testing.T) {
 
 	output := node.Process(input)
 
-	// Should fail because outputSchemaID is set but schema is not enriched
+	// Should fail because output_schema_id is set but schema is not enriched
 	if output.Error == nil {
 		t.Fatalf("expected error due to missing enriched schema, got success")
 	}

@@ -591,6 +591,10 @@ func (s *MessageService) PublishResult(ctx context.Context, resultMsg *ResultMes
 func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Message, msg *nats.Msg) error {
 	startTime := time.Now()
 
+	if ctx.Err() != nil {
+		return fmt.Errorf("report success cancelled: %w", ctx.Err())
+	}
+
 	// Extract execution metadata from Payload (single source of truth)
 	if resultMessage.Payload == nil {
 		s.logger.Error("Missing payload for success report")
@@ -749,12 +753,25 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 func (s *MessageService) ReportError(ctx context.Context, executionID, workflowID, runID, correlationID string, err error, msg *nats.Msg) error {
 	startTime := time.Now()
 
+	if ctx.Err() != nil {
+		return fmt.Errorf("report error cancelled: %w", ctx.Err())
+	}
+
 	if executionID == "" {
 		s.logger.Warn("Missing executionID for error report")
 		if msg != nil {
 			_ = msg.Nak()
 		}
 		return fmt.Errorf("missing executionID")
+	}
+	if workflowID == "" || runID == "" {
+		s.logger.Warn("Missing workflow_id or run_id for error report",
+			zap.String("workflow_id", workflowID),
+			zap.String("run_id", runID))
+		if msg != nil {
+			_ = msg.Nak()
+		}
+		return fmt.Errorf("workflow_id and run_id are required for error report")
 	}
 
 	// Determine if transient or permanent

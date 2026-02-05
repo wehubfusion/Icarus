@@ -201,7 +201,7 @@ func (n *JSRunnerNode) validateInput(input runtime.ProcessInput, cfg *Config) (m
 	if inputSchema == nil {
 		return nil, NewConfigError(
 			n.NodeId(),
-			fmt.Sprintf("inputSchemaID '%s' was not enriched - ensure Elysium enrichment is configured", cfg.InputSchemaID),
+			fmt.Sprintf("input_schema_id '%s' was not enriched - ensure Elysium enrichment is configured", cfg.InputSchemaID),
 			nil,
 		)
 	}

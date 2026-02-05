@@ -3,6 +3,7 @@ package dateformatter
 import "fmt"
 
 // Config defines configuration for the date formatter (format operation).
+// Config keys match seed-node-schemas.sql Date Formatter: label, in_format, out_format.
 type Config struct {
 	InFormat    string `json:"in_format"`
 	OutFormat   string `json:"out_format"`
