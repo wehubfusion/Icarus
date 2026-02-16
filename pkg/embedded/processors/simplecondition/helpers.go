@@ -103,6 +103,35 @@ func toSlice(value interface{}) ([]interface{}, error) {
 	}
 }
 
+// isEmpty returns true if the value is considered empty: nil, empty string, zero number, false, or empty slice.
+func isEmpty(value interface{}) bool {
+	if value == nil {
+		return true
+	}
+	switch v := value.(type) {
+	case string:
+		return v == ""
+	case float64:
+		return v == 0
+	case int:
+		return v == 0
+	case int64:
+		return v == 0
+	case bool:
+		return !v
+	case []interface{}:
+		return len(v) == 0
+	case []string:
+		return len(v) == 0
+	case []int:
+		return len(v) == 0
+	case []float64:
+		return len(v) == 0
+	default:
+		return false
+	}
+}
+
 // valuesEqual checks if two values are equal, with optional case-insensitive comparison.
 func valuesEqual(actualValue, expectedValue interface{}, caseInsensitive bool) bool {
 	if actualValue == nil && expectedValue == nil {

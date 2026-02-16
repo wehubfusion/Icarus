@@ -29,30 +29,21 @@ func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) ru
 	// Determine what data to process based on schema root type
 	var dataToMarshal interface{} = input.Data
 
-	// Debug: print what keys we have in input.Data
-	fmt.Printf("[DEBUG jsonops produce] input.Data keys: ")
-	for k := range input.Data {
-		fmt.Printf("%q ", k)
-	}
-	fmt.Printf("\n")
-
 	// Only extract $items or single-key arrays if schema expects ARRAY at root
 	schemaExpectsArray := parseErr == nil && parsedSchema != nil && parsedSchema.Type == schema.TypeArray
 
 	if items, hasItems := input.Data[runtime.RootArrayKey]; hasItems {
-		fmt.Printf("[DEBUG jsonops produce] Found $items key, len(input.Data)=%d, schemaExpectsArray=%v\n", len(input.Data), schemaExpectsArray)
 		// Only use $items as root if schema expects an array AND $items is the only key
 		if schemaExpectsArray && len(input.Data) == 1 {
 			dataToMarshal = items
-			fmt.Printf("[DEBUG jsonops produce] Using $items as root (schema expects ARRAY)\n")
 		}
 	} else if schemaExpectsArray && len(input.Data) == 1 {
 		// Also check for single key containing an array (generic case)
 		// Only extract if schema expects ARRAY at root
-		for k, v := range input.Data {
+		for _, v := range input.Data {
 			if arr, isArr := v.([]interface{}); isArr {
-				fmt.Printf("[DEBUG jsonops produce] Found single key %q containing array of len %d, using as root (schema expects ARRAY)\n", k, len(arr))
 				dataToMarshal = arr
+				break
 			}
 		}
 	}

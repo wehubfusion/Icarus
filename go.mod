@@ -1,6 +1,6 @@
 module github.com/wehubfusion/Icarus
 
-go 1.25.1
+go 1.25.5
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.19.1
@@ -9,6 +9,7 @@ require (
 	github.com/getsentry/sentry-go v0.35.3
 	github.com/google/uuid v1.6.0
 	github.com/nats-io/nats.go v1.46.1
+	github.com/wehubfusion/Argus v0.2.0
 	go.opentelemetry.io/otel v1.38.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.38.0
 	go.opentelemetry.io/otel/sdk v1.38.0

@@ -1022,7 +1022,6 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 		}
 
 		for _, destEndpoint := range mapping.DestinationEndpoints {
-			fmt.Printf("[DEBUG BuildInput] destEndpoint=%q, sourceData_type=%T, sourceData_preview=%v\n", destEndpoint, sourceData, truncateForDebug(sourceData))
 			if destEndpoint == "" {
 				// Empty destination: merge at root
 				if sourceMap, ok := sourceData.(map[string]interface{}); ok {
@@ -1138,7 +1137,6 @@ func setFieldAtPath(data map[string]interface{}, path string, value interface{})
 }
 
 func setFieldAtPathWithCollectionTraversal(data map[string]interface{}, path string, value interface{}) {
-	fmt.Printf("[DEBUG setFieldAtPathWithCollectionTraversal] path=%q\n", path)
 	parts := strings.SplitN(path, "//", 2)
 	if len(parts) != 2 {
 		setFieldAtPath(data, path, value)
@@ -1147,7 +1145,6 @@ func setFieldAtPathWithCollectionTraversal(data map[string]interface{}, path str
 
 	collectionPath := strings.Trim(parts[0], "/")
 	fieldPath := strings.Trim(parts[1], "/")
-	fmt.Printf("[DEBUG setFieldAtPathWithCollectionTraversal] collectionPath=%q, fieldPath=%q\n", collectionPath, fieldPath)
 
 	if collectionPath == "" || fieldPath == "" {
 		return
@@ -1218,16 +1215,12 @@ func setFieldAtPathWithCollectionTraversal(data map[string]interface{}, path str
 }
 
 func setFieldInEachItem(collection []interface{}, fieldPath string, value interface{}) {
-	fmt.Printf("[DEBUG setFieldInEachItem] fieldPath=%q, collection_len=%d, value_type=%T\n", fieldPath, len(collection), value)
-
 	// Check if fieldPath contains nested array marker (//)
 	// If so, we need to handle nested iteration
 	if strings.Contains(fieldPath, "//") {
 		parts := strings.SplitN(fieldPath, "//", 2)
 		nestedCollectionPath := strings.Trim(parts[0], "/")
 		nestedFieldPath := strings.Trim(parts[1], "/")
-
-		fmt.Printf("[DEBUG setFieldInEachItem] nested case: nestedCollectionPath=%q, nestedFieldPath=%q\n", nestedCollectionPath, nestedFieldPath)
 
 		if valueArray, ok := value.([]interface{}); ok && len(valueArray) == len(collection) {
 			// Value is an array matching collection length - distribute to each item

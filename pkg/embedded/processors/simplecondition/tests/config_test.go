@@ -109,6 +109,31 @@ func TestOperatorTypeCompatibility(t *testing.T) {
 	}
 }
 
+func TestIsEmptyIsNotEmptyOperators(t *testing.T) {
+	emptyOps := []simplecondition.ComparisonOperator{
+		simplecondition.OpIsEmpty,
+		simplecondition.OpIsNotEmpty,
+	}
+	types := []simplecondition.DataType{
+		simplecondition.DataTypeString,
+		simplecondition.DataTypeNumber,
+		simplecondition.DataTypeBoolean,
+	}
+	for _, op := range emptyOps {
+		for _, typ := range types {
+			input := simplecondition.ManualInput{
+				Name:     "field",
+				Type:     typ,
+				Value:    "", // value ignored for is_empty / is_not_empty
+				Operator: op,
+			}
+			if err := input.Validate(); err != nil {
+				t.Fatalf("is_empty/is_not_empty should be valid for type %s: %v", typ, err)
+			}
+		}
+	}
+}
+
 func TestValueConversion(t *testing.T) {
 	// Test string conversion
 	input := simplecondition.ManualInput{

@@ -25,6 +25,10 @@ const (
 	OpStartsWith  ComparisonOperator = "starts_with"
 	OpEndsWith    ComparisonOperator = "ends_with"
 	OpRegex       ComparisonOperator = "regex"
+
+	// Empty-check operators (no value needed; apply to string, number, boolean)
+	OpIsEmpty    ComparisonOperator = "is_empty"
+	OpIsNotEmpty ComparisonOperator = "is_not_empty"
 )
 
 // DataType specifies how to interpret values.
@@ -103,6 +107,7 @@ func (m *ManualInput) Validate() error {
 		OpEquals, OpNotEquals,
 		OpGreaterThan, OpLessThan, OpGreaterThanOrEqual, OpLessThanOrEqual,
 		OpContains, OpNotContains, OpStartsWith, OpEndsWith, OpRegex,
+		OpIsEmpty, OpIsNotEmpty,
 	}
 
 	valid := false
@@ -140,6 +145,9 @@ func validateOperatorTypeCompatibility(operator ComparisonOperator, dataType Dat
 		if dataType != DataTypeString {
 			return fmt.Errorf("operator '%s' is only supported for 'string' type, got '%s'", operator, dataType)
 		}
+	case OpIsEmpty, OpIsNotEmpty:
+		// Supported for string, number, boolean (value is ignored)
+		return nil
 	default:
 		return fmt.Errorf("unsupported operator '%s'", operator)
 	}
