@@ -64,6 +64,13 @@ func (n *SimpleConditionNode) evaluateCondition(input runtime.ProcessInput, manu
 	actualValue, exists := getValueFromPath(input.Data, fieldPath)
 
 	if !exists {
+		// Is Empty / Is NOT Empty: missing field is treated as empty
+		if manualInput.Operator == OpIsEmpty {
+			return true, nil
+		}
+		if manualInput.Operator == OpIsNotEmpty {
+			return false, nil
+		}
 		// Special handling: if field doesn't exist and we're checking for empty string,
 		// treat missing field as empty string (backward compatible with is_empty)
 		if manualInput.Operator == OpEquals && manualInput.Value == "" {
@@ -84,6 +91,14 @@ func (n *SimpleConditionNode) evaluateCondition(input runtime.ProcessInput, manu
 			fmt.Sprintf("field '%s' not found in input. Available fields: %v. Input data: %+v",
 				fieldPath, availableFields, input.Data),
 		)
+	}
+
+	// Is Empty / Is NOT Empty: only need actual value, no expected value
+	if manualInput.Operator == OpIsEmpty {
+		return isEmpty(actualValue), nil
+	}
+	if manualInput.Operator == OpIsNotEmpty {
+		return !isEmpty(actualValue), nil
 	}
 
 	// Convert the expected value from string to the appropriate type

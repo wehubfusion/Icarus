@@ -177,34 +177,79 @@ func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 	unit ExecutionUnit,
 	priorUnitOutputs map[string]map[string]interface{},
 ) (StandardUnitOutput, error) {
-	fmt.Println("[DEBUG ProcessEmbeddedNodes] START - nodeId:", unit.NodeId, "embedded_count:", len(unit.EmbeddedNodes))
-	fmt.Println("[DEBUG ProcessEmbeddedNodes] parentOutput keys:", getMapKeys(parentOutput))
-
 	p.logger.Debug("processing embedded nodes",
 		Field{Key: "unit_id", Value: unit.NodeId},
 		Field{Key: "unit_label", Value: unit.Label},
 		Field{Key: "embedded_count", Value: len(unit.EmbeddedNodes)},
 	)
 
+	// Best-effort parent node.ended lifecycle callback for units that have embedded nodes.
+	// This marks the end of the parent plugin execution, before any embedded nodes run.
+	if p.config.LifecycleEmitter != nil && len(unit.EmbeddedNodes) > 0 {
+		parentInfo := ParentNodeEndInfo{
+			WorkflowID:       unit.WorkflowId,
+			RunID:            unit.RunId,
+			ClientID:         unit.ClientId,
+			ParentNodeID:     unit.NodeId,
+			Label:            unit.Label,
+			HasEmbeddedNodes: true,
+		}
+
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					p.logger.Error("parent node lifecycle emitter panic recovered",
+						Field{Key: "parent_node_id", Value: unit.NodeId},
+					)
+				}
+			}()
+			p.config.LifecycleEmitter.ParentNodeEnded(ctx, parentInfo)
+		}()
+	}
+
+	// Best-effort embedded node.started lifecycle callbacks.
+	// We intentionally emit these before any iteration analysis so that all
+	// embedded nodes in the unit are considered "started together" at this level.
+	if p.config.LifecycleEmitter != nil && len(unit.EmbeddedNodes) > 0 {
+		for _, embeddedNode := range unit.EmbeddedNodes {
+			info := EmbeddedNodeStartInfo{
+				WorkflowID:     unit.WorkflowId,
+				RunID:          unit.RunId,
+				ClientID:       unit.ClientId,
+				ParentNodeID:   unit.NodeId,
+				EmbeddedNodeID: embeddedNode.NodeId,
+			}
+
+			// Do not let panics in emitters break processing.
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						p.logger.Error("embedded node lifecycle emitter panic recovered",
+							Field{Key: "parent_node_id", Value: unit.NodeId},
+							Field{Key: "embedded_node_id", Value: embeddedNode.NodeId},
+						)
+					}
+				}()
+				p.config.LifecycleEmitter.EmbeddedNodeStarted(ctx, info)
+			}()
+		}
+	}
+
 	// If no embedded nodes, just flatten parent output
 	if len(unit.EmbeddedNodes) == 0 {
-		fmt.Println("[DEBUG ProcessEmbeddedNodes] no embedded nodes, using flattenParentOnly")
 		return p.flattenParentOnly(parentOutput, unit.NodeId)
 	}
 
 	// Analyze iteration context from field mappings
 	iterCtx := p.analyzeIterationContext(unit)
-	fmt.Println("[DEBUG ProcessEmbeddedNodes] iterCtx.IsArrayIteration:", iterCtx.IsArrayIteration, "ArrayPath:", iterCtx.ArrayPath)
 
 	if iterCtx.IsArrayIteration {
-		fmt.Println("[DEBUG ProcessEmbeddedNodes] using processWithConcurrency")
 		p.logger.Debug("processing with array iteration",
 			Field{Key: "array_path", Value: iterCtx.ArrayPath},
 		)
 		return p.processWithConcurrency(ctx, parentOutput, unit, iterCtx, priorUnitOutputs)
 	}
 
-	fmt.Println("[DEBUG ProcessEmbeddedNodes] using processSingleObject")
 	p.logger.Debug("processing single object")
 	return p.processSingleObject(ctx, parentOutput, unit, priorUnitOutputs)
 }
@@ -253,9 +298,6 @@ func (p *EmbeddedProcessor) processSingleObject(
 	unit ExecutionUnit,
 	priorUnitOutputs map[string]map[string]interface{},
 ) (StandardUnitOutput, error) {
-	fmt.Println("[DEBUG processSingleObject] START - nodeId:", unit.NodeId)
-	fmt.Println("[DEBUG processSingleObject] parentOutput keys:", getMapKeys(parentOutput))
-
 	// Check if parentOutput has transposed array fields (e.g., {name: ["alex", "jordan"], age: [30, 25]})
 	// If so, reconstruct $items BEFORE passing to subflow so embedded nodes can access it
 	enrichedParentOutput := parentOutput
@@ -267,7 +309,6 @@ func (p *EmbeddedProcessor) processSingleObject(
 			enrichedParentOutput[k] = v
 		}
 		enrichedParentOutput[RootArrayKey] = itemsArray
-		fmt.Println("[DEBUG processSingleObject] added $items to parentOutput with length:", len(itemsArray))
 	}
 
 	// Create subflow processor with concurrency support for mid-flow iteration
@@ -304,8 +345,6 @@ func (p *EmbeddedProcessor) processSingleObject(
 		}
 	}
 
-	fmt.Println("[DEBUG processSingleObject] output keys count:", len(output))
-
 	// Check if parentOutput already has a $items array - if so, use it directly
 	// This is the case when BuildInput created a proper nested structure
 	if existingItems, ok := enrichedParentOutput[RootArrayKey].([]interface{}); ok && len(existingItems) > 0 {
@@ -313,41 +352,23 @@ func (p *EmbeddedProcessor) processSingleObject(
 		// Use it directly as the stage object's output
 		itemsKey := unit.NodeId + "-/" + RootArrayKey
 		output[itemsKey] = existingItems
-		fmt.Println("[DEBUG processSingleObject] using existing $items from parentOutput with length:", len(existingItems))
-		fmt.Println("[DEBUG processSingleObject] END - final output keys:", getMapKeys(output))
 		return output, nil
 	}
 
-	// Reconstruct $items array from transposed output (legacy path for backwards compatibility)
-	// The output has keys like "nodeId-/field" with array values - transpose back to array of objects
-	completeArray := p.reconstructItemsFromTransposedOutput(output, unit.NodeId)
-	if len(completeArray) > 0 {
-		// Remove transposed field keys from THIS unit only (keys like "unitNodeId-/field")
-		// but preserve outputs from other embedded nodes
-		prefix := unit.NodeId + "-/"
-		itemsKey := prefix + RootArrayKey
-		keysToRemove := []string{}
-		for key := range output {
-			// Only remove keys that belong to this unit and are NOT the $items key
-			if strings.HasPrefix(key, prefix) && key != itemsKey {
-				keysToRemove = append(keysToRemove, key)
-			}
+	// No existing $items: set parent's array to parent-only (single-item array), keep embedded keys separate.
+	prefix := unit.NodeId + "-/"
+	itemsKey := prefix + RootArrayKey
+	output[itemsKey] = []interface{}{enrichedParentOutput}
+	// Remove other parent-prefixed keys (transposed parent fields), keep embedded node keys
+	keysToRemove := []string{}
+	for key := range output {
+		if strings.HasPrefix(key, prefix) && key != itemsKey {
+			keysToRemove = append(keysToRemove, key)
 		}
-		for _, key := range keysToRemove {
-			delete(output, key)
-		}
-
-		// Set the $items key with the complete array
-		fmt.Println("[DEBUG processSingleObject] reconstructed $items with length:", len(completeArray))
-		fmt.Println("[DEBUG processSingleObject] setting arrayKey:", itemsKey)
-		output[itemsKey] = completeArray
-
-		fmt.Println("[DEBUG processSingleObject] END - final output keys:", getMapKeys(output))
-		return output, nil
 	}
-
-	fmt.Println("[DEBUG processSingleObject] could not reconstruct $items array, returning original output")
-	fmt.Println("[DEBUG processSingleObject] END - final output keys:", getMapKeys(output))
+	for _, key := range keysToRemove {
+		delete(output, key)
+	}
 	return output, nil
 }
 
@@ -631,26 +652,53 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 	flatShared := FlattenMap(nonArrayFields, unit.NodeId, "")
 	FilterRootKeys(flatShared)
 
-	// Build output with only the complete array at the root key (nodeId-/$items)
-	// This enables downstream nodes to field-map the entire array via /$items
 	output := NewSingleOutput(flatShared)
 
-	// Reconstruct complete array from processed items
-	completeArray := p.reconstructCompleteArray(finalItems, items, unit.NodeId, iterCtx.ArrayPath)
 	var arrayKey string
 	if iterCtx.ArrayPath == RootArrayKey {
 		arrayKey = unit.NodeId + "-/" + RootArrayKey
 	} else {
 		arrayKey = unit.NodeId + "-/" + iterCtx.ArrayPath
 	}
-	output[arrayKey] = completeArray
+
+	// Unit output must be exactly a flat map of nodeId-/field keys (parent and embedded nodes treated the same).
+	// Emit each node's output separately: parent array (no embedded fields) + per-embedded-node arrays.
+	length := len(items)
+	if len(finalItems) > length {
+		length = len(finalItems)
+	}
+	parentOnlyArray := make([]interface{}, length)
+	for i := 0; i < length; i++ {
+		if i < len(items) && items[i] != nil {
+			parentOnlyArray[i] = CloneMap(items[i])
+		} else {
+			parentOnlyArray[i] = map[string]interface{}{}
+		}
+	}
+	output[arrayKey] = parentOnlyArray
+
+	embedded := collectEmbeddedIndexedKeys(finalItems, unit.NodeId, iterCtx.ArrayPath, length)
+	for k, v := range embedded {
+		output[k] = v
+	}
+	// Emit aggregate keys (nodeId-/auth = [val0, val1, ...]) so field mapping with source "/auth"
+	// finds fullPathKey "nodeId-/auth" and returns the array; resolver checks this before indexed keys.
+	emitEmbeddedAggregateKeys(output, embedded, length)
+
+	// Remove any raw embedded keys that still contain the parent array segment (e.g. nodeId-/data[0]/auth[0])
+	// so the blob only has normalized keys (nodeId-/auth[0], nodeId-/auth[1], ...).
+	scrubEmbeddedArrayPathKeys(output, unit.NodeId, iterCtx.ArrayPath, length)
+
+	// Flatten array-valued keys into indexed scalar keys (nodeId-/auth[0], nodeId-/auth[1], ...)
+	// so every row can be field-mapped; keep the main array key (parentId-/arrayPath) as-is.
+	flattenArrayKeysInOutput(output, unit.NodeId, iterCtx.ArrayPath)
 
 	return output, nil
 }
 
 // flattenParentOnly handles case with no embedded nodes.
-// If parent has an array, it flattens array items with index notation.
-// If parent is a single object, it flattens everything without indices.
+// If parent has an array, emits one key nodeId-/arrayPath = full array plus any nodeId-/otherField.
+// If parent is a single object, flattens to nodeId-/field keys without indices.
 func (p *EmbeddedProcessor) flattenParentOnly(
 	parentOutput map[string]interface{},
 	parentNodeId string,
@@ -658,10 +706,10 @@ func (p *EmbeddedProcessor) flattenParentOnly(
 	// Check for array at top level
 	for key, value := range parentOutput {
 		if arr, ok := value.([]interface{}); ok {
-			// Flatten array items with index notation, preserving the array path
+			// Emit exactly nodeId-/field: one key for the full array, plus non-array fields.
 			output := make(StandardUnitOutput)
 
-			// Add non-array fields
+			// Add non-array fields (nodeId-/otherField)
 			nonArrayFields := p.extractNonArrayFields(parentOutput, key)
 			flatShared := FlattenMap(nonArrayFields, parentNodeId, "")
 			FilterRootKeys(flatShared)
@@ -669,20 +717,8 @@ func (p *EmbeddedProcessor) flattenParentOnly(
 				output[k] = v
 			}
 
-			// Add indexed array items with array path preserved
-			// Creates keys like "nodeId-/arrayName[i]/field" to maintain structure
-			for i, item := range arr {
-				if itemMap, ok := item.(map[string]interface{}); ok {
-					// Use array path as base, so keys become nodeId-/arrayName[i]/field
-					basePath := "/" + key + fmt.Sprintf("[%d]", i)
-					flatItem := FlattenMap(itemMap, parentNodeId, basePath)
-					FilterRootKeys(flatItem)
-					for k, v := range flatItem {
-						output[k] = v
-					}
-				}
-			}
-
+			// Single key for the array: nodeId-/arrayPath = full array (no indexed keys)
+			output[parentNodeId+"-/"+key] = arr
 			return output, nil
 		}
 	}
@@ -716,220 +752,181 @@ func (p *EmbeddedProcessor) Factory() EmbeddedNodeFactory {
 	return p.factory
 }
 
-// reconstructCompleteArray reconstructs a complete array of objects from flattened item outputs.
-// It takes the original items (before embedded processing) and merges in fields from the flattened outputs.
-// This enables downstream nodes to access the complete processed array via field mapping.
+// emitEmbeddedAggregateKeys adds nodeId-/field = [val0, val1, ...] for each (nodeId, field)
+// so field mapping with source "/auth" finds fullPathKey "nodeId-/auth" and returns the array.
+func emitEmbeddedAggregateKeys(output StandardUnitOutput, embedded map[string]interface{}, length int) {
+	// Group by (nodeId, baseField) -> values[i]
+	type key struct{ nodeID, field string }
+	arrays := make(map[key][]interface{})
+	for k, v := range embedded {
+		sep := strings.Index(k, "-/")
+		if sep < 0 {
+			continue
+		}
+		nodeID := k[:sep]
+		pathPart := k[sep+2:]
+		bracket := strings.IndexByte(pathPart, '[')
+		if bracket <= 0 {
+			continue
+		}
+		baseField := pathPart[:bracket]
+		idxStr := pathPart[bracket+1:]
+		closeB := strings.IndexByte(idxStr, ']')
+		if closeB < 0 {
+			continue
+		}
+		var idx int
+		if _, err := fmt.Sscanf(idxStr[:closeB], "%d", &idx); err != nil || idx < 0 || idx >= length {
+			continue
+		}
+		kk := key{nodeID, baseField}
+		if arrays[kk] == nil {
+			arrays[kk] = make([]interface{}, length)
+		}
+		arrays[kk][idx] = v
+	}
+	for kk, arr := range arrays {
+		output[kk.nodeID+"-/"+kk.field] = arr
+	}
+}
+
+// flattenArrayKeysInOutput replaces each array-valued key (except the main array key) with
+// indexed scalar keys: nodeId-/auth = [v0,v1,...] becomes nodeId-/auth[0]=v0, nodeId-/auth[1]=v1, ...
+// so every index can be field-mapped. The main array key (parentNodeId-/arrayPath) is left as-is.
+func flattenArrayKeysInOutput(output StandardUnitOutput, parentNodeId, arrayPath string) {
+	mainArrayKey := parentNodeId + "-/" + arrayPath
+	var toFlatten []string
+	for k, v := range output {
+		if k == mainArrayKey {
+			continue
+		}
+		if _, ok := v.([]interface{}); ok {
+			toFlatten = append(toFlatten, k)
+		}
+	}
+	for _, k := range toFlatten {
+		arr, _ := output[k].([]interface{})
+		delete(output, k)
+		for i, v := range arr {
+			output[k+fmt.Sprintf("[%d]", i)] = v
+		}
+	}
+}
+
+// scrubEmbeddedArrayPathKeys removes keys that still contain the parent array segment
+// (e.g. nodeId-/data[0]/auth[0]) so the blob only has normalized keys (nodeId-/auth[0], ...).
+// The array key (parentNodeId-/arrayPath) is left unchanged.
+func scrubEmbeddedArrayPathKeys(output StandardUnitOutput, parentNodeId, arrayPath string, length int) {
+	arrayKey := parentNodeId + "-/" + arrayPath
+	segment := "-/" + arrayPath + "["
+	var toDelete []string
+	for key := range output {
+		if key == arrayKey {
+			continue
+		}
+		if strings.Contains(key, segment) {
+			toDelete = append(toDelete, key)
+		}
+	}
+	for _, k := range toDelete {
+		delete(output, k)
+	}
+}
+
+// baseFieldName returns the path with any array indices removed so we emit one key per
+// (node, field, parentIndex). E.g. "auth[0]" -> "auth", "auth[0][10000]" -> "auth".
+func baseFieldName(fieldPath string) string {
+	if idx := strings.IndexByte(fieldPath, '['); idx > 0 {
+		return fieldPath[:idx]
+	}
+	return fieldPath
+}
+
+// collectEmbeddedIndexedKeys extracts per-embedded-node output from finalItems and emits
+// indexed flat keys (nodeId-/baseField[i] = scalar) so the blob looks like:
 //
-// Parameters:
-//   - flatItems: array of flattened outputs from subflow processing (keys like "nodeId-/arrayPath[i]/field")
-//   - originalItems: array of original input items (complete objects before processing)
-//   - nodeId: the parent node ID used in key prefixes
-//   - arrayPath: the path to the array (e.g., "$items" for root-is-array, or "data" for nested)
+//	nodeId-/auth[0]=val0, nodeId-/auth[1]=val1, ...
 //
-// Returns an array of complete objects with both original and embedded node output fields merged.
-func (p *EmbeddedProcessor) reconstructCompleteArray(
-	flatItems []map[string]interface{},
-	originalItems []map[string]interface{},
-	nodeId string,
+// Keys from the subflow may look like nodeId-/data[0]/auth[0] or nodeId-/data[0]/auth[0][10000];
+// we strip the parent array segment and normalize to base field name so the index is only
+// the parent item index. When multiple keys map to the same blob key, we keep the value
+// from the simpler path (fewer brackets, e.g. auth[0] over auth[0][10000]).
+func collectEmbeddedIndexedKeys(
+	finalItems []map[string]interface{},
+	parentNodeId string,
 	arrayPath string,
-) []interface{} {
-	// Use the larger of the two lengths
-	length := len(originalItems)
-	if len(flatItems) > length {
-		length = len(flatItems)
-	}
-
-	if length == 0 {
-		return []interface{}{}
-	}
-
-	result := make([]interface{}, length)
-
+	length int,
+) map[string]interface{} {
+	out := make(map[string]interface{})
+	brackets := make(map[string]int) // indexedKey -> bracket count of path we chose (lower = simpler)
+	prefix := parentNodeId + "-/"
+	indexSegmentBase := "/" + arrayPath + "["
 	for i := 0; i < length; i++ {
-		// Start with a copy of the original item if available
-		itemObj := make(map[string]interface{})
-		if i < len(originalItems) && originalItems[i] != nil {
-			for k, v := range originalItems[i] {
-				itemObj[k] = v
-			}
+		if i >= len(finalItems) || finalItems[i] == nil {
+			continue
 		}
-
-		// Merge fields from flat output for this item
-		// Keys are like "nodeId-/arrayPath[i]/field" - extract field paths
-		if i < len(flatItems) && flatItems[i] != nil {
-			prefix := nodeId + "-/" + arrayPath + fmt.Sprintf("[%d]", i)
-			for key, value := range flatItems[i] {
-				if strings.HasPrefix(key, prefix) {
-					// Extract the path after the prefix (e.g., "/field" or "/nested/field")
-					fieldPath := strings.TrimPrefix(key, prefix)
-					if fieldPath == "" {
-						continue
-					}
-					// Remove leading slash
-					fieldPath = strings.TrimPrefix(fieldPath, "/")
-					if fieldPath == "" {
-						continue
-					}
-					// Set the nested value in the item object
-					SetNestedValue(itemObj, fieldPath, value)
-				}
-			}
-		}
-
-		result[i] = itemObj
-	}
-
-	return result
-}
-
-// reconstructArrayFromOutput rebuilds the complete array from flattened output keys.
-// It extracts values from keys like "nodeId-/$items[i]/field" and merges with original items.
-// This is used when processSingleObject handles $items iteration internally.
-func (p *EmbeddedProcessor) reconstructArrayFromOutput(
-	output StandardUnitOutput,
-	originalItems []interface{},
-	nodeId string,
-) []interface{} {
-	length := len(originalItems)
-	if length == 0 {
-		return []interface{}{}
-	}
-
-	result := make([]interface{}, length)
-
-	for i := 0; i < length; i++ {
-		// Start with a copy of the original item
-		itemObj := make(map[string]interface{})
-		if origMap, ok := originalItems[i].(map[string]interface{}); ok {
-			for k, v := range origMap {
-				itemObj[k] = v
-			}
-		}
-
-		// Look for keys matching this item index in the output
-		// Keys are like "nodeId-/$items[i]/field" or "nodeId-/field[i]" (for array fields)
-		prefix := nodeId + "-/" + RootArrayKey + fmt.Sprintf("[%d]", i)
-		for key, value := range output {
+		indexSegment := indexSegmentBase + fmt.Sprintf("%d]", i) + "/"
+		// pathPart from FlattenMap has no leading slash (e.g. "data[0]/auth"), so match both forms
+		indexSegmentNoLeading := arrayPath + fmt.Sprintf("[%d]", i) + "/"
+		for key, value := range finalItems[i] {
 			if strings.HasPrefix(key, prefix) {
-				// Extract the path after the prefix
-				fieldPath := strings.TrimPrefix(key, prefix)
-				if fieldPath == "" {
-					continue
-				}
-				fieldPath = strings.TrimPrefix(fieldPath, "/")
-				if fieldPath == "" {
-					continue
-				}
-				// Set the nested value
-				SetNestedValue(itemObj, fieldPath, value)
+				continue
+			}
+			sep := strings.Index(key, "-/")
+			if sep < 0 {
+				continue
+			}
+			nodeID := key[:sep]
+			pathPart := key[sep+2:]
+			var fieldPath string
+			if idx := strings.Index(pathPart, indexSegment); idx >= 0 {
+				fieldPath = strings.TrimPrefix(pathPart[idx+len(indexSegment):], "/")
+			} else if idx := strings.Index(pathPart, indexSegmentNoLeading); idx >= 0 {
+				fieldPath = strings.TrimPrefix(pathPart[idx+len(indexSegmentNoLeading):], "/")
+			} else {
+				fieldPath = strings.TrimPrefix(pathPart, "/")
+			}
+			if fieldPath == "" {
+				continue
+			}
+			baseField := baseFieldName(fieldPath)
+			if baseField == "" {
+				continue
+			}
+			indexedKey := nodeID + "-/" + baseField + fmt.Sprintf("[%d]", i)
+			n := strings.Count(fieldPath, "[")
+			if prev, ok := brackets[indexedKey]; !ok || n < prev {
+				out[indexedKey] = value
+				brackets[indexedKey] = n
 			}
 		}
-
-		// Also check for array-valued fields (keys like "nodeId-/field" with array values)
-		// These need to be distributed to individual items
-		for key, value := range output {
-			if !strings.HasPrefix(key, nodeId+"-/") {
-				continue
-			}
-			// Skip keys that already have index notation
-			if strings.Contains(key, "[") {
-				continue
-			}
-			// Skip the $items key itself
-			if key == nodeId+"-/"+RootArrayKey {
-				continue
-			}
-			// Check if value is an array with matching length
-			if arr, ok := value.([]interface{}); ok && len(arr) == length {
-				// Extract field path
-				fieldPath := strings.TrimPrefix(key, nodeId+"-/")
-				if i < len(arr) {
-					SetNestedValue(itemObj, fieldPath, arr[i])
-				}
-			}
-		}
-
-		result[i] = itemObj
 	}
-
-	return result
+	return out
 }
 
-// reconstructItemsFromTransposedOutput reconstructs a $items array from transposed output.
-// When the output has keys like "nodeId-/field" with array values (e.g., ["alex", "jordan"]),
-// this function transposes them back into an array of objects.
-//
-// Example input (transposed):
-//
-//	"nodeId-/name": ["alex", "jordan"]
-//	"nodeId-/age": [30, 25]
-//
-// Example output (reconstructed array):
-//
-//	[{"name": "alex", "age": 30}, {"name": "jordan", "age": 25}]
-func (p *EmbeddedProcessor) reconstructItemsFromTransposedOutput(
-	output StandardUnitOutput,
-	nodeId string,
-) []interface{} {
-	prefix := nodeId + "-/"
-
-	// First, find the array length by checking any array-valued field
-	var arrayLength int
-	for key, value := range output {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		// Skip keys with index notation (those are per-item outputs)
-		if strings.Contains(key, "[") {
-			continue
-		}
-		if arr, ok := value.([]interface{}); ok {
-			arrayLength = len(arr)
-			fmt.Println("[DEBUG reconstructItemsFromTransposedOutput] found array length:", arrayLength, "from key:", key)
-			break
-		}
+// stripTrailingIndexFromPath removes a trailing [itemIndex] from the last path segment
+// so merged row keys are plain (e.g. auth, result, true/date) for field mapping and CSV.
+// Example: "auth[0]" with i=0 → "auth"; "true/date[0]" with i=0 → "true/date".
+func stripTrailingIndexFromPath(fieldPath string, itemIndex int) string {
+	if fieldPath == "" {
+		return fieldPath
 	}
-
-	if arrayLength == 0 {
-		fmt.Println("[DEBUG reconstructItemsFromTransposedOutput] no array fields found")
-		return nil
+	suffix := fmt.Sprintf("[%d]", itemIndex)
+	lastSlash := strings.LastIndex(fieldPath, "/")
+	var lastSeg string
+	var prefix string
+	if lastSlash >= 0 {
+		prefix = fieldPath[:lastSlash+1]
+		lastSeg = fieldPath[lastSlash+1:]
+	} else {
+		lastSeg = fieldPath
+		prefix = ""
 	}
-
-	// Build array of objects by transposing
-	result := make([]interface{}, arrayLength)
-	for i := 0; i < arrayLength; i++ {
-		itemObj := make(map[string]interface{})
-
-		for key, value := range output {
-			if !strings.HasPrefix(key, prefix) {
-				continue
-			}
-
-			fieldPath := strings.TrimPrefix(key, prefix)
-
-			// Skip $items key itself
-			if fieldPath == RootArrayKey {
-				continue
-			}
-
-			// Handle array-valued fields (transposed data)
-			if !strings.Contains(key, "[") {
-				if arr, ok := value.([]interface{}); ok && len(arr) == arrayLength {
-					SetNestedValue(itemObj, fieldPath, arr[i])
-				}
-				continue
-			}
-
-			// Handle indexed keys like "nodeId-/$items[i]/field" - already per-item
-			// These should be merged into the appropriate item
-			// Extract index from key and check if it matches current item
-			// Pattern: prefix + $items[i]/... or prefix + field[i]/...
-		}
-
-		result[i] = itemObj
+	if strings.HasSuffix(lastSeg, suffix) {
+		lastSeg = lastSeg[:len(lastSeg)-len(suffix)]
+		return prefix + lastSeg
 	}
-
-	return result
+	return fieldPath
 }
 
 // reconstructItemsFromTransposedData reconstructs a $items array from transposed raw data.
@@ -958,14 +955,12 @@ func (p *EmbeddedProcessor) reconstructItemsFromTransposedData(
 			// vs a complex nested structure that shouldn't be transposed
 			if isSimpleTransposedArray(arr) {
 				arrayLength = len(arr)
-				fmt.Println("[DEBUG reconstructItemsFromTransposedData] found array length:", arrayLength, "from key:", key)
 				break
 			}
 		}
 	}
 
 	if arrayLength == 0 {
-		fmt.Println("[DEBUG reconstructItemsFromTransposedData] no array fields found")
 		return nil
 	}
 

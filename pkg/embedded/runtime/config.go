@@ -1,176 +1,170 @@
 package runtime
 
-import (
-	"os"
-	"runtime"
-	"strconv"
-)
+import "encoding/json"
 
-// WorkerPoolConfig configures the worker pool for concurrent processing.
-type WorkerPoolConfig struct {
-	// NumWorkers is the number of concurrent workers.
-	// If 0, it will be determined from env overrides or defaults to GOMAXPROCS.
-	NumWorkers int
-
-	// BatchSize is the number of items to group together.
-	// Larger batches reduce channel overhead but increase latency.
-	// Default: 10
-	BatchSize int
-
-	// BufferSize is the channel buffer size.
-	// Larger buffers allow more items to be queued but use more memory.
-	// Default: 100
-	BufferSize int
-}
-
-// DefaultWorkerPoolConfig returns sensible defaults for the worker pool.
-func DefaultWorkerPoolConfig() WorkerPoolConfig {
-	return WorkerPoolConfig{
-		NumWorkers: 0,    // Will be determined at runtime
-		BatchSize:  10,   // Good balance for most workloads
-		BufferSize: 1000, // Large buffer for high-volume processing (10k+ items)
+// NormalizeRawConfig converts nodeSchema array format (from execution plan) to flat JSON.
+// Execution plans use nodeConfig.config with structure:
+//
+//	{ "nodeSchema": [ { "key": "script", "value": "..." }, ... ] }
+//
+// Processors expect flat format: { "script": "...", ... }
+// Returns the original raw bytes unchanged if config does not use nodeSchema format.
+func NormalizeRawConfig(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
 	}
-}
-
-// ProcessorConfig configures the embedded processor.
-type ProcessorConfig struct {
-	// WorkerPool configures concurrent processing
-	WorkerPool WorkerPoolConfig
-
-	// EnableMetrics enables metrics collection
-	EnableMetrics bool
-
-	// Logger for structured logging (nil for no logging)
-	Logger Logger
-
-	// StopOnFirstError stops processing on first error
-	// When false, continues processing remaining items and collects all errors
-	StopOnFirstError bool
-
-	// MaxRetries is the maximum number of retries for retryable errors
-	MaxRetries int
-
-	// SkipOnEventTriggerFalse determines behavior when event trigger is false
-	// When true, the node is skipped; when false, an error is returned
-	SkipOnEventTriggerFalse bool
-}
-
-// DefaultProcessorConfig returns sensible defaults for the processor.
-func DefaultProcessorConfig() ProcessorConfig {
-	return ProcessorConfig{
-		WorkerPool:              DefaultWorkerPoolConfig(),
-		EnableMetrics:           true,
-		Logger:                  nil, // No logging by default
-		StopOnFirstError:        false,
-		MaxRetries:              0, // No retries by default
-		SkipOnEventTriggerFalse: true,
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw
 	}
-}
-
-// Validate validates the configuration and applies defaults.
-func (c *WorkerPoolConfig) Validate() {
-	if c.BatchSize <= 0 {
-		c.BatchSize = 10
+	flat := flattenNodeSchemaConfig(m)
+	if flat == nil {
+		return raw
 	}
-	if c.BufferSize <= 0 {
-		c.BufferSize = 100
+	out, err := json.Marshal(flat)
+	if err != nil {
+		return raw
 	}
-	c.NumWorkers = resolveWorkerCount(c.NumWorkers)
+	return out
 }
 
-// Validate validates the configuration and applies defaults.
-func (c *ProcessorConfig) Validate() {
-	c.WorkerPool.Validate()
-	if c.MaxRetries < 0 {
-		c.MaxRetries = 0
+// flattenNodeSchemaConfig converts nodeSchema array to flat key-value map.
+// Returns nil if config does not use nodeSchema format.
+func flattenNodeSchemaConfig(m map[string]interface{}) map[string]interface{} {
+	arr, ok := m["nodeSchema"].([]interface{})
+	if !ok || len(arr) == 0 {
+		return nil
 	}
-}
-
-// WithNumWorkers sets the number of workers.
-func (c WorkerPoolConfig) WithNumWorkers(n int) WorkerPoolConfig {
-	c.NumWorkers = n
-	return c
-}
-
-// WithBatchSize sets the batch size.
-func (c WorkerPoolConfig) WithBatchSize(n int) WorkerPoolConfig {
-	c.BatchSize = n
-	return c
-}
-
-// WithBufferSize sets the buffer size.
-func (c WorkerPoolConfig) WithBufferSize(n int) WorkerPoolConfig {
-	c.BufferSize = n
-	return c
-}
-
-// WithWorkerPool sets the worker pool config.
-func (c ProcessorConfig) WithWorkerPool(wp WorkerPoolConfig) ProcessorConfig {
-	c.WorkerPool = wp
-	return c
-}
-
-// resolveWorkerCount chooses the effective worker count using:
-// 1) Explicit configuration
-// 2) Environment overrides
-// 3) Runtime CPU count fallback
-func resolveWorkerCount(configured int) int {
-	if configured > 0 {
-		return configured
-	}
-
-	// Environment overrides (direct or multiplier)
-	if v := getEnvInt("ICARUS_EMBEDDED_WORKERS", 0); v > 0 {
-		return v
-	}
-	if mult := getEnvInt("ICARUS_EMBEDDED_WORKER_MULTIPLIER", 0); mult > 0 {
-		workers := runtime.GOMAXPROCS(0) * mult
-		if workers > 0 {
-			return workers
+	flat := make(map[string]interface{})
+	for _, item := range arr {
+		field, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		key, _ := field["key"].(string)
+		if key == "" {
+			continue
+		}
+		if val := field["value"]; val != nil {
+			flat[key] = val
 		}
 	}
-
-	// Fallback to CPU count (respecting cgroups)
-	workers := runtime.GOMAXPROCS(0)
-	if workers < 1 {
-		return 1
-	}
-	return workers
+	return flat
 }
 
-// getEnvInt retrieves an integer from environment variable with default fallback.
-func getEnvInt(key string, defaultValue int) int {
-	raw := os.Getenv(key)
-	if raw == "" {
-		return defaultValue
+// mapActionToOperation maps node schema Action (from execution plan) to processor operation.
+// Aligned with Apollo seed-node-schemas.sql and nodeconfiguration_service mapActionToOperation.
+// Returns empty string for unknown actions (no injection).
+func mapActionToOperation(action string) string {
+	switch action {
+	// plugin-json-operations
+	case "JSON Parser":
+		return "parse"
+	case "JSON Producer":
+		return "produce"
+	// plugin-csv-operations
+	case "CSV Parse":
+		return "parse"
+	case "CSV Producer", "CSV Produce":
+		return "produce"
+	// plugin-date-formatter
+	case "Date Formatter":
+		return "format"
+	// plugin-sftp
+	case "SFTP List Files":
+		return "list_files"
+	case "SFTP Upload File":
+		return "upload_file"
+	case "SFTP Download File":
+		return "download_file"
+	case "SFTP Copy File":
+		return "copy_file"
+	case "SFTP Move File":
+		return "move_file"
+	case "SFTP Delete File":
+		return "delete_file"
+	case "SFTP Create Folder":
+		return "create_folder"
+	case "SFTP Move Folder":
+		return "move_folder"
+	case "SFTP Delete Folder":
+		return "delete_folder"
+	case "SFTP Append", "SFTP Append File":
+		return "append_file"
+	// plugin-strings
+	case "String Concatenate":
+		return "concatenate"
+	case "String Join":
+		return "join"
+	case "String Split":
+		return "split"
+	case "String Trim":
+		return "trim"
+	case "String Replace":
+		return "replace"
+	case "String Substring":
+		return "substring"
+	case "String To Upper":
+		return "to_upper"
+	case "String To Lower":
+		return "to_lower"
+	case "String Title Case":
+		return "title_case"
+	case "String Capitalize":
+		return "capitalize"
+	case "String Contains":
+		return "contains"
+	case "String Length":
+		return "length"
+	case "String Regex Extract":
+		return "regex_extract"
+	case "String Format":
+		return "format"
+	case "String Base64 Encode":
+		return "base64_encode"
+	case "String Base64 Decode":
+		return "base64_decode"
+	case "String URI Encode":
+		return "uri_encode"
+	case "String URI Decode":
+		return "uri_decode"
+	case "String Normalize":
+		return "normalize"
+	default:
+		return ""
 	}
-	value, err := strconv.Atoi(raw)
+}
+
+// InjectOperationFromAction takes normalized raw config and, when the node has an Action
+// that maps to an operation, sets config["operation"] to that value so processors (jsonops,
+// strings, csv, sftp, date formatter) act based on the execution plan action instead of
+// the operation field in config. Other config keys are unchanged.
+// If action is empty or has no mapping, returns normalizedRaw unchanged.
+// When config is empty (nil or []) but action has a mapping, returns minimal {"operation": "<op>"}
+// so operation-based nodes still work when config was not persisted.
+func InjectOperationFromAction(normalizedRaw json.RawMessage, pluginType, action string) json.RawMessage {
+	if action == "" {
+		return normalizedRaw
+	}
+	op := mapActionToOperation(action)
+	if op == "" {
+		return normalizedRaw
+	}
+	if len(normalizedRaw) == 0 {
+		out, _ := json.Marshal(map[string]interface{}{"operation": op})
+		return out
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(normalizedRaw, &m); err != nil {
+		return normalizedRaw
+	}
+	if m == nil {
+		m = make(map[string]interface{})
+	}
+	m["operation"] = op
+	out, err := json.Marshal(m)
 	if err != nil {
-		return defaultValue
+		return normalizedRaw
 	}
-	return value
-}
-
-// WithMetrics sets whether to enable metrics.
-func (c ProcessorConfig) WithMetrics(enable bool) ProcessorConfig {
-	c.EnableMetrics = enable
-	return c
-}
-
-// WithLogger sets the logger.
-func (c ProcessorConfig) WithLogger(logger Logger) ProcessorConfig {
-	c.Logger = logger
-	return c
-}
-
-// WithStopOnFirstError sets whether to stop on first error.
-func (c ProcessorConfig) WithStopOnFirstError(stop bool) ProcessorConfig {
-	c.StopOnFirstError = stop
-	return c
-}
-
-// WithMaxRetries sets the maximum number of retries.
-func (c ProcessorConfig) WithMaxRetries(n int) ProcessorConfig {
-	c.MaxRetries = n
-	return c
+	return out
 }

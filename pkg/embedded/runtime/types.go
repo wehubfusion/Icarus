@@ -68,6 +68,8 @@ type EmbeddedNodeConfig struct {
 	Label string `json:"label"`
 	// PluginType identifies which processor handles this node
 	PluginType string `json:"pluginType"`
+	// Action is the node schema action (e.g. "JSON Parser", "CSV Producer"); used to derive operation for processors.
+	Action string `json:"action,omitempty"`
 	// Embeddable indicates if this node can be embedded in a unit
 	Embeddable bool `json:"embeddable"`
 	// Depth represents the node's position in the execution graph
@@ -157,12 +159,20 @@ type ExecutionUnit struct {
 	Index int `json:"index"`
 	// NodeId is the ID of the parent node
 	NodeId string `json:"nodeId"`
+	// WorkflowId is the ID of the workflow this execution unit belongs to
+	WorkflowId string `json:"workflowId,omitempty"`
+	// RunId is the ID of the workflow run
+	RunId string `json:"runId,omitempty"`
+	// ClientId is the tenant/client identifier for this execution unit
+	ClientId string `json:"clientId,omitempty"`
 	// Label is the human-readable name of the parent node
 	Label string `json:"label"`
 	// Type is the node type (e.g., "plugin")
 	Type string `json:"type"`
 	// PluginType identifies which processor handles the parent node
 	PluginType string `json:"pluginType"`
+	// Action is the node schema action (e.g. "HTTP Trigger", "ESR Parser"); used to derive operation where applicable.
+	Action string `json:"action,omitempty"`
 	// Depth represents the unit's position in the execution graph
 	Depth int `json:"depth"`
 	// Dependencies lists the node IDs this unit depends on
@@ -175,6 +185,46 @@ type ExecutionUnit struct {
 	NodeConfig NodeConfig `json:"nodeConfig"`
 	// IsTrigger indicates if this unit is a workflow trigger
 	IsTrigger bool `json:"isTrigger,omitempty"`
+}
+
+// EmbeddedNodeLifecycleEmitter emits lifecycle events for embedded nodes and their parent.
+// This keeps the embedded runtime decoupled from any specific observation system
+// (such as Argus) while still allowing services like Elysium to hook into
+// embedded node execution.
+type EmbeddedNodeLifecycleEmitter interface {
+	// ParentNodeEnded is called when the parent node's plugin execution has completed
+	// but before any embedded nodes are processed. Implementations should treat this
+	// as a best-effort signal and MUST NOT panic.
+	ParentNodeEnded(ctx context.Context, info ParentNodeEndInfo)
+
+	// EmbeddedNodeStarted is called when an embedded node is about to start execution.
+	// Implementations should be best-effort and MUST NOT panic – errors should be logged
+	// or swallowed so that embedded processing is never blocked by observation failures.
+	EmbeddedNodeStarted(ctx context.Context, info EmbeddedNodeStartInfo)
+}
+
+// EmbeddedNodeStartInfo carries contextual information about an embedded node
+// that is about to start execution.
+type EmbeddedNodeStartInfo struct {
+	WorkflowID     string
+	RunID          string
+	ClientID       string
+	ParentNodeID   string
+	EmbeddedNodeID string
+}
+
+// ParentNodeEndInfo carries contextual information about a parent node whose
+// plugin execution has completed and is about to have its embedded nodes
+// processed (if any).
+type ParentNodeEndInfo struct {
+	WorkflowID   string
+	RunID        string
+	ClientID     string
+	ParentNodeID string
+	// Label is the human-readable node label from the execution plan (for observation events).
+	Label string
+	// HasEmbeddedNodes indicates whether this parent has embedded nodes configured.
+	HasEmbeddedNodes bool
 }
 
 // StandardUnitOutput represents the flattened output of a unit as a flat map.
