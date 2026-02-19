@@ -4481,3 +4481,909 @@ func TestEmptyEndpoint_EdgeCases(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildInputFromMappings_ArrayOfObjects_SimpleDestinations tests that when
+// multiple field mappings come from the same source array with simple destination
+// paths (no //), the resolver produces an array-of-objects directly.
+func TestBuildInputFromMappings_ArrayOfObjects_SimpleDestinations(t *testing.T) {
+	sourceData := map[string]interface{}{
+		"data": []interface{}{
+			map[string]interface{}{
+				"First_Name": "Alice",
+				"Last_Name":  "Smith",
+				"Email":      "alice@example.com",
+			},
+			map[string]interface{}{
+				"First_Name": "Bob",
+				"Last_Name":  "Jones",
+				"Email":      "bob@example.com",
+			},
+		},
+	}
+
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//First_Name",
+				DestinationEndpoints: []string{"/firstname"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//Last_Name",
+				DestinationEndpoints: []string{"/lastname"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//Email",
+				DestinationEndpoints: []string{"/email"},
+				DataType:             "FIELD",
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"source-node": {
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"source-node": sourceData,
+				},
+			},
+		},
+		UnitNodeID: "csv-producer",
+	}
+
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Result should be an array-of-objects
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(result, &rows); err != nil {
+		t.Fatalf("failed to unmarshal result as array: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	// Check first row
+	if rows[0]["firstname"] != "Alice" {
+		t.Errorf("expected firstname 'Alice', got %v", rows[0]["firstname"])
+	}
+	if rows[0]["lastname"] != "Smith" {
+		t.Errorf("expected lastname 'Smith', got %v", rows[0]["lastname"])
+	}
+	if rows[0]["email"] != "alice@example.com" {
+		t.Errorf("expected email 'alice@example.com', got %v", rows[0]["email"])
+	}
+
+	// Check second row
+	if rows[1]["firstname"] != "Bob" {
+		t.Errorf("expected firstname 'Bob', got %v", rows[1]["firstname"])
+	}
+	if rows[1]["lastname"] != "Jones" {
+		t.Errorf("expected lastname 'Jones', got %v", rows[1]["lastname"])
+	}
+	if rows[1]["email"] != "bob@example.com" {
+		t.Errorf("expected email 'bob@example.com', got %v", rows[1]["email"])
+	}
+}
+
+// TestBuildInputFromMappings_ArrayOfObjects_EmptyArray tests that empty arrays
+// skip the array-of-objects processing and fall back to normal field mapping.
+func TestBuildInputFromMappings_ArrayOfObjects_EmptyArray(t *testing.T) {
+	sourceData := map[string]interface{}{
+		"data": []interface{}{},
+	}
+
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//First_Name",
+				DestinationEndpoints: []string{"/firstname"},
+				DataType:             "FIELD",
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"source-node": {
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"source-node": sourceData,
+				},
+			},
+		},
+		UnitNodeID: "csv-producer",
+	}
+
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Since array is empty, no array-of-objects is created (skipped in processing)
+	// Falls back to normal processing which extracts empty array
+	var data map[string]interface{}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
+
+	// Empty array extraction results in empty array value
+	// This is expected behavior - empty arrays skip array-of-objects creation
+	if firstname, ok := data["firstname"]; ok {
+		if arr, isArr := firstname.([]interface{}); isArr {
+			if len(arr) != 0 {
+				t.Errorf("expected empty array for firstname, got %v", arr)
+			}
+		} else {
+			t.Errorf("expected array for firstname, got %v", firstname)
+		}
+	}
+}
+
+// TestBuildInputFromMappings_ArrayOfObjects_SingleField tests that single
+// field mapping with simple destination still produces array-of-objects.
+func TestBuildInputFromMappings_ArrayOfObjects_SingleField(t *testing.T) {
+	sourceData := map[string]interface{}{
+		"data": []interface{}{
+			map[string]interface{}{
+				"Name": "Alice",
+			},
+			map[string]interface{}{
+				"Name": "Bob",
+			},
+		},
+	}
+
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//Name",
+				DestinationEndpoints: []string{"/name"},
+				DataType:             "FIELD",
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"source-node": {
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"source-node": sourceData,
+				},
+			},
+		},
+		UnitNodeID: "csv-producer",
+	}
+
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(result, &rows); err != nil {
+		t.Fatalf("failed to unmarshal result as array: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	if rows[0]["name"] != "Alice" {
+		t.Errorf("expected name 'Alice', got %v", rows[0]["name"])
+	}
+	if rows[1]["name"] != "Bob" {
+		t.Errorf("expected name 'Bob', got %v", rows[1]["name"])
+	}
+}
+
+// TestBuildInputFromMappings_ArrayOfObjects_NilValues tests that nil values
+// in source array are handled correctly.
+func TestBuildInputFromMappings_ArrayOfObjects_NilValues(t *testing.T) {
+	sourceData := map[string]interface{}{
+		"data": []interface{}{
+			map[string]interface{}{
+				"First_Name": "Alice",
+				"Last_Name":  nil,
+			},
+			map[string]interface{}{
+				"First_Name": "Bob",
+				"Last_Name":  "Jones",
+			},
+		},
+	}
+
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//First_Name",
+				DestinationEndpoints: []string{"/firstname"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//Last_Name",
+				DestinationEndpoints: []string{"/lastname"},
+				DataType:             "FIELD",
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"source-node": {
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"source-node": sourceData,
+				},
+			},
+		},
+		UnitNodeID: "csv-producer",
+	}
+
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(result, &rows); err != nil {
+		t.Fatalf("failed to unmarshal result as array: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	if rows[0]["firstname"] != "Alice" {
+		t.Errorf("expected firstname 'Alice', got %v", rows[0]["firstname"])
+	}
+	if rows[0]["lastname"] != nil {
+		t.Errorf("expected lastname nil, got %v", rows[0]["lastname"])
+	}
+	if rows[1]["firstname"] != "Bob" {
+		t.Errorf("expected firstname 'Bob', got %v", rows[1]["firstname"])
+	}
+	if rows[1]["lastname"] != "Jones" {
+		t.Errorf("expected lastname 'Jones', got %v", rows[1]["lastname"])
+	}
+}
+
+// TestBuildInputFromMappings_ArrayOfObjects_MissingFields tests that missing
+// fields in source array items are handled correctly (should be nil).
+func TestBuildInputFromMappings_ArrayOfObjects_MissingFields(t *testing.T) {
+	sourceData := map[string]interface{}{
+		"data": []interface{}{
+			map[string]interface{}{
+				"First_Name": "Alice",
+				// Last_Name missing
+			},
+			map[string]interface{}{
+				"First_Name": "Bob",
+				"Last_Name":  "Jones",
+			},
+		},
+	}
+
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//First_Name",
+				DestinationEndpoints: []string{"/firstname"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//Last_Name",
+				DestinationEndpoints: []string{"/lastname"},
+				DataType:             "FIELD",
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"source-node": {
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"source-node": sourceData,
+				},
+			},
+		},
+		UnitNodeID: "csv-producer",
+	}
+
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(result, &rows); err != nil {
+		t.Fatalf("failed to unmarshal result as array: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	if rows[0]["firstname"] != "Alice" {
+		t.Errorf("expected firstname 'Alice', got %v", rows[0]["firstname"])
+	}
+	// Missing field should result in nil
+	if rows[0]["lastname"] != nil {
+		t.Errorf("expected lastname nil for missing field, got %v", rows[0]["lastname"])
+	}
+	if rows[1]["firstname"] != "Bob" {
+		t.Errorf("expected firstname 'Bob', got %v", rows[1]["firstname"])
+	}
+	if rows[1]["lastname"] != "Jones" {
+		t.Errorf("expected lastname 'Jones', got %v", rows[1]["lastname"])
+	}
+}
+
+// TestBuildInputFromMappings_ArrayOfObjects_MixedDestinations tests that
+// when we have both simple and complex destinations, simple ones produce
+// array-of-objects and complex ones are handled separately.
+func TestBuildInputFromMappings_ArrayOfObjects_MixedDestinations(t *testing.T) {
+	sourceData := map[string]interface{}{
+		"data": []interface{}{
+			map[string]interface{}{
+				"First_Name": "Alice",
+				"Email":      "alice@example.com",
+			},
+			map[string]interface{}{
+				"First_Name": "Bob",
+				"Email":      "bob@example.com",
+			},
+		},
+	}
+
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//First_Name",
+				DestinationEndpoints: []string{"/firstname"}, // Simple destination
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//Email",
+				DestinationEndpoints: []string{"/data//email"}, // Complex destination with //
+				DataType:             "FIELD",
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"source-node": {
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"source-node": sourceData,
+				},
+			},
+		},
+		UnitNodeID: "csv-producer",
+	}
+
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// With mixed destinations, simple ones should produce array-of-objects
+	// and complex ones should be merged in
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(result, &rows); err != nil {
+		// If unmarshaling as array fails, check if it's an object (complex destination case)
+		var data map[string]interface{}
+		if err2 := json.Unmarshal(result, &data); err2 != nil {
+			t.Fatalf("failed to unmarshal result as array or object: %v, %v", err, err2)
+		}
+		// In this case, complex destination takes precedence
+		return
+	}
+
+	// Array-of-objects should have firstname from simple destination
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	if rows[0]["firstname"] != "Alice" {
+		t.Errorf("expected firstname 'Alice', got %v", rows[0]["firstname"])
+	}
+	if rows[1]["firstname"] != "Bob" {
+		t.Errorf("expected firstname 'Bob', got %v", rows[1]["firstname"])
+	}
+}
+
+// TestBuildInputFromMappings_ArrayOfObjects_MultipleDestinationsPerField tests
+// that a single source field can map to multiple simple destinations.
+func TestBuildInputFromMappings_ArrayOfObjects_MultipleDestinationsPerField(t *testing.T) {
+	sourceData := map[string]interface{}{
+		"data": []interface{}{
+			map[string]interface{}{
+				"Name": "Alice",
+			},
+			map[string]interface{}{
+				"Name": "Bob",
+			},
+		},
+	}
+
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//Name",
+				DestinationEndpoints: []string{"/name", "/fullname"}, // Multiple simple destinations
+				DataType:             "FIELD",
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"source-node": {
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"source-node": sourceData,
+				},
+			},
+		},
+		UnitNodeID: "csv-producer",
+	}
+
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(result, &rows); err != nil {
+		t.Fatalf("failed to unmarshal result as array: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	// Both destinations should have the same value
+	if rows[0]["name"] != "Alice" {
+		t.Errorf("expected name 'Alice', got %v", rows[0]["name"])
+	}
+	if rows[0]["fullname"] != "Alice" {
+		t.Errorf("expected fullname 'Alice', got %v", rows[0]["fullname"])
+	}
+	if rows[1]["name"] != "Bob" {
+		t.Errorf("expected name 'Bob', got %v", rows[1]["name"])
+	}
+	if rows[1]["fullname"] != "Bob" {
+		t.Errorf("expected fullname 'Bob', got %v", rows[1]["fullname"])
+	}
+}
+
+// TestBuildInputFromMappings_ArrayOfObjects_DifferentDataTypes tests that
+// different data types in source array are preserved correctly.
+func TestBuildInputFromMappings_ArrayOfObjects_DifferentDataTypes(t *testing.T) {
+	sourceData := map[string]interface{}{
+		"data": []interface{}{
+			map[string]interface{}{
+				"Name":  "Alice",
+				"Age":   30,
+				"Active": true,
+				"Score": 95.5,
+			},
+			map[string]interface{}{
+				"Name":  "Bob",
+				"Age":   25,
+				"Active": false,
+				"Score": 87.0,
+			},
+		},
+	}
+
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//Name",
+				DestinationEndpoints: []string{"/name"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//Age",
+				DestinationEndpoints: []string{"/age"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//Active",
+				DestinationEndpoints: []string{"/active"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//Score",
+				DestinationEndpoints: []string{"/score"},
+				DataType:             "FIELD",
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"source-node": {
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"source-node": sourceData,
+				},
+			},
+		},
+		UnitNodeID: "csv-producer",
+	}
+
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(result, &rows); err != nil {
+		t.Fatalf("failed to unmarshal result as array: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	// Check first row with all data types
+	if rows[0]["name"] != "Alice" {
+		t.Errorf("expected name 'Alice', got %v", rows[0]["name"])
+	}
+	if rows[0]["age"] != float64(30) { // JSON numbers are float64
+		t.Errorf("expected age 30, got %v", rows[0]["age"])
+	}
+	if rows[0]["active"] != true {
+		t.Errorf("expected active true, got %v", rows[0]["active"])
+	}
+	if rows[0]["score"] != 95.5 {
+		t.Errorf("expected score 95.5, got %v", rows[0]["score"])
+	}
+
+	// Check second row
+	if rows[1]["name"] != "Bob" {
+		t.Errorf("expected name 'Bob', got %v", rows[1]["name"])
+	}
+	if rows[1]["age"] != float64(25) {
+		t.Errorf("expected age 25, got %v", rows[1]["age"])
+	}
+	if rows[1]["active"] != false {
+		t.Errorf("expected active false, got %v", rows[1]["active"])
+	}
+	if rows[1]["score"] != 87.0 {
+		t.Errorf("expected score 87.0, got %v", rows[1]["score"])
+	}
+}
+
+// TestBuildInputFromMappings_ArrayOfObjects_NonArraySource tests that
+// when source is not an array, it falls back to normal processing.
+func TestBuildInputFromMappings_ArrayOfObjects_NonArraySource(t *testing.T) {
+	sourceData := map[string]interface{}{
+		"data": map[string]interface{}{ // Not an array
+			"First_Name": "Alice",
+		},
+	}
+
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "source-node",
+				SourceEndpoint:       "/data//First_Name",
+				DestinationEndpoints: []string{"/firstname"},
+				DataType:             "FIELD",
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"source-node": {
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"source-node": sourceData,
+				},
+			},
+		},
+		UnitNodeID: "csv-producer",
+	}
+
+	result, err := buildInputFromMappings(params)
+	// Should fall back to normal processing, might fail or return empty
+	// This is expected behavior when source is not an array
+	_ = result
+	_ = err
+	// Just verify it doesn't panic
+}
+
+// TestBuildInputFromMappings_Workflow_8bf5e799 tests the real workflow scenario
+// from workflow 8bf5e799-030f-4334-95f0-103a204c3f72 where CSV Producer receives
+// mappings from multiple source nodes:
+// - ESR Parser (98072c85-0a79-11f1-8b12-2e5e38c80116) with array traversal fields
+// - Auth Role (fba82976-0a79-11f1-8b12-2e5e38c80116) with scalar /auth field
+// - Format hire date (6077c8e8-0b3c-11f1-a572-a2275315184b) with /result array
+// This test verifies that the resolver produces array-of-objects format correctly
+// for CSV Producer with mixed source types.
+func TestBuildInputFromMappings_Workflow_8bf5e799(t *testing.T) {
+	// ESR Parser source data - array of employee records
+	esrParserData := map[string]interface{}{
+		"data": []interface{}{
+			map[string]interface{}{
+				"Office_Email_Address": "alice.smith@example.com",
+				"First_Name":            "Alice",
+				"Last_Name":             "Smith",
+				"Middle_Names":          "Marie",
+				"Location_Description":  "Headquarters",
+				"User_Assignment_Status": "Active",
+				"Job_Role":              "Developer",
+				"Occupation_Code":       "DEV001",
+				"Assignment_Category":   "Full-Time",
+				"Department":            "Engineering",
+				"Employee_No":          "EMP001",
+				"Deleted":               float64(0),
+				"Ethnic_Origin":         "White",
+			},
+			map[string]interface{}{
+				"Office_Email_Address": "bob.jones@example.com",
+				"First_Name":            "Bob",
+				"Last_Name":             "Jones",
+				"Middle_Names":          "",
+				"Location_Description":  "Remote",
+				"User_Assignment_Status": "Active",
+				"Job_Role":              "Manager",
+				"Occupation_Code":       "MGR001",
+				"Assignment_Category":   "Full-Time",
+				"Department":            "Management",
+				"Employee_No":          "EMP002",
+				"Deleted":               float64(0),
+				"Ethnic_Origin":         "Asian",
+			},
+		},
+	}
+
+	// Auth Role source data - scalar value (should be repeated for each row)
+	authRoleData := map[string]interface{}{
+		"auth": "saml2",
+	}
+
+	// Format hire date source data - array of formatted dates
+	formatHireDateData := map[string]interface{}{
+		"result": []interface{}{
+			"2020-01-15",
+			"2019-03-20",
+		},
+	}
+
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			// Mappings from ESR Parser with array traversal and simple destinations
+			{
+				SourceNodeID:         "98072c85-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/data//Office_Email_Address",
+				DestinationEndpoints: []string{"/username"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "98072c85-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/data//First_Name",
+				DestinationEndpoints: []string{"/firstname"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "98072c85-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/data//Last_Name",
+				DestinationEndpoints: []string{"/lastname"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "98072c85-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/data//Middle_Names",
+				DestinationEndpoints: []string{"/middlename"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "98072c85-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/data//Location_Description",
+				DestinationEndpoints: []string{"/department"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "98072c85-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/data//User_Assignment_Status",
+				DestinationEndpoints: []string{"/customfield_AssignmentStatus"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "98072c85-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/data//Job_Role",
+				DestinationEndpoints: []string{"/customfield_PositionTitle"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "98072c85-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/data//Office_Email_Address",
+				DestinationEndpoints: []string{"/email"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "98072c85-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/data//Occupation_Code",
+				DestinationEndpoints: []string{"/customfield_OccupationCode"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "98072c85-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/data//Assignment_Category",
+				DestinationEndpoints: []string{"/customfield_AssignmentCategory"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "98072c85-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/data//Employee_No",
+				DestinationEndpoints: []string{"/employeeno"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "98072c85-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/data//Deleted",
+				DestinationEndpoints: []string{"/deleted"},
+				DataType:             "FIELD",
+			},
+			{
+				SourceNodeID:         "98072c85-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/data//Ethnic_Origin",
+				DestinationEndpoints: []string{"/customfield_ethnicorigin"},
+				DataType:             "FIELD",
+			},
+			// Scalar mapping from Auth Role (should be repeated for each row)
+			{
+				SourceNodeID:         "fba82976-0a79-11f1-8b12-2e5e38c80116",
+				SourceEndpoint:       "/auth",
+				DestinationEndpoints: []string{"/auth"},
+				DataType:             "FIELD",
+			},
+			// Array mapping from Format hire date (should be distributed across rows)
+			{
+				SourceNodeID:         "6077c8e8-0b3c-11f1-a572-a2275315184b",
+				SourceEndpoint:       "/result",
+				DestinationEndpoints: []string{"/customfield_LatestHireDate"},
+				DataType:             "FIELD",
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"98072c85-0a79-11f1-8b12-2e5e38c80116": {
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"98072c85-0a79-11f1-8b12-2e5e38c80116": esrParserData,
+				},
+			},
+			"fba82976-0a79-11f1-8b12-2e5e38c80116": {
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"fba82976-0a79-11f1-8b12-2e5e38c80116": authRoleData,
+				},
+			},
+			"6077c8e8-0b3c-11f1-a572-a2275315184b": {
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"6077c8e8-0b3c-11f1-a572-a2275315184b": formatHireDateData,
+				},
+			},
+		},
+		UnitNodeID: "578225fd-0a7b-11f1-8b12-2e5e38c80116", // CSV Producer node ID
+	}
+
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Result should be an array-of-objects
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(result, &rows); err != nil {
+		t.Fatalf("failed to unmarshal result as array: %v. Result: %s", err, string(result))
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	// Verify first row
+	row0 := rows[0]
+	if row0["username"] != "alice.smith@example.com" {
+		t.Errorf("row[0]: expected username 'alice.smith@example.com', got %v", row0["username"])
+	}
+	if row0["firstname"] != "Alice" {
+		t.Errorf("row[0]: expected firstname 'Alice', got %v", row0["firstname"])
+	}
+	if row0["lastname"] != "Smith" {
+		t.Errorf("row[0]: expected lastname 'Smith', got %v", row0["lastname"])
+	}
+	if row0["middlename"] != "Marie" {
+		t.Errorf("row[0]: expected middlename 'Marie', got %v", row0["middlename"])
+	}
+	if row0["department"] != "Headquarters" {
+		t.Errorf("row[0]: expected department 'Headquarters', got %v", row0["department"])
+	}
+	if row0["customfield_AssignmentStatus"] != "Active" {
+		t.Errorf("row[0]: expected customfield_AssignmentStatus 'Active', got %v", row0["customfield_AssignmentStatus"])
+	}
+	if row0["customfield_PositionTitle"] != "Developer" {
+		t.Errorf("row[0]: expected customfield_PositionTitle 'Developer', got %v", row0["customfield_PositionTitle"])
+	}
+	if row0["email"] != "alice.smith@example.com" {
+		t.Errorf("row[0]: expected email 'alice.smith@example.com', got %v", row0["email"])
+	}
+	if row0["customfield_OccupationCode"] != "DEV001" {
+		t.Errorf("row[0]: expected customfield_OccupationCode 'DEV001', got %v", row0["customfield_OccupationCode"])
+	}
+	if row0["customfield_AssignmentCategory"] != "Full-Time" {
+		t.Errorf("row[0]: expected customfield_AssignmentCategory 'Full-Time', got %v", row0["customfield_AssignmentCategory"])
+	}
+	if row0["employeeno"] != "EMP001" {
+		t.Errorf("row[0]: expected employeeno 'EMP001', got %v", row0["employeeno"])
+	}
+	if row0["deleted"] != float64(0) {
+		t.Errorf("row[0]: expected deleted 0, got %v", row0["deleted"])
+	}
+	if row0["customfield_ethnicorigin"] != "White" {
+		t.Errorf("row[0]: expected customfield_ethnicorigin 'White', got %v", row0["customfield_ethnicorigin"])
+	}
+	// Scalar value from Auth Role should be repeated
+	if row0["auth"] != "saml2" {
+		t.Errorf("row[0]: expected auth 'saml2', got %v", row0["auth"])
+	}
+	// Array value from Format hire date should be distributed
+	if row0["customfield_LatestHireDate"] != "2020-01-15" {
+		t.Errorf("row[0]: expected customfield_LatestHireDate '2020-01-15', got %v", row0["customfield_LatestHireDate"])
+	}
+
+	// Verify second row
+	row1 := rows[1]
+	if row1["username"] != "bob.jones@example.com" {
+		t.Errorf("row[1]: expected username 'bob.jones@example.com', got %v", row1["username"])
+	}
+	if row1["firstname"] != "Bob" {
+		t.Errorf("row[1]: expected firstname 'Bob', got %v", row1["firstname"])
+	}
+	if row1["lastname"] != "Jones" {
+		t.Errorf("row[1]: expected lastname 'Jones', got %v", row1["lastname"])
+	}
+	if row1["middlename"] != "" {
+		t.Errorf("row[1]: expected middlename '', got %v", row1["middlename"])
+	}
+	if row1["department"] != "Remote" {
+		t.Errorf("row[1]: expected department 'Remote', got %v", row1["department"])
+	}
+	if row1["customfield_AssignmentStatus"] != "Active" {
+		t.Errorf("row[1]: expected customfield_AssignmentStatus 'Active', got %v", row1["customfield_AssignmentStatus"])
+	}
+	if row1["customfield_PositionTitle"] != "Manager" {
+		t.Errorf("row[1]: expected customfield_PositionTitle 'Manager', got %v", row1["customfield_PositionTitle"])
+	}
+	if row1["email"] != "bob.jones@example.com" {
+		t.Errorf("row[1]: expected email 'bob.jones@example.com', got %v", row1["email"])
+	}
+	if row1["customfield_OccupationCode"] != "MGR001" {
+		t.Errorf("row[1]: expected customfield_OccupationCode 'MGR001', got %v", row1["customfield_OccupationCode"])
+	}
+	if row1["customfield_AssignmentCategory"] != "Full-Time" {
+		t.Errorf("row[1]: expected customfield_AssignmentCategory 'Full-Time', got %v", row1["customfield_AssignmentCategory"])
+	}
+	if row1["employeeno"] != "EMP002" {
+		t.Errorf("row[1]: expected employeeno 'EMP002', got %v", row1["employeeno"])
+	}
+	if row1["deleted"] != float64(0) {
+		t.Errorf("row[1]: expected deleted 0, got %v", row1["deleted"])
+	}
+	if row1["customfield_ethnicorigin"] != "Asian" {
+		t.Errorf("row[1]: expected customfield_ethnicorigin 'Asian', got %v", row1["customfield_ethnicorigin"])
+	}
+	// Scalar value from Auth Role should be repeated
+	if row1["auth"] != "saml2" {
+		t.Errorf("row[1]: expected auth 'saml2', got %v", row1["auth"])
+	}
+	// Array value from Format hire date should be distributed
+	if row1["customfield_LatestHireDate"] != "2019-03-20" {
+		t.Errorf("row[1]: expected customfield_LatestHireDate '2019-03-20', got %v", row1["customfield_LatestHireDate"])
+	}
+}

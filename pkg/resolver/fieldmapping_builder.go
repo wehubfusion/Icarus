@@ -693,13 +693,202 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 		}
 	}
 
-	// Process batched extractions first
-	// Use (sourceNodeID, sourceEndpoint) as key - pointer comparison fails because range reuses loop vars
+	// Detect and group mappings with simple destination paths (no //)
+	// These will be converted to array-of-objects format
+	type simpleDestKey struct {
+		sourceNodeID     string
+		sourceCollection string
+	}
+	simpleDestGroups := make(map[simpleDestKey][]struct {
+		mapping   message.FieldMapping
+		fieldPath string
+		destPath  string
+	})
+
+	for _, mapping := range params.FieldMappings {
+		if mapping.IsEventTrigger {
+			continue
+		}
+
+		// Check if source has array traversal (//)
+		if strings.Contains(mapping.SourceEndpoint, "//") {
+			parts := strings.SplitN(mapping.SourceEndpoint, "//", 2)
+			if len(parts) == 2 {
+				sourceCollectionPath := strings.Trim(parts[0], "/")
+				fieldPath := strings.Trim(parts[1], "/")
+
+				// Check if ALL destination endpoints are simple paths (no //)
+				allSimple := true
+				for _, destEndpoint := range mapping.DestinationEndpoints {
+					if strings.Contains(destEndpoint, "//") {
+						allSimple = false
+						break
+					}
+				}
+
+				if allSimple && len(mapping.DestinationEndpoints) > 0 {
+					key := simpleDestKey{
+						sourceNodeID:     mapping.SourceNodeID,
+						sourceCollection: sourceCollectionPath,
+					}
+					// Add all destination endpoints
+					for _, destEndpoint := range mapping.DestinationEndpoints {
+						simpleDestGroups[key] = append(simpleDestGroups[key], struct {
+							mapping   message.FieldMapping
+							fieldPath string
+							destPath  string
+						}{mapping, fieldPath, destEndpoint})
+					}
+				}
+			}
+		}
+	}
+
+	// Process simple destination groups to create array-of-objects
 	type mappingKey struct {
 		sourceNodeID   string
 		sourceEndpoint string
 	}
 	batchProcessedMappings := make(map[mappingKey]bool)
+	var arrayOfObjectsResult []map[string]interface{}
+	var hasArrayOfObjects bool
+	var referenceArrayLength int
+
+	// Process all simple destination groups and merge them
+	for key, group := range simpleDestGroups {
+		if len(group) == 0 {
+			continue
+		}
+
+		// Get source result
+		var sourceResult *SourceResult
+		if result, exists := params.SourceResults[key.sourceNodeID]; exists {
+			sourceResult = result
+		} else {
+			for _, potential := range params.SourceResults {
+				if potential.ProjectedFields != nil {
+					if _, hasNode := potential.ProjectedFields[key.sourceNodeID]; hasNode {
+						sourceResult = potential
+						break
+					}
+				}
+			}
+		}
+
+		if sourceResult == nil || sourceResult.ProjectedFields == nil {
+			continue
+		}
+
+		// Resolve nodeFields using the same fallback logic as the main mapping loop.
+		// In real executions, ProjectedFields might be keyed by the node ID, an empty
+		// string, or contain a single entry with all fields. We need to handle all
+		// of these cases so that array-of-objects detection works with real data.
+		var nodeFields map[string]interface{}
+		var hasNode bool
+
+		if nodeFields, hasNode = sourceResult.ProjectedFields[key.sourceNodeID]; !hasNode {
+			if sourceResult.NodeID == key.sourceNodeID {
+				if selfFields, ok := sourceResult.ProjectedFields[key.sourceNodeID]; ok {
+					nodeFields = selfFields
+					hasNode = true
+				} else if allFields, ok := sourceResult.ProjectedFields[""]; ok {
+					nodeFields = allFields
+					hasNode = true
+				} else if len(sourceResult.ProjectedFields) == 1 {
+					for _, fields := range sourceResult.ProjectedFields {
+						nodeFields = fields
+						hasNode = true
+						break
+					}
+				}
+			}
+		}
+
+		if !hasNode || nodeFields == nil {
+			continue
+		}
+
+		// Get the source collection array
+		// Try multiple possible paths: the specified collection path, "data", "$items", "result"
+		sourceCollPath := key.sourceCollection
+		if sourceCollPath == "" {
+			sourceCollPath = "data"
+		}
+		
+		var collection interface{}
+		var collectionArray []interface{}
+		var ok bool
+		
+		// Try the specified path first
+		collection = navigateMap(nodeFields, sourceCollPath)
+		if collection != nil {
+			if arr, isArr := collection.([]interface{}); isArr {
+				collectionArray = arr
+				ok = true
+			}
+		}
+		
+		// Fallback to common paths if not found
+		if !ok {
+			for _, fallbackPath := range []string{"data", runtime.RootArrayKey, "result"} {
+				if fallbackPath == sourceCollPath {
+					continue // Already tried
+				}
+				collection = navigateMap(nodeFields, fallbackPath)
+				if collection != nil {
+					if arr, isArr := collection.([]interface{}); isArr {
+						collectionArray = arr
+						ok = true
+						break
+					}
+				}
+			}
+		}
+		
+		if !ok {
+			continue
+		}
+
+		arrayLen := len(collectionArray)
+		if arrayLen == 0 {
+			continue
+		}
+
+		// Initialize array-of-objects if this is the first group
+		if !hasArrayOfObjects {
+			arrayOfObjectsResult = make([]map[string]interface{}, arrayLen)
+			for i := 0; i < arrayLen; i++ {
+				arrayOfObjectsResult[i] = make(map[string]interface{})
+			}
+			hasArrayOfObjects = true
+			referenceArrayLength = arrayLen
+		} else if arrayLen != referenceArrayLength {
+			// Array length mismatch - skip this group and let it be processed normally
+			continue
+		}
+
+		// Extract all fields in one pass and merge into existing objects
+		for i, item := range collectionArray {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				for _, g := range group {
+					fieldValue := navigateMap(itemMap, g.fieldPath)
+					// Remove leading slash from destination path
+					destKey := strings.TrimPrefix(g.destPath, "/")
+					arrayOfObjectsResult[i][destKey] = fieldValue
+				}
+			}
+		}
+
+		// Mark mappings as processed
+		for _, g := range group {
+			batchProcessedMappings[mappingKey{
+				sourceNodeID:   g.mapping.SourceNodeID,
+				sourceEndpoint: g.mapping.SourceEndpoint,
+			}] = true
+		}
+	}
+
+	// Process batched extractions for complex destinations (with //)
 
 	for key, batch := range batchedExtractions {
 		if len(batch) <= 1 {
@@ -1057,6 +1246,38 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 			return nil, fmt.Errorf("array length mismatch in iterate sources for unit %s: %s",
 				params.UnitNodeID, strings.Join(mismatch, "; "))
 		}
+	}
+
+	// If we have array-of-objects result, prioritize it and merge other mappings
+	if hasArrayOfObjects {
+		// Merge inputData fields into each object in arrayOfObjectsResult
+		// For scalar values, repeat them for each object
+		// For array values, distribute them across objects (should be same length)
+		for i := range arrayOfObjectsResult {
+			for k, v := range inputData {
+				// If value is an array, take the i-th element
+				if arr, ok := v.([]interface{}); ok {
+					if i < len(arr) {
+						arrayOfObjectsResult[i][k] = arr[i]
+					} else {
+						arrayOfObjectsResult[i][k] = nil
+					}
+				} else if vMap, ok := v.(map[string]interface{}); ok {
+					// If value is a map, merge its fields into the object
+					for mk, mv := range vMap {
+						arrayOfObjectsResult[i][mk] = mv
+					}
+				} else {
+					// Scalar value - repeat for each object
+					arrayOfObjectsResult[i][k] = v
+				}
+			}
+		}
+		result, err := json.Marshal(arrayOfObjectsResult)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal array-of-objects: %w", err)
+		}
+		return result, nil
 	}
 
 	if len(inputData) == 0 {
