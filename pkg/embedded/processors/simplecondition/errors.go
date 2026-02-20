@@ -32,7 +32,7 @@ type ComparisonError struct {
 func (e *ComparisonError) Error() string {
 	if e.ItemIndex >= 0 {
 		return fmt.Sprintf("node %s: comparison error at item %d [%s]: %s",
-e.NodeID, e.ItemIndex, e.Operator, e.Message)
+			e.NodeID, e.ItemIndex, e.Operator, e.Message)
 	}
 	return fmt.Sprintf("node %s: comparison error [%s]: %s", e.NodeID, e.Operator, e.Message)
 }
@@ -57,7 +57,7 @@ type EvaluationError struct {
 func (e *EvaluationError) Error() string {
 	if e.ItemIndex >= 0 {
 		return fmt.Sprintf("node %s: evaluation error at item %d [%s]: %s",
-e.NodeID, e.ItemIndex, e.ConditionName, e.Message)
+			e.NodeID, e.ItemIndex, e.ConditionName, e.Message)
 	}
 	return fmt.Sprintf("node %s: evaluation error [%s]: %s", e.NodeID, e.ConditionName, e.Message)
 }

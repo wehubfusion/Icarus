@@ -1805,7 +1805,7 @@ The schema package is organized into focused components:
 
 ### Usage in Plugins
 
-The schema package is designed to be used by Elysium plugins like `plugin-stage-data`, `plugin-json-operations`, and others that need schema-based validation and transformation:
+The schema package is designed to be used by Elysium plugins like `plugin-stage-data`, `plugin-json-operations`, `plugin-http-client`, and others that need schema-based validation and transformation:
 
 ```go
 import (
@@ -2128,3 +2128,4 @@ c.Messages.Publish(ctx, "subject", msg)
 ## Changelog
 
 - **2025-11-24**: Standardized embedded processor plugin identifiers. Use `plugin-js`, `plugin-json-operations`, and `plugin-dateformatter` across workflows, configs, and tests.
+- **2025-02-20**: Added `plugin-http-client` embedded processor. Sends HTTP requests using a configured Nyx HTTP connection, optional headers (`manual_inputs`), and input payload. Outputs `status` (number) and `body` (byte). Requires connection enrichment from Elysium (connection_id → connection).

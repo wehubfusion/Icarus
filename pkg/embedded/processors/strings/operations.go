@@ -30,7 +30,10 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		return split(str, delimiter), nil
 
 	case "join":
-		items := getStringSlice(params, "items", getStringSlice(input, "items", []string{}))
+		items := getStringSlice(params, "items", getStringSlice(input, "items", nil))
+		if items == nil {
+			items = extractStringValues(input) // seed-node-schemas.sql: manual_inputs
+		}
 		separator := getString(params, "separator", "")
 		return join(items, separator), nil
 
@@ -98,7 +101,7 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 
 	case "format":
 		template := getString(params, "template", getString(input, "template", ""))
-		data := getStringMap(params, "data", getStringMap(input, "data", map[string]string{}))
+		data := getStringMap(params, "data", getStringMap(input, "data", inputToStringMap(input)))
 		return format(template, data), nil
 
 	case "base64_encode":
@@ -436,6 +439,18 @@ func extractStringValues(m map[string]interface{}) []string {
 	for _, v := range m {
 		if s, ok := v.(string); ok {
 			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// inputToStringMap converts input to map[string]string for format placeholders.
+// Used when manual_inputs flow in as flat keys (seed-node-schemas.sql String Format).
+func inputToStringMap(m map[string]interface{}) map[string]string {
+	result := make(map[string]string)
+	for k, v := range m {
+		if s, ok := v.(string); ok {
+			result[k] = s
 		}
 	}
 	return result
