@@ -3,6 +3,7 @@ package strings_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	stringsproc "github.com/wehubfusion/Icarus/pkg/embedded/processors/strings"
@@ -354,6 +355,46 @@ func TestProcessJoin(t *testing.T) {
 	}
 	if output.Data["result"] != "a-b-c" {
 		t.Fatalf("expected 'a-b-c', got %v", output.Data["result"])
+	}
+
+	// seed-node-schemas.sql String Join: manual_inputs flow in as flat input keys
+	config2 := stringsproc.Config{
+		Operation: "join",
+		Params: map[string]interface{}{
+			"separator": "-",
+		},
+	}
+	rawConfig2, _ := json.Marshal(config2)
+	input2 := createProcessInput(
+		map[string]interface{}{
+			"a": "hello",
+			"b": "world",
+		},
+		rawConfig2,
+		0,
+	)
+
+	output2 := node.Process(input2)
+	if output2.Error != nil {
+		t.Fatalf("unexpected error: %v", output2.Error)
+	}
+	// extractStringValues order is map-iteration order; just verify both values present
+	result := output2.Data["result"].(string)
+	parts := strings.Split(result, "-")
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d: %v", len(parts), result)
+	}
+	hasHello, hasWorld := false, false
+	for _, p := range parts {
+		if p == "hello" {
+			hasHello = true
+		}
+		if p == "world" {
+			hasWorld = true
+		}
+	}
+	if !hasHello || !hasWorld {
+		t.Fatalf("expected 'hello' and 'world' in result, got %v", result)
 	}
 }
 
@@ -925,6 +966,31 @@ func TestProcessFormat(t *testing.T) {
 	}
 	if output.Data["result"] != "Hello Alice, you are 30 years old" {
 		t.Fatalf("expected formatted string, got %v", output.Data["result"])
+	}
+
+	// seed-node-schemas.sql String Format: manual_inputs flow in as flat input keys
+	config2 := stringsproc.Config{
+		Operation: "format",
+		Params: map[string]interface{}{
+			"template": "Hello {name}, welcome to {city}",
+		},
+	}
+	rawConfig2, _ := json.Marshal(config2)
+	input2 := createProcessInput(
+		map[string]interface{}{
+			"name": "Bob",
+			"city": "NYC",
+		},
+		rawConfig2,
+		0,
+	)
+
+	output2 := node.Process(input2)
+	if output2.Error != nil {
+		t.Fatalf("unexpected error: %v", output2.Error)
+	}
+	if output2.Data["result"] != "Hello Bob, welcome to NYC" {
+		t.Fatalf("expected 'Hello Bob, welcome to NYC', got %v", output2.Data["result"])
 	}
 }
 

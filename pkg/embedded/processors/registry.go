@@ -2,6 +2,7 @@ package processors
 
 import (
 	"github.com/wehubfusion/Icarus/pkg/embedded/processors/dateformatter"
+	"github.com/wehubfusion/Icarus/pkg/embedded/processors/httpclient"
 	"github.com/wehubfusion/Icarus/pkg/embedded/processors/jsonops"
 	"github.com/wehubfusion/Icarus/pkg/embedded/processors/jsrunner"
 	"github.com/wehubfusion/Icarus/pkg/embedded/processors/simplecondition"
@@ -28,6 +29,9 @@ func NewProcessorRegistry() runtime.EmbeddedNodeFactory {
 
 	// Register strings processor
 	factory.Register("plugin-strings", strings.NewStringsNode)
+
+	// Register httpclient processor
+	factory.Register("plugin-http-client", httpclient.NewHTTPClientNode)
 
 	// Future processors can be registered here...
 
