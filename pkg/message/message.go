@@ -88,7 +88,9 @@ type SchemaDetails struct {
 // EmbeddedNode represents a node to be executed within a parent node
 type EmbeddedNode struct {
 	NodeID         string             `json:"nodeId"`
+	Label          string             `json:"label,omitempty"`
 	PluginType     string             `json:"pluginType"`
+	Action         string             `json:"action,omitempty"` // Action name from node schema (e.g. "JSON Parser"); used to derive operation for processors
 	Configuration  json.RawMessage    `json:"configuration"`
 	Depth          int                `json:"depth"` // Dependency depth within the embedded context
 	ExecutionOrder int                `json:"executionOrder"`
