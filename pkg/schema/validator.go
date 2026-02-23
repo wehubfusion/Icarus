@@ -196,6 +196,18 @@ func (v *Validator) validateValueIntoState(value interface{}, prop *Property, pa
 				return
 			}
 		}
+	case TypeUUID:
+		if str, ok := value.(string); ok {
+			for _, e := range v.validateUUIDValue(str, prop, path) {
+				if state.add(e) {
+					return
+				}
+			}
+		} else {
+			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected string for UUID, got %T", value), Code: "TYPE_MISMATCH"}) {
+				return
+			}
+		}
 	case TypeAny:
 		// no validation
 	}
@@ -376,11 +388,34 @@ func (v *Validator) validateValue(value interface{}, prop *Property, path string
 			})
 		}
 
+	case TypeUUID:
+		if str, ok := value.(string); ok {
+			errors = append(errors, v.validateUUIDValue(str, prop, path)...)
+		} else {
+			errors = append(errors, ValidationError{
+				Path:    path,
+				Message: fmt.Sprintf("expected string for UUID, got %T", value),
+				Code:    "TYPE_MISMATCH",
+			})
+		}
+
 	case TypeAny:
 		// Any type - no validation needed
 	}
 
 	return errors
+}
+
+// validateUUIDValue validates a string value as UUID with optional prefix/postfix from the property.
+func (v *Validator) validateUUIDValue(value string, prop *Property, path string) []ValidationError {
+	if !ValidateUUIDWithPrefixPostfix(value, prop.Prefix, prop.Postfix) {
+		return []ValidationError{{
+			Path:    path,
+			Message: "value does not match UUID format (with optional prefix/postfix)",
+			Code:    "INVALID_UUID",
+		}}
+	}
+	return nil
 }
 
 // validateString validates string-specific rules

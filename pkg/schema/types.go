@@ -36,10 +36,12 @@ type Property struct {
 	Type        SchemaType           `json:"type"`
 	Required    bool                 `json:"required,omitempty"`
 	Default     interface{}          `json:"default,omitempty"`
+	Prefix      string               `json:"prefix,omitempty"`  // Optional prefix for UUID type (e.g. "urn:uuid:")
+	Postfix     string               `json:"postfix,omitempty"` // Optional postfix for UUID type
 	Description string               `json:"description,omitempty"`
 	Validation  *ValidationRules     `json:"validation,omitempty"`
 	Properties  map[string]*Property `json:"properties,omitempty"` // For OBJECT type
-	Items       *Property            `json:"items,omitempty"`      // For ARRAY type
+	Items       *Property            `json:"items,omitempty"`     // For ARRAY type
 }
 
 // SchemaType represents the data type of a field
@@ -56,6 +58,7 @@ const (
 	TypeDateTime SchemaType = "DATETIME"
 	TypeByte     SchemaType = "BYTE"
 	TypeAny      SchemaType = "ANY"
+	TypeUUID     SchemaType = "UUID"
 )
 
 // ValidationRules contains validation rules for a field
@@ -134,6 +137,7 @@ func IsValidType(t SchemaType) bool {
 		TypeString: true, TypeNumber: true, TypeBoolean: true,
 		TypeObject: true, TypeArray: true, TypeDate: true,
 		TypeDateTime: true, TypeByte: true, TypeAny: true,
+		TypeUUID: true,
 	}
 	return validTypes[t]
 }
