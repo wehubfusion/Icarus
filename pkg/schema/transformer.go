@@ -1,6 +1,10 @@
 package schema
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/google/uuid"
+)
 
 // Transformer handles data transformation operations
 type Transformer struct{}
@@ -77,6 +81,10 @@ func (t *Transformer) applyDefaultsToValue(data interface{}, prop *Property) (in
 			if !exists && propDef.Default != nil {
 				// Field doesn't exist but has default - apply it
 				obj[propName] = propDef.Default
+			} else if !exists && propDef.Type == TypeUUID {
+				// Generate UUID for missing UUID field (with optional prefix/postfix)
+				generated := uuid.New().String()
+				obj[propName] = propDef.Prefix + generated + propDef.Postfix
 			} else if exists {
 				// Field exists - recursively apply defaults to nested structures
 				if propDef.Type == TypeObject && propDef.Properties != nil {

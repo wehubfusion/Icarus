@@ -186,6 +186,15 @@ func (p *Parser) validateProperty(prop *Property, name string) error {
 
 // validateValidationRules ensures validation rules are appropriate for the field type
 func (p *Parser) validateValidationRules(rules *ValidationRules, fieldType SchemaType, name string) error {
+	// UUID type does not support validation rules
+	if fieldType == TypeUUID && rules != nil {
+		if rules.MinLength != nil || rules.MaxLength != nil || rules.Pattern != "" || rules.Format != "" ||
+			len(rules.Enum) > 0 || rules.Minimum != nil || rules.Maximum != nil ||
+			rules.MinItems != nil || rules.MaxItems != nil || rules.UniqueItems {
+			return fmt.Errorf("property '%s': validation rules not supported for type UUID", name)
+		}
+	}
+
 	// String-specific validations (pattern, format, enum are string-only)
 	if fieldType != TypeString && fieldType != TypeByte && fieldType != TypeDate && fieldType != TypeDateTime {
 		if rules.MinLength != nil || rules.MaxLength != nil {

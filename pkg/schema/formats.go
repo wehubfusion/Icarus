@@ -41,6 +41,34 @@ func validateUUID(uuid string) bool {
 	return err == nil && matched
 }
 
+// ValidateUUIDWithPrefixPostfix validates a value that may have an optional prefix and postfix around a UUID segment.
+// Example: value "urn:uuid:550e8400-e29b-41d4-a716-446655440000" with prefix "urn:uuid:" and postfix "".
+func ValidateUUIDWithPrefixPostfix(value, prefix, postfix string) bool {
+	if value == "" {
+		return false
+	}
+	if prefix != "" && !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	if postfix != "" && !strings.HasSuffix(value, postfix) {
+		return false
+	}
+	segment := value
+	if prefix != "" {
+		segment = segment[len(prefix):]
+	}
+	if postfix != "" {
+		if len(segment) < len(postfix) {
+			return false
+		}
+		segment = segment[:len(segment)-len(postfix)]
+	}
+	if segment == "" {
+		return false
+	}
+	return validateUUID(segment)
+}
+
 // validateDate validates ISO 8601 date format (YYYY-MM-DD)
 func validateDate(date string) bool {
 	if date == "" {

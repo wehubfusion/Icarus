@@ -2040,3 +2040,175 @@ func TestProcessCSVWithSchemaCollectAllErrors(t *testing.T) {
 		t.Errorf("Expected 2 errors when CollectAllErrors true, got %d", len(result.Errors))
 	}
 }
+
+// --- UUID type tests ---
+
+func TestSchemaParser_UUIDTypeWithPrefix(t *testing.T) {
+	schemaJSON := `{
+		"type": "OBJECT",
+		"properties": {
+			"fullUrl": {
+				"type": "UUID",
+				"prefix": "urn:uuid:"
+			}
+		}
+	}`
+	parser := schema.NewParser()
+	result, err := parser.Parse([]byte(schemaJSON))
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if result.Properties["fullUrl"].Type != schema.TypeUUID {
+		t.Errorf("Expected type UUID, got: %s", result.Properties["fullUrl"].Type)
+	}
+	if result.Properties["fullUrl"].Prefix != "urn:uuid:" {
+		t.Errorf("Expected prefix urn:uuid:, got: %q", result.Properties["fullUrl"].Prefix)
+	}
+}
+
+func TestSchemaParser_UUIDTypeWithValidationRulesRejected(t *testing.T) {
+	schemaJSON := `{
+		"type": "OBJECT",
+		"properties": {
+			"fullUrl": {
+				"type": "UUID",
+				"prefix": "urn:uuid:",
+				"validation": { "minLength": 10 }
+			}
+		}
+	}`
+	parser := schema.NewParser()
+	_, err := parser.Parse([]byte(schemaJSON))
+	if err == nil {
+		t.Fatal("Expected error for UUID with validation rules")
+	}
+	if !strings.Contains(err.Error(), "validation rules not supported") {
+		t.Errorf("Expected validation rules error, got: %v", err)
+	}
+}
+
+func TestProcessWithSchema_UUIDApplyDefaultsGenerates(t *testing.T) {
+	schemaJSON := `{
+		"type": "OBJECT",
+		"properties": {
+			"fullUrl": {
+				"type": "UUID",
+				"prefix": "urn:uuid:"
+			}
+		}
+	}`
+	inputData := `{}`
+	engine := schema.NewEngine()
+	result, err := engine.ProcessWithSchema(
+		[]byte(inputData),
+		[]byte(schemaJSON),
+		schema.ProcessOptions{ApplyDefaults: true, StructureData: true, StrictValidation: true},
+	)
+	if err != nil {
+		t.Fatalf("ProcessWithSchema: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("Expected valid result, errors: %v", result.Errors)
+	}
+	var out map[string]interface{}
+	if err := schema.FromJSON(result.Data, &out); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	v, ok := out["fullUrl"].(string)
+	if !ok {
+		t.Fatalf("fullUrl missing or not string: %T %v", out["fullUrl"], out)
+	}
+	if !strings.HasPrefix(v, "urn:uuid:") {
+		t.Errorf("Expected fullUrl to start with urn:uuid:, got: %q", v)
+	}
+	// UUID segment after prefix should be 36 chars (8-4-4-4-12 with hyphens)
+	segment := strings.TrimPrefix(v, "urn:uuid:")
+	if len(segment) != 36 {
+		t.Errorf("Expected UUID segment length 36, got %d: %q", len(segment), segment)
+	}
+}
+
+func TestProcessWithSchema_UUIDValidationValid(t *testing.T) {
+	schemaJSON := `{
+		"type": "OBJECT",
+		"properties": {
+			"fullUrl": {
+				"type": "UUID",
+				"prefix": "urn:uuid:"
+			}
+		}
+	}`
+	inputData := `{"fullUrl": "urn:uuid:550e8400-e29b-41d4-a716-446655440000"}`
+	engine := schema.NewEngine()
+	result, err := engine.ProcessWithSchema(
+		[]byte(inputData),
+		[]byte(schemaJSON),
+		schema.ProcessOptions{ApplyDefaults: true, StructureData: true, StrictValidation: true},
+	)
+	if err != nil {
+		t.Fatalf("ProcessWithSchema: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("Expected valid result, errors: %v", result.Errors)
+	}
+}
+
+func TestProcessWithSchema_UUIDValidationInvalidSegment(t *testing.T) {
+	schemaJSON := `{
+		"type": "OBJECT",
+		"properties": {
+			"fullUrl": {
+				"type": "UUID",
+				"prefix": "urn:uuid:"
+			}
+		}
+	}`
+	inputData := `{"fullUrl": "urn:uuid:not-a-valid-uuid"}`
+	engine := schema.NewEngine()
+	result, err := engine.ProcessWithSchema(
+		[]byte(inputData),
+		[]byte(schemaJSON),
+		schema.ProcessOptions{StrictValidation: true},
+	)
+	if err == nil {
+		t.Fatal("Expected validation error for invalid UUID segment")
+	}
+	if result.Valid {
+		t.Fatal("Expected invalid result")
+	}
+	var hasUUIDError bool
+	for _, e := range result.Errors {
+		if e.Code == "INVALID_UUID" || strings.Contains(e.Message, "UUID") {
+			hasUUIDError = true
+			break
+		}
+	}
+	if !hasUUIDError {
+		t.Errorf("Expected INVALID_UUID or UUID-related error, got: %v", result.Errors)
+	}
+}
+
+func TestProcessWithSchema_UUIDValidationWrongPrefix(t *testing.T) {
+	schemaJSON := `{
+		"type": "OBJECT",
+		"properties": {
+			"fullUrl": {
+				"type": "UUID",
+				"prefix": "urn:uuid:"
+			}
+		}
+	}`
+	inputData := `{"fullUrl": "550e8400-e29b-41d4-a716-446655440000"}`
+	engine := schema.NewEngine()
+	result, err := engine.ProcessWithSchema(
+		[]byte(inputData),
+		[]byte(schemaJSON),
+		schema.ProcessOptions{StrictValidation: true},
+	)
+	if err == nil {
+		t.Fatal("Expected validation error when value does not start with prefix")
+	}
+	if result.Valid {
+		t.Fatal("Expected invalid result")
+	}
+}
