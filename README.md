@@ -1578,6 +1578,7 @@ The schema package supports the following data types:
 - **DATE**: Date values (YYYY-MM-DD format)
 - **DATETIME**: DateTime values (RFC3339 format)
 - **BYTE**: Base64-encoded binary data with optional decoded byte length constraints
+- **UUID**: UUID values with optional `prefix` and `postfix` (e.g. `urn:uuid:...`). Missing UUID fields are auto-generated when `ApplyDefaults` is true. No validation rules (minLength, pattern, etc.) are supported for this type.
 - **ANY**: Any JSON value (no validation)
 
 ### Validation Rules
