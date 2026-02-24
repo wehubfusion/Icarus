@@ -32,6 +32,18 @@ func TestConfigValidate(t *testing.T) {
 	if err := cfg.Validate("node1"); err == nil {
 		t.Fatalf("expected time_style validation error")
 	}
+
+	// UTC format is valid
+	cfg = dateformatter.Config{InFormat: "UTC", OutFormat: "UTC"}
+	if err := cfg.Validate("node1"); err != nil {
+		t.Fatalf("expected UTC format to be valid, got %v", err)
+	}
+
+	// CompactOffset format is valid (YYYYMMDDHHMMSS+0000 style)
+	cfg = dateformatter.Config{InFormat: "CompactOffset", OutFormat: "UTC"}
+	if err := cfg.Validate("node1"); err != nil {
+		t.Fatalf("expected CompactOffset format to be valid, got %v", err)
+	}
 }
 
 func TestConfigGetLayouts(t *testing.T) {
@@ -58,6 +70,15 @@ func TestConfigGetLayouts(t *testing.T) {
 	cfg = dateformatter.Config{InFormat: "RFC3339", OutFormat: "TimeOnly", TimeStyle: string(dateformatter.TimeStyle24HourHM)}
 	if out := cfg.GetOutputLayout(); out != "15:04" {
 		t.Fatalf("expected time style layout, got %s", out)
+	}
+
+	// UTC format layout
+	cfg = dateformatter.Config{InFormat: "UTC", OutFormat: "UTC"}
+	if out := cfg.GetInputLayout(); out != "2006-01-02T15:04:05Z" {
+		t.Fatalf("expected UTC input layout, got %s", out)
+	}
+	if out := cfg.GetOutputLayout(); out != "2006-01-02T15:04:05Z" {
+		t.Fatalf("expected UTC output layout, got %s", out)
 	}
 }
 
@@ -330,6 +351,70 @@ func TestProcessSuccessBasic(t *testing.T) {
 	}
 	if result != "2023-01-15" {
 		t.Fatalf("expected result '2023-01-15', got '%s'", result)
+	}
+}
+
+// TestProcessUTCFormat tests Process with UTC input/output format.
+func TestProcessUTCFormat(t *testing.T) {
+	// UTC input -> UTC output (passthrough with Z suffix)
+	node := createTestNode(t, "test-node-1")
+	config := dateformatter.Config{InFormat: "UTC", OutFormat: "UTC"}
+	rawConfig, _ := json.Marshal(config)
+	input := createProcessInput(
+		map[string]interface{}{"date": "2023-01-15T10:30:00Z"},
+		rawConfig,
+		0,
+	)
+	output := node.Process(input)
+	if output.Error != nil {
+		t.Fatalf("unexpected error: %v", output.Error)
+	}
+	result, ok := output.Data["result"].(string)
+	if !ok {
+		t.Fatalf("expected result string, got %T", output.Data["result"])
+	}
+	if result != "2023-01-15T10:30:00Z" {
+		t.Fatalf("expected UTC result '2023-01-15T10:30:00Z', got '%s'", result)
+	}
+
+	// RFC3339 with offset -> UTC output (converted to Z)
+	config = dateformatter.Config{InFormat: "RFC3339", OutFormat: "UTC"}
+	rawConfig, _ = json.Marshal(config)
+	input = createProcessInput(
+		map[string]interface{}{"date": "2023-01-15T10:30:00-05:00"},
+		rawConfig,
+		0,
+	)
+	output = node.Process(input)
+	if output.Error != nil {
+		t.Fatalf("unexpected error: %v", output.Error)
+	}
+	result, ok = output.Data["result"].(string)
+	if !ok {
+		t.Fatalf("expected result string, got %T", output.Data["result"])
+	}
+	if result != "2023-01-15T15:30:00Z" {
+		t.Fatalf("expected UTC result '2023-01-15T15:30:00Z', got '%s'", result)
+	}
+
+	// CompactOffset (YYYYMMDDHHMMSS+0000) -> UTC output (2024-10-13T10:33:00Z)
+	config = dateformatter.Config{InFormat: "CompactOffset", OutFormat: "UTC"}
+	rawConfig, _ = json.Marshal(config)
+	input = createProcessInput(
+		map[string]interface{}{"date": "20241013103300+0000"},
+		rawConfig,
+		0,
+	)
+	output = node.Process(input)
+	if output.Error != nil {
+		t.Fatalf("unexpected error: %v", output.Error)
+	}
+	result, ok = output.Data["result"].(string)
+	if !ok {
+		t.Fatalf("expected result string, got %T", output.Data["result"])
+	}
+	if result != "2024-10-13T10:33:00Z" {
+		t.Fatalf("expected UTC result '2024-10-13T10:33:00Z', got '%s'", result)
 	}
 }
 

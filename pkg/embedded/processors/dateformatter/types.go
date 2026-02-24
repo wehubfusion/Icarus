@@ -22,7 +22,9 @@ const (
 	FormatStampNano   TimeFormat = "StampNano"
 	FormatDateTime    TimeFormat = "DateTime"
 	FormatDateOnly    TimeFormat = "DateOnly"
-	FormatTimeOnly    TimeFormat = "TimeOnly"
+	FormatTimeOnly      TimeFormat = "TimeOnly"
+	FormatUTC           TimeFormat = "UTC"
+	FormatCompactOffset TimeFormat = "CompactOffset"
 )
 
 // DateStyle represents different ways to format dates.
@@ -68,7 +70,9 @@ func GetTimeFormatLayout(format TimeFormat) string {
 		FormatStampNano:   "Jan _2 15:04:05.000000000",
 		FormatDateTime:    "2006-01-02 15:04:05",
 		FormatDateOnly:    "2006-01-02",
-		FormatTimeOnly:    "15:04:05",
+		FormatTimeOnly:      "15:04:05",
+		FormatUTC:           "2006-01-02T15:04:05Z",
+		FormatCompactOffset: "20060102150405-0700",
 	}
 	if layout, ok := layouts[format]; ok {
 		return layout
