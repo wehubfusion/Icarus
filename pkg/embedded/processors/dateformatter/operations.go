@@ -47,6 +47,11 @@ func executeFormat(nodeID string, itemIndex int, input map[string]interface{}, c
 		parsedTime = parsedTime.In(location)
 	}
 
+	// Format in UTC when output format is UTC.
+	if TimeFormat(cfg.OutFormat) == FormatUTC {
+		parsedTime = parsedTime.UTC()
+	}
+
 	// Format the date using output layout.
 	formatted := parsedTime.Format(outputLayout)
 
