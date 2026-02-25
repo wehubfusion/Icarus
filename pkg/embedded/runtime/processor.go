@@ -355,19 +355,12 @@ func (p *EmbeddedProcessor) processSingleObject(
 		return output, nil
 	}
 
-	// No existing $items: set parent's array to parent-only (single-item array), keep embedded keys separate.
-	prefix := unit.NodeId + "-/"
-	itemsKey := prefix + RootArrayKey
-	output[itemsKey] = []interface{}{enrichedParentOutput}
-	// Remove other parent-prefixed keys (transposed parent fields), keep embedded node keys
-	keysToRemove := []string{}
-	for key := range output {
-		if strings.HasPrefix(key, prefix) && key != itemsKey {
-			keysToRemove = append(keysToRemove, key)
-		}
-	}
-	for _, key := range keysToRemove {
-		delete(output, key)
+	// No existing $items: parent is a single object. Emit it as flattened keys (object shape),
+	// not as a one-element array under $items, so downstream consumers see one object (e.g. HL7 parse result).
+	flat := FlattenMap(enrichedParentOutput, unit.NodeId, "")
+	FilterRootKeys(flat)
+	for k, v := range flat {
+		output[k] = v
 	}
 	return output, nil
 }
