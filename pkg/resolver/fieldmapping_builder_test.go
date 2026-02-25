@@ -4064,6 +4064,319 @@ func TestEmptyEndpoint_EmptyToField(t *testing.T) {
 	})
 }
 
+// TestSlashEndpoint_SlashToSlash tests mapping from root source (\"/\") to root destination (\"/\")
+// It should behave the same as empty endpoints: merge maps at root and preserve root arrays as $items.
+func TestSlashEndpoint_SlashToSlash(t *testing.T) {
+	t.Run("Map object to root (/ to /)", func(t *testing.T) {
+		params := BuildInputParams{
+			UnitNodeID: "test-unit",
+			FieldMappings: []message.FieldMapping{
+				{SourceNodeID: "source-node", SourceEndpoint: "/", DestinationEndpoints: []string{"/"}, DataType: "FIELD"},
+			},
+			SourceResults: map[string]*SourceResult{
+				"source-node": {
+					NodeID: "source-node",
+					Status: "success",
+					ProjectedFields: map[string]map[string]interface{}{
+						"source-node": {
+							"name":  "John",
+							"age":   float64(30),
+							"email": "john@example.com",
+						},
+					},
+				},
+			},
+		}
+
+		result, err := buildInputFromMappings(params)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var data map[string]interface{}
+		if err := json.Unmarshal(result, &data); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		if data["name"] != "John" {
+			t.Errorf("expected name 'John', got %v", data["name"])
+		}
+		if data["age"] != float64(30) {
+			t.Errorf("expected age 30, got %v", data["age"])
+		}
+		if data["email"] != "john@example.com" {
+			t.Errorf("expected email 'john@example.com', got %v", data["email"])
+		}
+	})
+
+	t.Run("Map array to root (/ to /)", func(t *testing.T) {
+		params := BuildInputParams{
+			UnitNodeID: "test-unit",
+			FieldMappings: []message.FieldMapping{
+				{SourceNodeID: "source-node", SourceEndpoint: "/", DestinationEndpoints: []string{"/"}, DataType: "FIELD"},
+			},
+			SourceResults: map[string]*SourceResult{
+				"source-node": {
+					NodeID: "source-node",
+					Status: "success",
+					ProjectedFields: map[string]map[string]interface{}{
+						"source-node": {
+							"$items": []interface{}{
+								map[string]interface{}{"id": float64(1), "name": "Item1"},
+								map[string]interface{}{"id": float64(2), "name": "Item2"},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		result, err := buildInputFromMappings(params)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var data map[string]interface{}
+		if err := json.Unmarshal(result, &data); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		items, ok := data["$items"].([]interface{})
+		if !ok {
+			t.Fatalf("expected $items array at root, got %T", data["$items"])
+		}
+		if len(items) != 2 {
+			t.Errorf("expected 2 items, got %d", len(items))
+		}
+	})
+
+	t.Run("Map flat-key root data (/ to /)", func(t *testing.T) {
+		fullOutput := map[string]interface{}{
+			"name": "alice",
+			"age":  30,
+		}
+		flatKeys := map[string]interface{}{
+			"source-node-/": fullOutput,
+		}
+
+		params := BuildInputParams{
+			UnitNodeID: "test-unit",
+			FieldMappings: []message.FieldMapping{
+				{SourceNodeID: "source-node", SourceEndpoint: "/", DestinationEndpoints: []string{"/"}, DataType: "FIELD"},
+			},
+			SourceResults: map[string]*SourceResult{
+				"source-node": {
+					NodeID:      "source-node",
+					Status:      "success",
+					RawFlatKeys: flatKeys,
+				},
+			},
+		}
+
+		result, err := buildInputFromMappings(params)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var data map[string]interface{}
+		if err := json.Unmarshal(result, &data); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		if data["name"] != "alice" {
+			t.Errorf("expected name 'alice', got %v", data["name"])
+		}
+		if data["age"] != float64(30) {
+			t.Errorf("expected age 30, got %v", data["age"])
+		}
+	})
+}
+
+// TestSlashEndpoint_CrossScenarios tests "/" to a path (e.g. "/data") and a path (e.g. "/data") to "/".
+// Ensures root ("/") as source or destination behaves like "" in all cross combinations.
+func TestSlashEndpoint_CrossScenarios(t *testing.T) {
+	t.Run("/ to /data (map source: full payload under data)", func(t *testing.T) {
+		params := BuildInputParams{
+			UnitNodeID: "test-unit",
+			FieldMappings: []message.FieldMapping{
+				{SourceNodeID: "source-node", SourceEndpoint: "/", DestinationEndpoints: []string{"/data"}, DataType: "FIELD"},
+			},
+			SourceResults: map[string]*SourceResult{
+				"source-node": {
+					NodeID: "source-node",
+					Status: "success",
+					ProjectedFields: map[string]map[string]interface{}{
+						"source-node": {
+							"name":  "Jane",
+							"age":   float64(28),
+							"role":  "admin",
+						},
+					},
+				},
+			},
+		}
+
+		result, err := buildInputFromMappings(params)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var data map[string]interface{}
+		if err := json.Unmarshal(result, &data); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		dataObj, ok := data["data"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected data to be object, got %T", data["data"])
+		}
+		if dataObj["name"] != "Jane" {
+			t.Errorf("expected data.name 'Jane', got %v", dataObj["name"])
+		}
+		if dataObj["age"] != float64(28) {
+			t.Errorf("expected data.age 28, got %v", dataObj["age"])
+		}
+		if dataObj["role"] != "admin" {
+			t.Errorf("expected data.role 'admin', got %v", dataObj["role"])
+		}
+	})
+
+	t.Run("/ to /data (array source: $items under data)", func(t *testing.T) {
+		params := BuildInputParams{
+			UnitNodeID: "test-unit",
+			FieldMappings: []message.FieldMapping{
+				{SourceNodeID: "source-node", SourceEndpoint: "/", DestinationEndpoints: []string{"/data"}, DataType: "FIELD"},
+			},
+			SourceResults: map[string]*SourceResult{
+				"source-node": {
+					NodeID: "source-node",
+					Status: "success",
+					ProjectedFields: map[string]map[string]interface{}{
+						"source-node": {
+							"$items": []interface{}{
+								map[string]interface{}{"id": float64(1), "label": "A"},
+								map[string]interface{}{"id": float64(2), "label": "B"},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		result, err := buildInputFromMappings(params)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var data map[string]interface{}
+		if err := json.Unmarshal(result, &data); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		// Full source is a map with $items key, so "data" should be that object (with $items inside)
+		dataObj, ok := data["data"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected data to be object, got %T", data["data"])
+		}
+		items, ok := dataObj["$items"].([]interface{})
+		if !ok {
+			t.Fatalf("expected data.$items to be array, got %T", dataObj["$items"])
+		}
+		if len(items) != 2 {
+			t.Errorf("expected 2 items, got %d", len(items))
+		}
+	})
+
+	t.Run("/data to / (map at source: merged at root)", func(t *testing.T) {
+		params := BuildInputParams{
+			UnitNodeID: "test-unit",
+			FieldMappings: []message.FieldMapping{
+				{SourceNodeID: "source-node", SourceEndpoint: "/data", DestinationEndpoints: []string{"/"}, DataType: "FIELD"},
+			},
+			SourceResults: map[string]*SourceResult{
+				"source-node": {
+					NodeID: "source-node",
+					Status: "success",
+					ProjectedFields: map[string]map[string]interface{}{
+						"source-node": {
+							"data": map[string]interface{}{
+								"title": "Hello",
+								"count": float64(42),
+							},
+							"other": "ignored",
+						},
+					},
+				},
+			},
+		}
+
+		result, err := buildInputFromMappings(params)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var data map[string]interface{}
+		if err := json.Unmarshal(result, &data); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		if data["title"] != "Hello" {
+			t.Errorf("expected title 'Hello', got %v", data["title"])
+		}
+		if data["count"] != float64(42) {
+			t.Errorf("expected count 42, got %v", data["count"])
+		}
+		if _, exists := data["other"]; exists {
+			t.Errorf("other should not be at root")
+		}
+	})
+
+	t.Run("/data to / (array at source: $items at root)", func(t *testing.T) {
+		params := BuildInputParams{
+			UnitNodeID: "test-unit",
+			FieldMappings: []message.FieldMapping{
+				{SourceNodeID: "source-node", SourceEndpoint: "/data", DestinationEndpoints: []string{"/"}, DataType: "FIELD"},
+			},
+			SourceResults: map[string]*SourceResult{
+				"source-node": {
+					NodeID: "source-node",
+					Status: "success",
+					ProjectedFields: map[string]map[string]interface{}{
+						"source-node": {
+							"data": []interface{}{
+								map[string]interface{}{"x": float64(1)},
+								map[string]interface{}{"x": float64(2)},
+							},
+							"other": "ignored",
+						},
+					},
+				},
+			},
+		}
+
+		result, err := buildInputFromMappings(params)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var data map[string]interface{}
+		if err := json.Unmarshal(result, &data); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		items, ok := data["$items"].([]interface{})
+		if !ok {
+			t.Fatalf("expected $items at root, got %T", data["$items"])
+		}
+		if len(items) != 2 {
+			t.Errorf("expected 2 items, got %d", len(items))
+		}
+		if _, exists := data["other"]; exists {
+			t.Errorf("other should not be at root")
+		}
+	})
+}
+
 // TestEmptyEndpoint_FieldToEmpty tests mapping from a specific field to empty destination
 // This should merge the field's value at the root level
 func TestEmptyEndpoint_FieldToEmpty(t *testing.T) {

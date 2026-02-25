@@ -35,17 +35,28 @@ func (n *SimpleConditionNode) Process(input runtime.ProcessInput) runtime.Proces
 	}
 
 	results := make(map[string]bool)
+	var warnings []string
 	for _, manualInput := range cfg.ManualInputs {
-		met, err := n.evaluateCondition(input, manualInput)
+		met, err, warning := n.evaluateCondition(input, manualInput)
 		if err != nil {
 			return runtime.ErrorOutput(err)
+		}
+		if warning != "" {
+			warnings = append(warnings, warning)
+			continue
 		}
 		results[manualInput.Name] = met
 	}
 
-	overallResult := n.calculateOverallResult(results, cfg.LogicOperator)
-
 	output := make(map[string]interface{})
+	if len(warnings) > 0 {
+		output["warning"] = strings.Join(warnings, " ")
+		output["true"] = nil
+		output["false"] = nil
+		return runtime.SuccessOutput(output)
+	}
+
+	overallResult := n.calculateOverallResult(results, cfg.LogicOperator)
 	if overallResult {
 		output["true"] = input.Data
 		output["false"] = nil
@@ -57,7 +68,7 @@ func (n *SimpleConditionNode) Process(input runtime.ProcessInput) runtime.Proces
 	return runtime.SuccessOutput(output)
 }
 
-func (n *SimpleConditionNode) evaluateCondition(input runtime.ProcessInput, manualInput ManualInput) (bool, error) {
+func (n *SimpleConditionNode) evaluateCondition(input runtime.ProcessInput, manualInput ManualInput) (bool, error, string) {
 	// Use name as field_path to extract value from input data
 	// Strip leading slash if present (field mappings may include it)
 	fieldPath := strings.TrimPrefix(manualInput.Name, "/")
@@ -66,39 +77,33 @@ func (n *SimpleConditionNode) evaluateCondition(input runtime.ProcessInput, manu
 	if !exists {
 		// Is Empty / Is NOT Empty: missing field is treated as empty
 		if manualInput.Operator == OpIsEmpty {
-			return true, nil
+			return true, nil, ""
 		}
 		if manualInput.Operator == OpIsNotEmpty {
-			return false, nil
+			return false, nil, ""
 		}
 		// Special handling: if field doesn't exist and we're checking for empty string,
 		// treat missing field as empty string (backward compatible with is_empty)
 		if manualInput.Operator == OpEquals && manualInput.Value == "" {
-			return true, nil // Missing field equals empty string
+			return true, nil, "" // Missing field equals empty string
 		}
 
-		// For all other cases, missing field is an error
-		// Debug: Log available fields
+		// For all other cases, missing field: soft-fail with warning (no error)
 		availableFields := make([]string, 0, len(input.Data))
 		for key := range input.Data {
 			availableFields = append(availableFields, key)
 		}
-
-		return false, NewEvaluationError(
-			n.NodeId(),
-			input.ItemIndex,
-			manualInput.Name,
-			fmt.Sprintf("field '%s' not found in input. Available fields: %v. Input data: %+v",
-				fieldPath, availableFields, input.Data),
-		)
+		msg := fmt.Sprintf("field '%s' not found in input. Available fields: %v. Input data: %+v",
+			fieldPath, availableFields, input.Data)
+		return false, nil, msg
 	}
 
 	// Is Empty / Is NOT Empty: only need actual value, no expected value
 	if manualInput.Operator == OpIsEmpty {
-		return isEmpty(actualValue), nil
+		return isEmpty(actualValue), nil, ""
 	}
 	if manualInput.Operator == OpIsNotEmpty {
-		return !isEmpty(actualValue), nil
+		return !isEmpty(actualValue), nil, ""
 	}
 
 	// Convert the expected value from string to the appropriate type
@@ -108,7 +113,7 @@ func (n *SimpleConditionNode) evaluateCondition(input runtime.ProcessInput, manu
 			n.NodeId(),
 			"value",
 			fmt.Sprintf("failed to convert value '%s' for condition '%s': %v", manualInput.Value, manualInput.Name, err),
-		)
+		), ""
 	}
 
 	met, err := compareValues(
@@ -120,10 +125,10 @@ func (n *SimpleConditionNode) evaluateCondition(input runtime.ProcessInput, manu
 		false, // case_insensitive removed from schema
 	)
 	if err != nil {
-		return false, err
+		return false, err, ""
 	}
 
-	return met, nil
+	return met, nil, ""
 }
 
 func (n *SimpleConditionNode) calculateOverallResult(results map[string]bool, logicOp LogicOperator) bool {

@@ -1211,7 +1211,7 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 		}
 
 		for _, destEndpoint := range mapping.DestinationEndpoints {
-			if destEndpoint == "" {
+			if destEndpoint == "" || destEndpoint == "/" {
 				// Empty destination: merge at root
 				if sourceMap, ok := sourceData.(map[string]interface{}); ok {
 					for k, v := range sourceMap {
