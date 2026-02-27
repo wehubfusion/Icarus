@@ -5,9 +5,12 @@ import "encoding/json"
 // NormalizeRawConfig converts nodeSchema array format (from execution plan) to flat JSON.
 // Execution plans use nodeConfig.config with structure:
 //
-//	{ "nodeSchema": [ { "key": "script", "value": "..." }, ... ] }
+//	{ "nodeSchema": [ { "key": "script", "value": "..." }, ... ], "connection_id": "...", "connection": {...} }
 //
-// Processors expect flat format: { "script": "...", ... }
+// Processors expect flat format: { "script": "...", "connection_id": "...", "connection": {...}, ... }
+// It merges flattened nodeSchema values into the existing config instead of replacing it,
+// so top-level keys like connection_id, connection, manual_inputs (from Elysium enrichment)
+// are preserved.
 // Returns the original raw bytes unchanged if config does not use nodeSchema format.
 func NormalizeRawConfig(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
@@ -21,11 +24,42 @@ func NormalizeRawConfig(raw json.RawMessage) json.RawMessage {
 	if flat == nil {
 		return raw
 	}
-	out, err := json.Marshal(flat)
+	// Merge flat into existing config instead of replacing. Preserve top-level keys
+	// like connection_id, connection, manual_inputs that are not in nodeSchema.
+	result := make(map[string]interface{})
+	for k, v := range m {
+		if k != "nodeSchema" {
+			result[k] = v
+		}
+	}
+	for k, v := range flat {
+		if !isEmptySchemaValue(v) {
+			result[k] = v
+		}
+	}
+	out, err := json.Marshal(result)
 	if err != nil {
 		return raw
 	}
 	return out
+}
+
+// isEmptySchemaValue returns true if v is nil, empty string, or empty slice.
+// Used when merging nodeSchema-derived values: skip empty values so they don't
+// overwrite user-provided values (e.g. connection_id from graph / Elysium).
+func isEmptySchemaValue(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	switch x := v.(type) {
+	case string:
+		return x == ""
+	case []interface{}:
+		return len(x) == 0
+	case []byte:
+		return len(x) == 0
+	}
+	return false
 }
 
 // flattenNodeSchemaConfig converts nodeSchema array to flat key-value map.
