@@ -11,17 +11,17 @@ type ManualInput struct {
 	Type string `json:"type"` // string | number | date
 }
 
-// Config defines configuration for strings operations.
-// Supports flat config from seed-node-schemas.sql: all keys except "operation"
+// Config defines configuration for strings actions.
+// Supports flat config from seed-node-schemas.sql: all keys except "action"
 // and "manual_inputs" are placed into Params.
 type Config struct {
-	Operation    string                 `json:"operation"`
+	Action       string                 `json:"action"`
 	Params       map[string]interface{} `json:"params"`
 	ManualInputs []ManualInput          `json:"manual_inputs"`
 }
 
 // UnmarshalJSON supports flat config (label, delimiter, separator, etc.) by
-// putting every key other than "operation" and "manual_inputs" into Params.
+// putting every key other than "action" and "manual_inputs" into Params.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -30,12 +30,12 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.Params = make(map[string]interface{})
 	for k, v := range raw {
 		switch k {
-		case "operation":
+		case "action":
 			var s string
 			if err := json.Unmarshal(v, &s); err != nil {
 				return err
 			}
-			c.Operation = s
+			c.Action = s
 		case "manual_inputs":
 			var inputs []ManualInput
 			if err := json.Unmarshal(v, &inputs); err != nil {
@@ -61,7 +61,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-var supportedOperations = map[string]struct{}{
+var supportedActions = map[string]struct{}{
 	"concatenate":   {},
 	"split":         {},
 	"join":          {},
@@ -85,11 +85,11 @@ var supportedOperations = map[string]struct{}{
 
 // Validate checks if the configuration is valid.
 func (c *Config) Validate(nodeID string) error {
-	if c.Operation == "" {
-		return NewConfigError(nodeID, "operation", "operation cannot be empty", nil)
+	if c.Action == "" {
+		return NewConfigError(nodeID, "action", "action cannot be empty", nil)
 	}
-	if _, ok := supportedOperations[c.Operation]; !ok {
-		return NewConfigError(nodeID, "operation", fmt.Sprintf("unsupported operation '%s'", c.Operation), nil)
+	if _, ok := supportedActions[c.Action]; !ok {
+		return NewConfigError(nodeID, "action", fmt.Sprintf("unsupported action '%s'", c.Action), nil)
 	}
 
 	for i := range c.ManualInputs {

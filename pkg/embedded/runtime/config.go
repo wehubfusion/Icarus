@@ -86,10 +86,10 @@ func flattenNodeSchemaConfig(m map[string]interface{}) map[string]interface{} {
 	return flat
 }
 
-// mapActionToOperation maps node schema Action (from execution plan) to processor operation.
-// Aligned with Apollo seed-node-schemas.sql and nodeconfiguration_service mapActionToOperation.
+// mapActionToValue maps node schema Action (from execution plan) to processor action value.
+// Aligned with Apollo seed-node-schemas.sql.
 // Returns empty string for unknown actions (no injection).
-func mapActionToOperation(action string) string {
+func mapActionToValue(action string) string {
 	switch action {
 	// plugin-json-operations
 	case "JSON Parser":
@@ -169,23 +169,23 @@ func mapActionToOperation(action string) string {
 	}
 }
 
-// InjectOperationFromAction takes normalized raw config and, when the node has an Action
-// that maps to an operation, sets config["operation"] to that value so processors (jsonops,
-// strings, csv, sftp, date formatter) act based on the execution plan action instead of
-// the operation field in config. Other config keys are unchanged.
+// InjectActionFromAction takes normalized raw config and, when the node has an Action
+// that maps to a value, sets config["action"] to that value so processors (jsonops,
+// strings, csv, sftp, date formatter) act based on the execution plan action.
+// Other config keys are unchanged.
 // If action is empty or has no mapping, returns normalizedRaw unchanged.
-// When config is empty (nil or []) but action has a mapping, returns minimal {"operation": "<op>"}
-// so operation-based nodes still work when config was not persisted.
-func InjectOperationFromAction(normalizedRaw json.RawMessage, pluginType, action string) json.RawMessage {
+// When config is empty (nil or []) but action has a mapping, returns minimal {"action": "<value>"}
+// so action-based nodes still work when config was not persisted.
+func InjectActionFromAction(normalizedRaw json.RawMessage, pluginType, action string) json.RawMessage {
 	if action == "" {
 		return normalizedRaw
 	}
-	op := mapActionToOperation(action)
+	op := mapActionToValue(action)
 	if op == "" {
 		return normalizedRaw
 	}
 	if len(normalizedRaw) == 0 {
-		out, _ := json.Marshal(map[string]interface{}{"operation": op})
+		out, _ := json.Marshal(map[string]interface{}{"action": op})
 		return out
 	}
 	var m map[string]interface{}
@@ -195,7 +195,7 @@ func InjectOperationFromAction(normalizedRaw json.RawMessage, pluginType, action
 	if m == nil {
 		m = make(map[string]interface{})
 	}
-	m["operation"] = op
+	m["action"] = op
 	out, err := json.Marshal(m)
 	if err != nil {
 		return normalizedRaw

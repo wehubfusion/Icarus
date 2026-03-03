@@ -11,22 +11,22 @@ import (
 )
 
 func TestConfigValidate(t *testing.T) {
-	cfg := stringsproc.Config{Operation: "concatenate"}
+	cfg := stringsproc.Config{Action: "concatenate"}
 	if err := cfg.Validate("node1"); err != nil {
 		t.Fatalf("expected valid config, got %v", err)
 	}
 
-	cfg = stringsproc.Config{Operation: "bad"}
+	cfg = stringsproc.Config{Action: "bad"}
 	if err := cfg.Validate("node1"); err == nil {
-		t.Fatalf("expected invalid operation error")
+		t.Fatalf("expected invalid action error")
 	}
 
-	cfg = stringsproc.Config{Operation: "concatenate", ManualInputs: []stringsproc.ManualInput{{Name: "", Type: "string"}}}
+	cfg = stringsproc.Config{Action: "concatenate", ManualInputs: []stringsproc.ManualInput{{Name: "", Type: "string"}}}
 	if err := cfg.Validate("node1"); err == nil {
 		t.Fatalf("expected manual input validation error")
 	}
 
-	cfg = stringsproc.Config{Operation: "concatenate", ManualInputs: []stringsproc.ManualInput{{Name: "id", Type: "number"}}}
+	cfg = stringsproc.Config{Action: "concatenate", ManualInputs: []stringsproc.ManualInput{{Name: "id", Type: "number"}}}
 	if err := cfg.Validate("node1"); err != nil {
 		t.Fatalf("expected valid manual input config, got %v", err)
 	}
@@ -80,11 +80,11 @@ func TestProcessInvalidJSONConfig(t *testing.T) {
 	}
 }
 
-// TestProcessEmptyOperation tests Process with empty operation
-func TestProcessEmptyOperation(t *testing.T) {
+// TestProcessEmptyAction tests Process with empty action
+func TestProcessEmptyAction(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	config := stringsproc.Config{
-		Operation: "",
+		Action: "",
 		Params:    map[string]interface{}{},
 	}
 	rawConfig, _ := json.Marshal(config)
@@ -96,18 +96,18 @@ func TestProcessEmptyOperation(t *testing.T) {
 
 	output := node.Process(input)
 	if output.Error == nil {
-		t.Fatalf("expected error for empty operation")
+		t.Fatalf("expected error for empty action")
 	}
 	if _, ok := output.Error.(*stringsproc.ConfigError); !ok {
 		t.Fatalf("expected ConfigError, got %T", output.Error)
 	}
 }
 
-// TestProcessUnsupportedOperation tests Process with unsupported operation
-func TestProcessUnsupportedOperation(t *testing.T) {
+// TestProcessUnsupportedAction tests Process with unsupported action
+func TestProcessUnsupportedAction(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	config := stringsproc.Config{
-		Operation: "unsupported_op",
+		Action: "unsupported_op",
 		Params:    map[string]interface{}{},
 	}
 	rawConfig, _ := json.Marshal(config)
@@ -119,7 +119,7 @@ func TestProcessUnsupportedOperation(t *testing.T) {
 
 	output := node.Process(input)
 	if output.Error == nil {
-		t.Fatalf("expected error for unsupported operation")
+		t.Fatalf("expected error for unsupported action")
 	}
 	if _, ok := output.Error.(*stringsproc.ConfigError); !ok {
 		t.Fatalf("expected ConfigError, got %T", output.Error)
@@ -132,7 +132,7 @@ func TestProcessInvalidManualInputs(t *testing.T) {
 
 	// Test with empty name
 	config := stringsproc.Config{
-		Operation: "concatenate",
+		Action: "concatenate",
 		Params:    map[string]interface{}{},
 		ManualInputs: []stringsproc.ManualInput{
 			{Name: "", Type: "string"},
@@ -155,7 +155,7 @@ func TestProcessInvalidManualInputs(t *testing.T) {
 
 	// Empty type is allowed and defaults to "string" (seed-node-schemas.sql concatenate/join only define name)
 	config = stringsproc.Config{
-		Operation: "concatenate",
+		Action: "concatenate",
 		Params:    map[string]interface{}{},
 		ManualInputs: []stringsproc.ManualInput{
 			{Name: "field1", Type: ""},
@@ -174,7 +174,7 @@ func TestProcessInvalidManualInputs(t *testing.T) {
 
 	// Test with invalid type
 	config = stringsproc.Config{
-		Operation: "concatenate",
+		Action: "concatenate",
 		Params:    map[string]interface{}{},
 		ManualInputs: []stringsproc.ManualInput{
 			{Name: "field1", Type: "invalid"},
@@ -193,13 +193,13 @@ func TestProcessInvalidManualInputs(t *testing.T) {
 	}
 }
 
-// TestProcessConcatenate tests Process with concatenate operation
+// TestProcessConcatenate tests Process with concatenate action
 func TestProcessConcatenate(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	// Test with separator and parts
 	config := stringsproc.Config{
-		Operation: "concatenate",
+		Action: "concatenate",
 		Params: map[string]interface{}{
 			"separator": "-",
 			"parts":     []string{"hello", "world"},
@@ -225,7 +225,7 @@ func TestProcessConcatenate(t *testing.T) {
 
 	// Test with empty separator
 	config = stringsproc.Config{
-		Operation: "concatenate",
+		Action: "concatenate",
 		Params: map[string]interface{}{
 			"separator": "",
 			"parts":     []string{"a", "b", "c"},
@@ -248,7 +248,7 @@ func TestProcessConcatenate(t *testing.T) {
 
 	// Test with parts from input data
 	config = stringsproc.Config{
-		Operation: "concatenate",
+		Action: "concatenate",
 		Params: map[string]interface{}{
 			"separator": " ",
 		},
@@ -272,12 +272,12 @@ func TestProcessConcatenate(t *testing.T) {
 	}
 }
 
-// TestProcessSplit tests Process with split operation
+// TestProcessSplit tests Process with split action
 func TestProcessSplit(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "split",
+		Action: "split",
 		Params: map[string]interface{}{
 			"string":    "a,b,c",
 			"delimiter": ",",
@@ -307,7 +307,7 @@ func TestProcessSplit(t *testing.T) {
 
 	// Test with string from input data
 	config = stringsproc.Config{
-		Operation: "split",
+		Action: "split",
 		Params: map[string]interface{}{
 			"delimiter": " ",
 		},
@@ -331,12 +331,12 @@ func TestProcessSplit(t *testing.T) {
 	}
 }
 
-// TestProcessJoin tests Process with join operation
+// TestProcessJoin tests Process with join action
 func TestProcessJoin(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "join",
+		Action: "join",
 		Params: map[string]interface{}{
 			"items":     []string{"a", "b", "c"},
 			"separator": "-",
@@ -359,7 +359,7 @@ func TestProcessJoin(t *testing.T) {
 
 	// seed-node-schemas.sql String Join: manual_inputs flow in as flat input keys
 	config2 := stringsproc.Config{
-		Operation: "join",
+		Action: "join",
 		Params: map[string]interface{}{
 			"separator": "-",
 		},
@@ -398,12 +398,12 @@ func TestProcessJoin(t *testing.T) {
 	}
 }
 
-// TestProcessTrim tests Process with trim operation
+// TestProcessTrim tests Process with trim action
 func TestProcessTrim(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "trim",
+		Action: "trim",
 		Params: map[string]interface{}{
 			"string": "  hello world  ",
 			"cutset": "",
@@ -426,7 +426,7 @@ func TestProcessTrim(t *testing.T) {
 
 	// Test with custom cutset
 	config = stringsproc.Config{
-		Operation: "trim",
+		Action: "trim",
 		Params: map[string]interface{}{
 			"string": "!!!hello!!!",
 			"cutset": "!",
@@ -448,13 +448,13 @@ func TestProcessTrim(t *testing.T) {
 	}
 }
 
-// TestProcessReplace tests Process with replace operation
+// TestProcessReplace tests Process with replace action
 func TestProcessReplace(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	// Test simple replace
 	config := stringsproc.Config{
-		Operation: "replace",
+		Action: "replace",
 		Params: map[string]interface{}{
 			"string": "hello world",
 			"old":    "world",
@@ -478,7 +478,7 @@ func TestProcessReplace(t *testing.T) {
 
 	// Test replace with count
 	config = stringsproc.Config{
-		Operation: "replace",
+		Action: "replace",
 		Params: map[string]interface{}{
 			"string": "foo foo foo",
 			"old":    "foo",
@@ -503,7 +503,7 @@ func TestProcessReplace(t *testing.T) {
 
 	// Test replace with regex
 	config = stringsproc.Config{
-		Operation: "replace",
+		Action: "replace",
 		Params: map[string]interface{}{
 			"string":   "hello123world456",
 			"old":      "\\d+",
@@ -527,12 +527,12 @@ func TestProcessReplace(t *testing.T) {
 	}
 }
 
-// TestProcessReplaceInvalidRegex tests Process with replace operation using invalid regex
+// TestProcessReplaceInvalidRegex tests Process with replace action using invalid regex
 func TestProcessReplaceInvalidRegex(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "replace",
+		Action: "replace",
 		Params: map[string]interface{}{
 			"string":   "hello world",
 			"old":      "[invalid",
@@ -551,17 +551,17 @@ func TestProcessReplaceInvalidRegex(t *testing.T) {
 	if output.Error == nil {
 		t.Fatalf("expected error for invalid regex")
 	}
-	if _, ok := output.Error.(*stringsproc.OperationError); !ok {
-		t.Fatalf("expected OperationError, got %T", output.Error)
+	if _, ok := output.Error.(*stringsproc.ActionError); !ok {
+		t.Fatalf("expected ActionError, got %T", output.Error)
 	}
 }
 
-// TestProcessSubstring tests Process with substring operation
+// TestProcessSubstring tests Process with substring action
 func TestProcessSubstring(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "substring",
+		Action: "substring",
 		Params: map[string]interface{}{
 			"string": "hello world",
 			"start":  0,
@@ -585,7 +585,7 @@ func TestProcessSubstring(t *testing.T) {
 
 	// Test with negative indices
 	config = stringsproc.Config{
-		Operation: "substring",
+		Action: "substring",
 		Params: map[string]interface{}{
 			"string": "hello world",
 			"start":  -5,
@@ -608,12 +608,12 @@ func TestProcessSubstring(t *testing.T) {
 	}
 }
 
-// TestProcessToUpper tests Process with to_upper operation
+// TestProcessToUpper tests Process with to_upper action
 func TestProcessToUpper(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "to_upper",
+		Action: "to_upper",
 		Params: map[string]interface{}{
 			"string": "hello world",
 		},
@@ -634,12 +634,12 @@ func TestProcessToUpper(t *testing.T) {
 	}
 }
 
-// TestProcessToLower tests Process with to_lower operation
+// TestProcessToLower tests Process with to_lower action
 func TestProcessToLower(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "to_lower",
+		Action: "to_lower",
 		Params: map[string]interface{}{
 			"string": "HELLO WORLD",
 		},
@@ -660,12 +660,12 @@ func TestProcessToLower(t *testing.T) {
 	}
 }
 
-// TestProcessTitleCase tests Process with title_case operation
+// TestProcessTitleCase tests Process with title_case action
 func TestProcessTitleCase(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "title_case",
+		Action: "title_case",
 		Params: map[string]interface{}{
 			"string": "hello world",
 		},
@@ -686,12 +686,12 @@ func TestProcessTitleCase(t *testing.T) {
 	}
 }
 
-// TestProcessCapitalize tests Process with capitalize operation
+// TestProcessCapitalize tests Process with capitalize action
 func TestProcessCapitalize(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "capitalize",
+		Action: "capitalize",
 		Params: map[string]interface{}{
 			"string": "hello world",
 		},
@@ -713,7 +713,7 @@ func TestProcessCapitalize(t *testing.T) {
 
 	// Test with empty string
 	config = stringsproc.Config{
-		Operation: "capitalize",
+		Action: "capitalize",
 		Params: map[string]interface{}{
 			"string": "",
 		},
@@ -734,13 +734,13 @@ func TestProcessCapitalize(t *testing.T) {
 	}
 }
 
-// TestProcessContains tests Process with contains operation
+// TestProcessContains tests Process with contains action
 func TestProcessContains(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	// Test simple contains
 	config := stringsproc.Config{
-		Operation: "contains",
+		Action: "contains",
 		Params: map[string]interface{}{
 			"string":    "hello world",
 			"substring": "world",
@@ -763,7 +763,7 @@ func TestProcessContains(t *testing.T) {
 
 	// Test with regex
 	config = stringsproc.Config{
-		Operation: "contains",
+		Action: "contains",
 		Params: map[string]interface{}{
 			"string":    "hello123world",
 			"substring": "\\d+",
@@ -787,7 +787,7 @@ func TestProcessContains(t *testing.T) {
 
 	// Test not contains
 	config = stringsproc.Config{
-		Operation: "contains",
+		Action: "contains",
 		Params: map[string]interface{}{
 			"string":    "hello world",
 			"substring": "xyz",
@@ -809,12 +809,12 @@ func TestProcessContains(t *testing.T) {
 	}
 }
 
-// TestProcessContainsInvalidRegex tests Process with contains operation using invalid regex
+// TestProcessContainsInvalidRegex tests Process with contains action using invalid regex
 func TestProcessContainsInvalidRegex(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "contains",
+		Action: "contains",
 		Params: map[string]interface{}{
 			"string":    "hello world",
 			"substring": "[invalid",
@@ -832,17 +832,17 @@ func TestProcessContainsInvalidRegex(t *testing.T) {
 	if output.Error == nil {
 		t.Fatalf("expected error for invalid regex")
 	}
-	if _, ok := output.Error.(*stringsproc.OperationError); !ok {
-		t.Fatalf("expected OperationError, got %T", output.Error)
+	if _, ok := output.Error.(*stringsproc.ActionError); !ok {
+		t.Fatalf("expected ActionError, got %T", output.Error)
 	}
 }
 
-// TestProcessLength tests Process with length operation
+// TestProcessLength tests Process with length action
 func TestProcessLength(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "length",
+		Action: "length",
 		Params: map[string]interface{}{
 			"string": "hello",
 		},
@@ -864,7 +864,7 @@ func TestProcessLength(t *testing.T) {
 
 	// Test with unicode
 	config = stringsproc.Config{
-		Operation: "length",
+		Action: "length",
 		Params: map[string]interface{}{
 			"string": "héllo",
 		},
@@ -885,12 +885,12 @@ func TestProcessLength(t *testing.T) {
 	}
 }
 
-// TestProcessRegexExtract tests Process with regex_extract operation
+// TestProcessRegexExtract tests Process with regex_extract action
 func TestProcessRegexExtract(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "regex_extract",
+		Action: "regex_extract",
 		Params: map[string]interface{}{
 			"string":  "hello123world456",
 			"pattern": "\\d+",
@@ -912,12 +912,12 @@ func TestProcessRegexExtract(t *testing.T) {
 	}
 }
 
-// TestProcessRegexExtractInvalidPattern tests Process with regex_extract operation using invalid pattern
+// TestProcessRegexExtractInvalidPattern tests Process with regex_extract action using invalid pattern
 func TestProcessRegexExtractInvalidPattern(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "regex_extract",
+		Action: "regex_extract",
 		Params: map[string]interface{}{
 			"string":  "hello world",
 			"pattern": "[invalid",
@@ -934,17 +934,17 @@ func TestProcessRegexExtractInvalidPattern(t *testing.T) {
 	if output.Error == nil {
 		t.Fatalf("expected error for invalid regex pattern")
 	}
-	if _, ok := output.Error.(*stringsproc.OperationError); !ok {
-		t.Fatalf("expected OperationError, got %T", output.Error)
+	if _, ok := output.Error.(*stringsproc.ActionError); !ok {
+		t.Fatalf("expected ActionError, got %T", output.Error)
 	}
 }
 
-// TestProcessFormat tests Process with format operation
+// TestProcessFormat tests Process with format action
 func TestProcessFormat(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "format",
+		Action: "format",
 		Params: map[string]interface{}{
 			"template": "Hello ${name}, you are {age} years old",
 			"data": map[string]interface{}{
@@ -970,7 +970,7 @@ func TestProcessFormat(t *testing.T) {
 
 	// seed-node-schemas.sql String Format: manual_inputs flow in as flat input keys
 	config2 := stringsproc.Config{
-		Operation: "format",
+		Action: "format",
 		Params: map[string]interface{}{
 			"template": "Hello {name}, welcome to {city}",
 		},
@@ -994,12 +994,12 @@ func TestProcessFormat(t *testing.T) {
 	}
 }
 
-// TestProcessBase64Encode tests Process with base64_encode operation
+// TestProcessBase64Encode tests Process with base64_encode action
 func TestProcessBase64Encode(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "base64_encode",
+		Action: "base64_encode",
 		Params: map[string]interface{}{
 			"string": "hello world",
 		},
@@ -1020,12 +1020,12 @@ func TestProcessBase64Encode(t *testing.T) {
 	}
 }
 
-// TestProcessBase64Decode tests Process with base64_decode operation
+// TestProcessBase64Decode tests Process with base64_decode action
 func TestProcessBase64Decode(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "base64_decode",
+		Action: "base64_decode",
 		Params: map[string]interface{}{
 			"string": "aGVsbG8gd29ybGQ=",
 		},
@@ -1046,12 +1046,12 @@ func TestProcessBase64Decode(t *testing.T) {
 	}
 }
 
-// TestProcessBase64DecodeInvalid tests Process with base64_decode operation using invalid base64
+// TestProcessBase64DecodeInvalid tests Process with base64_decode action using invalid base64
 func TestProcessBase64DecodeInvalid(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "base64_decode",
+		Action: "base64_decode",
 		Params: map[string]interface{}{
 			"string": "invalid!!!",
 		},
@@ -1067,17 +1067,17 @@ func TestProcessBase64DecodeInvalid(t *testing.T) {
 	if output.Error == nil {
 		t.Fatalf("expected error for invalid base64")
 	}
-	if _, ok := output.Error.(*stringsproc.OperationError); !ok {
-		t.Fatalf("expected OperationError, got %T", output.Error)
+	if _, ok := output.Error.(*stringsproc.ActionError); !ok {
+		t.Fatalf("expected ActionError, got %T", output.Error)
 	}
 }
 
-// TestProcessURIEncode tests Process with uri_encode operation
+// TestProcessURIEncode tests Process with uri_encode action
 func TestProcessURIEncode(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "uri_encode",
+		Action: "uri_encode",
 		Params: map[string]interface{}{
 			"string": "hello world",
 		},
@@ -1098,12 +1098,12 @@ func TestProcessURIEncode(t *testing.T) {
 	}
 }
 
-// TestProcessURIDecode tests Process with uri_decode operation
+// TestProcessURIDecode tests Process with uri_decode action
 func TestProcessURIDecode(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "uri_decode",
+		Action: "uri_decode",
 		Params: map[string]interface{}{
 			"string": "hello+world",
 		},
@@ -1124,12 +1124,12 @@ func TestProcessURIDecode(t *testing.T) {
 	}
 }
 
-// TestProcessURIDecodeInvalid tests Process with uri_decode operation using invalid URI encoding
+// TestProcessURIDecodeInvalid tests Process with uri_decode action using invalid URI encoding
 func TestProcessURIDecodeInvalid(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "uri_decode",
+		Action: "uri_decode",
 		Params: map[string]interface{}{
 			"string": "%ZZ",
 		},
@@ -1145,17 +1145,17 @@ func TestProcessURIDecodeInvalid(t *testing.T) {
 	if output.Error == nil {
 		t.Fatalf("expected error for invalid URI encoding")
 	}
-	if _, ok := output.Error.(*stringsproc.OperationError); !ok {
-		t.Fatalf("expected OperationError, got %T", output.Error)
+	if _, ok := output.Error.(*stringsproc.ActionError); !ok {
+		t.Fatalf("expected ActionError, got %T", output.Error)
 	}
 }
 
-// TestProcessNormalize tests Process with normalize operation
+// TestProcessNormalize tests Process with normalize action
 func TestProcessNormalize(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "normalize",
+		Action: "normalize",
 		Params: map[string]interface{}{
 			"string": "héllo wörld",
 		},
@@ -1181,7 +1181,7 @@ func TestProcessWithItemIndex(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
 	config := stringsproc.Config{
-		Operation: "to_upper",
+		Action: "to_upper",
 		Params: map[string]interface{}{
 			"string": "hello",
 		},
@@ -1226,9 +1226,9 @@ func TestProcessWithItemIndex(t *testing.T) {
 func TestProcessWithInputData(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 
-	// Test operation that uses input data when params don't have the value
+	// Test action that uses input data when params don't have the value
 	config := stringsproc.Config{
-		Operation: "to_upper",
+		Action: "to_upper",
 		Params:    map[string]interface{}{},
 	}
 	rawConfig, _ := json.Marshal(config)
@@ -1249,44 +1249,44 @@ func TestProcessWithInputData(t *testing.T) {
 	}
 }
 
-// TestProcessAllOperations tests all supported operations to ensure they work
-func TestProcessAllOperations(t *testing.T) {
+// TestProcessAllActions tests all supported actions to ensure they work
+func TestProcessAllActions(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
-	operations := []string{
+	actions := []string{
 		"concatenate", "split", "join", "trim", "replace", "substring",
 		"to_upper", "to_lower", "title_case", "capitalize", "contains",
 		"length", "regex_extract", "format", "base64_encode", "base64_decode",
 		"uri_encode", "uri_decode", "normalize",
 	}
 
-	for _, op := range operations {
+	for _, op := range actions {
 		config := stringsproc.Config{
-			Operation: op,
-			Params:    getDefaultParamsForOperation(op),
+			Action: op,
+			Params:    getDefaultParamsForAction(op),
 		}
 		rawConfig, err := json.Marshal(config)
 		if err != nil {
 			t.Fatalf("failed to marshal config for %s: %v", op, err)
 		}
 		input := createProcessInput(
-			getDefaultInputForOperation(op),
+			getDefaultInputForAction(op),
 			rawConfig,
 			0,
 		)
 
 		output := node.Process(input)
 		if output.Error != nil {
-			// Some operations may fail with default params, which is expected
+			// Some actions may fail with default params, which is expected
 			// We just want to ensure they don't crash
-			if _, ok := output.Error.(*stringsproc.OperationError); !ok {
-				t.Fatalf("operation %s returned unexpected error type: %T", op, output.Error)
+			if _, ok := output.Error.(*stringsproc.ActionError); !ok {
+				t.Fatalf("action %s returned unexpected error type: %T", op, output.Error)
 			}
 		}
 	}
 }
 
-// getDefaultParamsForOperation returns default params for testing each operation
-func getDefaultParamsForOperation(op string) map[string]interface{} {
+// getDefaultParamsForAction returns default params for testing each action
+func getDefaultParamsForAction(op string) map[string]interface{} {
 	switch op {
 	case "concatenate":
 		return map[string]interface{}{
@@ -1370,8 +1370,8 @@ func getDefaultParamsForOperation(op string) map[string]interface{} {
 	}
 }
 
-// getDefaultInputForOperation returns default input data for testing each operation
-func getDefaultInputForOperation(op string) map[string]interface{} {
+// getDefaultInputForAction returns default input data for testing each action
+func getDefaultInputForAction(op string) map[string]interface{} {
 	return map[string]interface{}{
 		"string": "hello",
 	}

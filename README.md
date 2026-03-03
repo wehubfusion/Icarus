@@ -2128,5 +2128,6 @@ c.Messages.Publish(ctx, "subject", msg)
 
 ## Changelog
 
+- **2026-02-27**: `NormalizeRawConfig` now merges flattened nodeSchema values into the existing config instead of replacing it. This preserves top-level keys like `connection_id`, `connection`, and `manual_inputs` (from Elysium enrichment) when config uses nodeSchema format, fixing HTTP Client "connection_id is required" errors after enrichment.
 - **2025-11-24**: Standardized embedded processor plugin identifiers. Use `plugin-js`, `plugin-json-operations`, and `plugin-dateformatter` across workflows, configs, and tests.
 - **2025-02-20**: Added `plugin-http-client` embedded processor. Sends HTTP requests using a configured Nyx HTTP connection, optional headers (`manual_inputs`), and input payload. Outputs `status` (number) and `body` (byte). Requires connection enrichment from Elysium (connection_id → connection).

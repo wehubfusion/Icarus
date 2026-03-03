@@ -6,14 +6,14 @@ import "fmt"
 // It includes context from the embedded runtime
 type ProcessingError struct {
 	NodeId    string
-	Operation string
+	Action    string
 	Message   string
 	ItemIndex int // -1 if not in iteration
 	Cause     error
 }
 
 func (e *ProcessingError) Error() string {
-	base := fmt.Sprintf("jsonops node '%s' operation '%s': %s", e.NodeId, e.Operation, e.Message)
+	base := fmt.Sprintf("jsonops node '%s' action '%s': %s", e.NodeId, e.Action, e.Message)
 
 	if e.ItemIndex >= 0 {
 		base = fmt.Sprintf("%s (item %d)", base, e.ItemIndex)
@@ -31,10 +31,10 @@ func (e *ProcessingError) Unwrap() error {
 }
 
 // NewProcessingError creates a new processing error
-func NewProcessingError(nodeId, operation, message string, itemIndex int, cause error) *ProcessingError {
+func NewProcessingError(nodeId, action, message string, itemIndex int, cause error) *ProcessingError {
 	return &ProcessingError{
 		NodeId:    nodeId,
-		Operation: operation,
+		Action:    action,
 		Message:   message,
 		ItemIndex: itemIndex,
 		Cause:     cause,
@@ -43,9 +43,9 @@ func NewProcessingError(nodeId, operation, message string, itemIndex int, cause 
 
 // ValidationError represents a schema validation failure
 type ValidationError struct {
-	NodeId    string
-	Operation string
-	Message   string
+	NodeId  string
+	Action  string
+	Message string
 	ItemIndex int
 	Errors    []string
 }
@@ -65,10 +65,10 @@ func (e *ValidationError) Error() string {
 }
 
 // NewValidationError creates a new validation error
-func NewValidationError(nodeId, operation, message string, itemIndex int, errors []string) *ValidationError {
+func NewValidationError(nodeId, action, message string, itemIndex int, errors []string) *ValidationError {
 	return &ValidationError{
-		NodeId:    nodeId,
-		Operation: operation,
+		NodeId:  nodeId,
+		Action:  action,
 		Message:   message,
 		ItemIndex: itemIndex,
 		Errors:    errors,
