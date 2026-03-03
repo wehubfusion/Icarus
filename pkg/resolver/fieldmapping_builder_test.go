@@ -4202,9 +4202,9 @@ func TestSlashEndpoint_CrossScenarios(t *testing.T) {
 					Status: "success",
 					ProjectedFields: map[string]map[string]interface{}{
 						"source-node": {
-							"name":  "Jane",
-							"age":   float64(28),
-							"role":  "admin",
+							"name": "Jane",
+							"age":  float64(28),
+							"role": "admin",
 						},
 					},
 				},
@@ -5247,16 +5247,16 @@ func TestBuildInputFromMappings_ArrayOfObjects_DifferentDataTypes(t *testing.T) 
 	sourceData := map[string]interface{}{
 		"data": []interface{}{
 			map[string]interface{}{
-				"Name":  "Alice",
-				"Age":   30,
+				"Name":   "Alice",
+				"Age":    30,
 				"Active": true,
-				"Score": 95.5,
+				"Score":  95.5,
 			},
 			map[string]interface{}{
-				"Name":  "Bob",
-				"Age":   25,
+				"Name":   "Bob",
+				"Age":    25,
 				"Active": false,
-				"Score": 87.0,
+				"Score":  87.0,
 			},
 		},
 	}
@@ -5392,34 +5392,34 @@ func TestBuildInputFromMappings_Workflow_8bf5e799(t *testing.T) {
 	esrParserData := map[string]interface{}{
 		"data": []interface{}{
 			map[string]interface{}{
-				"Office_Email_Address": "alice.smith@example.com",
-				"First_Name":            "Alice",
-				"Last_Name":             "Smith",
-				"Middle_Names":          "Marie",
-				"Location_Description":  "Headquarters",
+				"Office_Email_Address":   "alice.smith@example.com",
+				"First_Name":             "Alice",
+				"Last_Name":              "Smith",
+				"Middle_Names":           "Marie",
+				"Location_Description":   "Headquarters",
 				"User_Assignment_Status": "Active",
-				"Job_Role":              "Developer",
-				"Occupation_Code":       "DEV001",
-				"Assignment_Category":   "Full-Time",
-				"Department":            "Engineering",
-				"Employee_No":          "EMP001",
-				"Deleted":               float64(0),
-				"Ethnic_Origin":         "White",
+				"Job_Role":               "Developer",
+				"Occupation_Code":        "DEV001",
+				"Assignment_Category":    "Full-Time",
+				"Department":             "Engineering",
+				"Employee_No":            "EMP001",
+				"Deleted":                float64(0),
+				"Ethnic_Origin":          "White",
 			},
 			map[string]interface{}{
-				"Office_Email_Address": "bob.jones@example.com",
-				"First_Name":            "Bob",
-				"Last_Name":             "Jones",
-				"Middle_Names":          "",
-				"Location_Description":  "Remote",
+				"Office_Email_Address":   "bob.jones@example.com",
+				"First_Name":             "Bob",
+				"Last_Name":              "Jones",
+				"Middle_Names":           "",
+				"Location_Description":   "Remote",
 				"User_Assignment_Status": "Active",
-				"Job_Role":              "Manager",
-				"Occupation_Code":       "MGR001",
-				"Assignment_Category":   "Full-Time",
-				"Department":            "Management",
-				"Employee_No":          "EMP002",
-				"Deleted":               float64(0),
-				"Ethnic_Origin":         "Asian",
+				"Job_Role":               "Manager",
+				"Occupation_Code":        "MGR001",
+				"Assignment_Category":    "Full-Time",
+				"Department":             "Management",
+				"Employee_No":            "EMP002",
+				"Deleted":                float64(0),
+				"Ethnic_Origin":          "Asian",
 			},
 		},
 	}
@@ -6008,8 +6008,8 @@ func TestBuildInputFromMappings_BatchMixedDestinations(t *testing.T) {
 				SourceNodeID:   "node1",
 				SourceEndpoint: "/data//name",
 				DestinationEndpoints: []string{
-					"/data//full_name",  // collection traversal
-					"/all_names",        // simple destination
+					"/data//full_name", // collection traversal
+					"/all_names",       // simple destination
 				},
 			},
 		},
@@ -6253,7 +6253,7 @@ func TestSetFieldAtPathWithCollectionTraversal_IntermediatePath(t *testing.T) {
 // L3: Iterate index conflict merges maps instead of overwriting
 func TestExtractFromFlatKeys_IterateConflictMerge(t *testing.T) {
 	flatKeys := map[string]interface{}{
-		"node1-/data[0]/name":  "Alice",
+		"node1-/data[0]/name": "Alice",
 		"node1-/data[0]/age":  float64(30),
 		"node1-/data[1]/name": "Bob",
 		"node1-/data[1]/age":  float64(25),

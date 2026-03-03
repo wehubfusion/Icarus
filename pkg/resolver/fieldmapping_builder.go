@@ -814,11 +814,11 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 		if sourceCollPath == "" {
 			sourceCollPath = "data"
 		}
-		
+
 		var collection interface{}
 		var collectionArray []interface{}
 		var ok bool
-		
+
 		// Try the specified path first
 		collection = navigateMap(nodeFields, sourceCollPath)
 		if collection != nil {
@@ -827,7 +827,7 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 				ok = true
 			}
 		}
-		
+
 		// Fallback to common paths if not found
 		if !ok {
 			for _, fallbackPath := range []string{"data", "result"} {
@@ -844,7 +844,7 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 				}
 			}
 		}
-		
+
 		if !ok {
 			continue
 		}
@@ -1681,4 +1681,3 @@ func navigateMap(data map[string]interface{}, path string) interface{} {
 
 	return current
 }
-
