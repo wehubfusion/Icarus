@@ -7,7 +7,7 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/embedded/runtime"
 )
 
-// StringsNode implements string operations for embedded.
+// StringsNode implements string actions for embedded.
 type StringsNode struct {
 	runtime.BaseNode
 }
@@ -20,7 +20,7 @@ func NewStringsNode(config runtime.EmbeddedNodeConfig) (runtime.EmbeddedNode, er
 	return &StringsNode{BaseNode: runtime.NewBaseNode(config)}, nil
 }
 
-// Process executes the configured string operation.
+// Process executes the configured string action.
 func (n *StringsNode) Process(input runtime.ProcessInput) runtime.ProcessOutput {
 	var cfg Config
 	if err := json.Unmarshal(input.RawConfig, &cfg); err != nil {
@@ -31,7 +31,7 @@ func (n *StringsNode) Process(input runtime.ProcessInput) runtime.ProcessOutput 
 		return runtime.ErrorOutput(err)
 	}
 
-	result, err := executeOperation(n.NodeId(), input.ItemIndex, cfg.Operation, cfg.Params, input.Data)
+	result, err := executeAction(n.NodeId(), input.ItemIndex, cfg.Action, cfg.Params, input.Data)
 	if err != nil {
 		return runtime.ErrorOutput(err)
 	}

@@ -14,8 +14,8 @@ import (
 	"golang.org/x/text/language"
 )
 
-func executeOperation(nodeID string, itemIndex int, operation string, params map[string]interface{}, input map[string]interface{}) (interface{}, error) {
-	switch operation {
+func executeAction(nodeID string, itemIndex int, action string, params map[string]interface{}, input map[string]interface{}) (interface{}, error) {
+	switch action {
 	case "concatenate":
 		separator := getString(params, "separator", "")
 		parts := getStringSlice(params, "parts", nil)
@@ -50,7 +50,7 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		useRegex := getBool(params, "use_regex", false)
 		replaced, err := replace(str, old, newVal, count, useRegex)
 		if err != nil {
-			return nil, NewOperationError(nodeID, itemIndex, operation, fmt.Sprintf("replace failed: %v", err), err)
+			return nil, NewActionError(nodeID, itemIndex, action, fmt.Sprintf("replace failed: %v", err), err)
 		}
 		return replaced, nil
 
@@ -82,7 +82,7 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		useRegex := getBool(params, "use_regex", false)
 		ok, err := contains(str, sub, useRegex)
 		if err != nil {
-			return nil, NewOperationError(nodeID, itemIndex, operation, fmt.Sprintf("contains failed: %v", err), err)
+			return nil, NewActionError(nodeID, itemIndex, action, fmt.Sprintf("contains failed: %v", err), err)
 		}
 		return ok, nil
 
@@ -95,7 +95,7 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		pattern := getString(params, "pattern", "")
 		matches, err := regexExtract(str, pattern)
 		if err != nil {
-			return nil, NewOperationError(nodeID, itemIndex, operation, fmt.Sprintf("regex_extract failed: %v", err), err)
+			return nil, NewActionError(nodeID, itemIndex, action, fmt.Sprintf("regex_extract failed: %v", err), err)
 		}
 		return matches, nil
 
@@ -112,7 +112,7 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		str := getInputString(params, input, "")
 		decoded, err := base64Decode(str)
 		if err != nil {
-			return nil, NewOperationError(nodeID, itemIndex, operation, fmt.Sprintf("base64_decode failed: %v", err), err)
+			return nil, NewActionError(nodeID, itemIndex, action, fmt.Sprintf("base64_decode failed: %v", err), err)
 		}
 		return decoded, nil
 
@@ -124,7 +124,7 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		str := getInputString(params, input, "")
 		decoded, err := uriDecode(str)
 		if err != nil {
-			return nil, NewOperationError(nodeID, itemIndex, operation, fmt.Sprintf("uri_decode failed: %v", err), err)
+			return nil, NewActionError(nodeID, itemIndex, action, fmt.Sprintf("uri_decode failed: %v", err), err)
 		}
 		return decoded, nil
 
@@ -133,7 +133,7 @@ func executeOperation(nodeID string, itemIndex int, operation string, params map
 		return normalize(str), nil
 
 	default:
-		return nil, NewOperationError(nodeID, itemIndex, operation, "unsupported operation", nil)
+		return nil, NewActionError(nodeID, itemIndex, action, "unsupported action", nil)
 	}
 }
 
@@ -357,7 +357,7 @@ func removeDiacritics(s string) string {
 
 // --- map helpers ---
 
-// getInputString returns the main string for an operation: params["string"] if set,
+// getInputString returns the main string for an action: params["string"] if set,
 // else input["value"] (seed-node-schemas.sql input field key), else input["string"].
 func getInputString(params, input map[string]interface{}, defaultVal string) string {
 	if s := getString(params, "string", ""); s != "" {

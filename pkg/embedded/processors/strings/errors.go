@@ -23,24 +23,24 @@ func NewConfigError(nodeID, field, message string, err error) *ConfigError {
 	return &ConfigError{NodeID: nodeID, Field: field, Message: message, Err: err}
 }
 
-// OperationError represents an execution error during string operations.
-type OperationError struct {
+// ActionError represents an execution error during string actions.
+type ActionError struct {
 	NodeID    string
 	ItemIndex int
-	Operation string
+	Action    string
 	Message   string
 	Err       error
 }
 
-func (e *OperationError) Error() string {
+func (e *ActionError) Error() string {
 	if e.ItemIndex >= 0 {
-		return fmt.Sprintf("node %s: operation '%s' error at item %d: %s", e.NodeID, e.Operation, e.ItemIndex, e.Message)
+		return fmt.Sprintf("node %s: action '%s' error at item %d: %s", e.NodeID, e.Action, e.ItemIndex, e.Message)
 	}
-	return fmt.Sprintf("node %s: operation '%s' error: %s", e.NodeID, e.Operation, e.Message)
+	return fmt.Sprintf("node %s: action '%s' error: %s", e.NodeID, e.Action, e.Message)
 }
 
-func (e *OperationError) Unwrap() error { return e.Err }
+func (e *ActionError) Unwrap() error { return e.Err }
 
-func NewOperationError(nodeID string, itemIndex int, op, message string, err error) *OperationError {
-	return &OperationError{NodeID: nodeID, ItemIndex: itemIndex, Operation: op, Message: message, Err: err}
+func NewActionError(nodeID string, itemIndex int, action, message string, err error) *ActionError {
+	return &ActionError{NodeID: nodeID, ItemIndex: itemIndex, Action: action, Message: message, Err: err}
 }

@@ -5,11 +5,11 @@ import (
 	"fmt"
 )
 
-// Config defines the configuration for JSON operations in embedded
+// Config defines the configuration for JSON actions in embedded
 type Config struct {
-	// Operation specifies which JSON operation to perform
+	// Action specifies which JSON action to perform
 	// Valid values: "parse", "produce"
-	Operation string `json:"operation"`
+	Action string `json:"action"`
 
 	// SchemaID is a reference to a schema in Morpheus (enriched by Elysium)
 	SchemaID string `json:"schema_id"`
@@ -17,7 +17,7 @@ type Config struct {
 	// Schema is the Icarus schema definition (optional, used if schema_id is not enriched)
 	Schema json.RawMessage `json:"schema,omitempty"`
 
-	// ApplyDefaults applies default values from schema (parse operation)
+	// ApplyDefaults applies default values from schema (parse action)
 	// Default: true for parse, false for produce
 	ApplyDefaults *bool `json:"apply_defaults,omitempty"`
 
@@ -29,26 +29,26 @@ type Config struct {
 	// Default: false for parse, true for produce
 	StrictValidation *bool `json:"strict_validation,omitempty"`
 
-	// Pretty formats the JSON before base64 encoding (produce operation only)
+	// Pretty formats the JSON before base64 encoding (produce action only)
 	// Default: false
 	Pretty bool `json:"pretty,omitempty"`
 }
 
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
-	// Operation is required
-	if c.Operation == "" {
-		return fmt.Errorf("operation field is required")
+	// Action is required
+	if c.Action == "" {
+		return fmt.Errorf("action field is required")
 	}
 
-	// Validate operation value
-	validOperations := map[string]bool{
+	// Validate action value
+	validActions := map[string]bool{
 		"parse":   true,
 		"produce": true,
 	}
 
-	if !validOperations[c.Operation] {
-		return fmt.Errorf("invalid operation '%s', must be one of: parse, produce", c.Operation)
+	if !validActions[c.Action] {
+		return fmt.Errorf("invalid action '%s', must be one of: parse, produce", c.Action)
 	}
 
 	// Must have either schema_id or schema
@@ -59,29 +59,29 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// GetApplyDefaults returns the apply_defaults value with operation-specific defaults
+// GetApplyDefaults returns the apply_defaults value with action-specific defaults
 func (c *Config) GetApplyDefaults() bool {
 	if c.ApplyDefaults != nil {
 		return *c.ApplyDefaults
 	}
 	// Default to true for parse (to fill in missing fields), false for produce
-	return c.Operation == "parse"
+	return c.Action == "parse"
 }
 
-// GetStructureData returns the structure_data value with operation-specific defaults
+// GetStructureData returns the structure_data value with action-specific defaults
 func (c *Config) GetStructureData() bool {
 	if c.StructureData != nil {
 		return *c.StructureData
 	}
 	// Default to false for parse (allow extra fields), true for produce (clean output)
-	return c.Operation == "produce"
+	return c.Action == "produce"
 }
 
-// GetStrictValidation returns the strict_validation value with operation-specific defaults
+// GetStrictValidation returns the strict_validation value with action-specific defaults
 func (c *Config) GetStrictValidation() bool {
 	if c.StrictValidation != nil {
 		return *c.StrictValidation
 	}
 	// Default to false for parse (lenient), true for produce (ensure valid output)
-	return c.Operation == "produce"
+	return c.Action == "produce"
 }

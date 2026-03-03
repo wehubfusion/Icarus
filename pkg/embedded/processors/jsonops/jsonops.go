@@ -7,7 +7,7 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/embedded/runtime"
 )
 
-// JsonOpsNode implements JSON operations (parse and produce) for embedded
+// JsonOpsNode implements JSON actions (parse and produce) for embedded
 type JsonOpsNode struct {
 	runtime.BaseNode
 }
@@ -24,7 +24,7 @@ func NewJsonOpsNode(config runtime.EmbeddedNodeConfig) (runtime.EmbeddedNode, er
 	}, nil
 }
 
-// Process executes the JSON operation (parse or produce)
+// Process executes the JSON action (parse or produce)
 func (n *JsonOpsNode) Process(input runtime.ProcessInput) runtime.ProcessOutput {
 	// Parse configuration
 	var cfg Config
@@ -37,8 +37,8 @@ func (n *JsonOpsNode) Process(input runtime.ProcessInput) runtime.ProcessOutput 
 		return runtime.ErrorOutput(NewConfigError(n.NodeId(), "invalid configuration", err))
 	}
 
-	// Route to appropriate operation
-	switch cfg.Operation {
+	// Route to appropriate action
+	switch cfg.Action {
 	case "parse":
 		return n.executeParse(input, &cfg)
 	case "produce":
@@ -46,7 +46,7 @@ func (n *JsonOpsNode) Process(input runtime.ProcessInput) runtime.ProcessOutput 
 	default:
 		return runtime.ErrorOutput(NewConfigError(
 			n.NodeId(),
-			fmt.Sprintf("unknown operation: %s", cfg.Operation),
+			fmt.Sprintf("unknown action: %s", cfg.Action),
 			nil,
 		))
 	}

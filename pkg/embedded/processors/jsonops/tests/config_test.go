@@ -12,16 +12,16 @@ import (
 )
 
 func TestConfigValidate(t *testing.T) {
-	valid := jsonops.Config{Operation: "parse", SchemaID: "sid"}
+	valid := jsonops.Config{Action: "parse", SchemaID: "sid"}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("expected valid config, got %v", err)
 	}
 
 	cases := []jsonops.Config{
-		{},                                  // missing operation
-		{Operation: "bad", SchemaID: "sid"}, // invalid op
-		{Operation: "parse"},                // missing schema id and schema
-		{Operation: "produce", Schema: json.RawMessage{}}, // empty schema
+		{},                                  // missing action
+		{Action: "bad", SchemaID: "sid"}, // invalid op
+		{Action: "parse"},                // missing schema id and schema
+		{Action: "produce", Schema: json.RawMessage{}}, // empty schema
 	}
 	for i, cfg := range cases {
 		if err := cfg.Validate(); err == nil {
@@ -31,7 +31,7 @@ func TestConfigValidate(t *testing.T) {
 }
 
 func TestConfigDefaults(t *testing.T) {
-	cfgParse := jsonops.Config{Operation: "parse", SchemaID: "sid"}
+	cfgParse := jsonops.Config{Action: "parse", SchemaID: "sid"}
 	if !cfgParse.GetApplyDefaults() {
 		t.Fatalf("parse should default apply_defaults true")
 	}
@@ -42,7 +42,7 @@ func TestConfigDefaults(t *testing.T) {
 		t.Fatalf("parse should default strict_validation false")
 	}
 
-	cfgProduce := jsonops.Config{Operation: "produce", SchemaID: "sid"}
+	cfgProduce := jsonops.Config{Action: "produce", SchemaID: "sid"}
 	if cfgProduce.GetApplyDefaults() {
 		t.Fatalf("produce should default apply_defaults false")
 	}
@@ -59,7 +59,7 @@ func TestConfigExplicitOverrides(t *testing.T) {
 	structure := false
 	strict := false
 	cfg := jsonops.Config{
-		Operation:        "produce",
+		Action:        "produce",
 		SchemaID:         "sid",
 		ApplyDefaults:    &apply,
 		StructureData:    &structure,
@@ -147,8 +147,8 @@ func TestProcessEmptyConfig(t *testing.T) {
 	}
 }
 
-// TestProcessMissingOperation tests Process with missing operation field
-func TestProcessMissingOperation(t *testing.T) {
+// TestProcessMissingAction tests Process with missing action field
+func TestProcessMissingAction(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	config := jsonops.Config{SchemaID: "test-schema"}
 	rawConfig, _ := json.Marshal(config)
@@ -160,17 +160,17 @@ func TestProcessMissingOperation(t *testing.T) {
 
 	output := node.Process(input)
 	if output.Error == nil {
-		t.Fatalf("expected error for missing operation")
+		t.Fatalf("expected error for missing action")
 	}
 	if _, ok := output.Error.(*jsonops.ConfigError); !ok {
 		t.Fatalf("expected ConfigError, got %T: %v", output.Error, output.Error)
 	}
 }
 
-// TestProcessInvalidOperation tests Process with invalid operation value
-func TestProcessInvalidOperation(t *testing.T) {
+// TestProcessInvalidAction tests Process with invalid action value
+func TestProcessInvalidAction(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
-	config := jsonops.Config{Operation: "invalid-op", SchemaID: "test-schema"}
+	config := jsonops.Config{Action: "invalid-op", SchemaID: "test-schema"}
 	rawConfig, _ := json.Marshal(config)
 	input := createProcessInput(
 		map[string]interface{}{"data": "test"},
@@ -180,7 +180,7 @@ func TestProcessInvalidOperation(t *testing.T) {
 
 	output := node.Process(input)
 	if output.Error == nil {
-		t.Fatalf("expected error for invalid operation")
+		t.Fatalf("expected error for invalid action")
 	}
 	if _, ok := output.Error.(*jsonops.ConfigError); !ok {
 		t.Fatalf("expected ConfigError, got %T: %v", output.Error, output.Error)
@@ -190,7 +190,7 @@ func TestProcessInvalidOperation(t *testing.T) {
 // TestProcessMissingSchemaIDAndSchema tests Process with missing both schema_id and schema
 func TestProcessMissingSchemaIDAndSchema(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
-	config := jsonops.Config{Operation: "parse"}
+	config := jsonops.Config{Action: "parse"}
 	rawConfig, _ := json.Marshal(config)
 	input := createProcessInput(
 		map[string]interface{}{"data": "test"},
@@ -210,7 +210,7 @@ func TestProcessMissingSchemaIDAndSchema(t *testing.T) {
 // TestProcessEmptySchema tests Process with empty schema (when schema_id is not provided)
 func TestProcessEmptySchema(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
-	config := jsonops.Config{Operation: "produce", Schema: json.RawMessage{}}
+	config := jsonops.Config{Action: "produce", Schema: json.RawMessage{}}
 	rawConfig, _ := json.Marshal(config)
 	input := createProcessInput(
 		map[string]interface{}{"data": "test"},
@@ -227,11 +227,11 @@ func TestProcessEmptySchema(t *testing.T) {
 	}
 }
 
-// TestProcessUnknownOperation tests Process with unknown operation value
-func TestProcessUnknownOperation(t *testing.T) {
+// TestProcessUnknownAction tests Process with unknown action value
+func TestProcessUnknownAction(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
-	// Use a valid operation name but not "parse" or "produce"
-	config := jsonops.Config{Operation: "transform", SchemaID: "test-schema"}
+	// Use a valid action name but not "parse" or "produce"
+	config := jsonops.Config{Action: "transform", SchemaID: "test-schema"}
 	rawConfig, _ := json.Marshal(config)
 	input := createProcessInput(
 		map[string]interface{}{"data": "test"},
@@ -241,23 +241,23 @@ func TestProcessUnknownOperation(t *testing.T) {
 
 	output := node.Process(input)
 	if output.Error == nil {
-		t.Fatalf("expected error for unknown operation")
+		t.Fatalf("expected error for unknown action")
 	}
 	if _, ok := output.Error.(*jsonops.ConfigError); !ok {
 		t.Fatalf("expected ConfigError, got %T: %v", output.Error, output.Error)
 	}
-	// Verify error message contains the unknown operation
+	// Verify error message contains the unknown action
 	if output.Error.Error() == "" {
 		t.Fatalf("expected non-empty error message")
 	}
 }
 
-// TestProcessValidParseOperation tests Process with valid parse operation configuration
+// TestProcessValidParseAction tests Process with valid parse action configuration
 // Note: This tests routing to executeParse, but actual execution will fail without schema enrichment
-func TestProcessValidParseOperation(t *testing.T) {
+func TestProcessValidParseAction(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	config := jsonops.Config{
-		Operation: "parse",
+		Action: "parse",
 		SchemaID:  "test-schema",
 	}
 	rawConfig, _ := json.Marshal(config)
@@ -279,12 +279,12 @@ func TestProcessValidParseOperation(t *testing.T) {
 	}
 }
 
-// TestProcessValidProduceOperation tests Process with valid produce operation configuration
+// TestProcessValidProduceAction tests Process with valid produce action configuration
 // Note: This tests routing to executeProduce, but actual execution will fail without schema enrichment
-func TestProcessValidProduceOperation(t *testing.T) {
+func TestProcessValidProduceAction(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	config := jsonops.Config{
-		Operation: "produce",
+		Action: "produce",
 		SchemaID:  "test-schema",
 	}
 	rawConfig, _ := json.Marshal(config)
@@ -310,7 +310,7 @@ func TestProcessValidProduceOperation(t *testing.T) {
 func TestProcessWithSchemaID(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	config := jsonops.Config{
-		Operation: "parse",
+		Action: "parse",
 		SchemaID:  "test-schema-id",
 	}
 	rawConfig, _ := json.Marshal(config)
@@ -340,7 +340,7 @@ func TestProcessWithSchema(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	schemaJSON := json.RawMessage(`{"type": "object", "properties": {"name": {"type": "string"}}}`)
 	config := jsonops.Config{
-		Operation: "produce",
+		Action: "produce",
 		Schema:    schemaJSON,
 	}
 	rawConfig, _ := json.Marshal(config)
@@ -367,7 +367,7 @@ func TestProcessWithSchema(t *testing.T) {
 func TestProcessWithItemIndex(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	config := jsonops.Config{
-		Operation: "parse",
+		Action: "parse",
 		SchemaID:  "test-schema",
 	}
 	rawConfig, _ := json.Marshal(config)
@@ -407,12 +407,12 @@ func TestProcessMalformedJSONVariations(t *testing.T) {
 		name      string
 		rawConfig json.RawMessage
 	}{
-		{"unclosed brace", json.RawMessage(`{"operation": "parse"`)},
-		{"unclosed string", json.RawMessage(`{"operation": "parse"`)},
-		{"invalid escape", json.RawMessage(`{"operation": "parse\z"}`)},
-		{"trailing comma", json.RawMessage(`{"operation": "parse",}`)},
-		{"null byte", json.RawMessage(`{"operation": "parse\000"}`)},
-		{"invalid unicode", json.RawMessage(`{"operation": "\uXXXX"}`)},
+		{"unclosed brace", json.RawMessage(`{"action": "parse"`)},
+		{"unclosed string", json.RawMessage(`{"action": "parse"`)},
+		{"invalid escape", json.RawMessage(`{"action": "parse\z"}`)},
+		{"trailing comma", json.RawMessage(`{"action": "parse",}`)},
+		{"null byte", json.RawMessage(`{"action": "parse\000"}`)},
+		{"invalid unicode", json.RawMessage(`{"action": "\uXXXX"}`)},
 	}
 
 	for _, tc := range testCases {
@@ -438,11 +438,11 @@ func TestProcessAllValidationErrors(t *testing.T) {
 		name   string
 		config jsonops.Config
 	}{
-		{"missing operation", jsonops.Config{SchemaID: "sid"}},
-		{"invalid operation", jsonops.Config{Operation: "bad", SchemaID: "sid"}},
-		{"missing schema_id and schema", jsonops.Config{Operation: "parse"}},
-		{"empty schema", jsonops.Config{Operation: "produce", Schema: json.RawMessage{}}},
-		{"unknown operation", jsonops.Config{Operation: "unknown", SchemaID: "sid"}},
+		{"missing action", jsonops.Config{SchemaID: "sid"}},
+		{"invalid action", jsonops.Config{Action: "bad", SchemaID: "sid"}},
+		{"missing schema_id and schema", jsonops.Config{Action: "parse"}},
+		{"empty schema", jsonops.Config{Action: "produce", Schema: json.RawMessage{}}},
+		{"unknown action", jsonops.Config{Action: "unknown", SchemaID: "sid"}},
 	}
 
 	for _, tc := range testCases {
@@ -460,14 +460,14 @@ func TestProcessAllValidationErrors(t *testing.T) {
 	}
 }
 
-// TestProcessOperationRouting tests that valid operations route correctly
-func TestProcessOperationRouting(t *testing.T) {
+// TestProcessActionRouting tests that valid actions route correctly
+func TestProcessActionRouting(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	inputData := map[string]interface{}{"data": "dGVzdA=="}
 
-	// Test parse operation routing
-	t.Run("parse operation", func(t *testing.T) {
-		config := jsonops.Config{Operation: "parse", SchemaID: "test-schema"}
+	// Test parse action routing
+	t.Run("parse action", func(t *testing.T) {
+		config := jsonops.Config{Action: "parse", SchemaID: "test-schema"}
 		rawConfig, _ := json.Marshal(config)
 		input := createProcessInput(inputData, rawConfig, -1)
 		output := node.Process(input)
@@ -487,9 +487,9 @@ func TestProcessOperationRouting(t *testing.T) {
 		}
 	})
 
-	// Test produce operation routing
-	t.Run("produce operation", func(t *testing.T) {
-		config := jsonops.Config{Operation: "produce", SchemaID: "test-schema"}
+	// Test produce action routing
+	t.Run("produce action", func(t *testing.T) {
+		config := jsonops.Config{Action: "produce", SchemaID: "test-schema"}
 		rawConfig, _ := json.Marshal(config)
 		input := createProcessInput(inputData, rawConfig, -1)
 		output := node.Process(input)
@@ -530,10 +530,10 @@ func TestProcessErrorMessages(t *testing.T) {
 		t.Fatalf("error message should mention config parsing: %s", errMsg)
 	}
 
-	// Test unknown operation error message
-	// Note: Invalid operations are caught by Validate() which returns "invalid operation"
-	// Only operations that pass validation but aren't "parse" or "produce" reach the default case
-	config := jsonops.Config{Operation: "invalid-op", SchemaID: "sid"}
+	// Test unknown action error message
+	// Note: Invalid actions are caught by Validate() which returns "invalid action"
+	// Only actions that pass validation but aren't "parse" or "produce" reach the default case
+	config := jsonops.Config{Action: "invalid-op", SchemaID: "sid"}
 	rawConfig, _ := json.Marshal(config)
 	input = createProcessInput(inputData, rawConfig, -1)
 	output = node.Process(input)
@@ -541,12 +541,12 @@ func TestProcessErrorMessages(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 	errMsg = output.Error.Error()
-	// Error should mention invalid operation (caught by Validate) or unknown operation (caught by switch)
-	if !contains(errMsg, "invalid operation") && !contains(errMsg, "unknown operation") {
-		t.Fatalf("error message should mention invalid/unknown operation: %s", errMsg)
+	// Error should mention invalid action (caught by Validate) or unknown action (caught by switch)
+	if !contains(errMsg, "invalid action") && !contains(errMsg, "unknown action") {
+		t.Fatalf("error message should mention invalid/unknown action: %s", errMsg)
 	}
 	if !contains(errMsg, "invalid-op") {
-		t.Fatalf("error message should contain the operation name: %s", errMsg)
+		t.Fatalf("error message should contain the action name: %s", errMsg)
 	}
 }
 
@@ -557,7 +557,7 @@ func TestProcessNodeIDInErrors(t *testing.T) {
 	for _, nodeID := range testNodeIDs {
 		t.Run(nodeID, func(t *testing.T) {
 			node := createTestNode(t, nodeID)
-			config := jsonops.Config{Operation: "invalid-op", SchemaID: "sid"}
+			config := jsonops.Config{Action: "invalid-op", SchemaID: "sid"}
 			rawConfig, _ := json.Marshal(config)
 			input := createProcessInput(map[string]interface{}{"data": "test"}, rawConfig, -1)
 			// Override NodeId in input to match the node
@@ -638,11 +638,11 @@ func TestProcessConfigWithWrongTypes(t *testing.T) {
 		name      string
 		rawConfig json.RawMessage
 	}{
-		{"operation as number", json.RawMessage(`{"operation": 123, "schema_id": "sid"}`)},
-		{"operation as boolean", json.RawMessage(`{"operation": true, "schema_id": "sid"}`)},
-		{"operation as array", json.RawMessage(`{"operation": ["parse"], "schema_id": "sid"}`)},
-		{"schema_id as number", json.RawMessage(`{"operation": "parse", "schema_id": 123}`)},
-		{"schema_id as boolean", json.RawMessage(`{"operation": "parse", "schema_id": true}`)},
+		{"action as number", json.RawMessage(`{"action": 123, "schema_id": "sid"}`)},
+		{"action as boolean", json.RawMessage(`{"action": true, "schema_id": "sid"}`)},
+		{"action as array", json.RawMessage(`{"action": ["parse"], "schema_id": "sid"}`)},
+		{"schema_id as number", json.RawMessage(`{"action": "parse", "schema_id": 123}`)},
+		{"schema_id as boolean", json.RawMessage(`{"action": "parse", "schema_id": true}`)},
 	}
 
 	for _, tc := range testCases {
@@ -667,7 +667,7 @@ func TestProcessConfigWithAllOptionalFields(t *testing.T) {
 	structureData := false
 	strictValidation := true
 	config := jsonops.Config{
-		Operation:        "parse",
+		Action:        "parse",
 		SchemaID:         "test-schema",
 		ApplyDefaults:    &applyDefaults,
 		StructureData:    &structureData,
@@ -699,7 +699,7 @@ func TestProcessConfigWithExtraFields(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	// Config with extra unknown fields
 	rawConfig := json.RawMessage(`{
-		"operation": "parse",
+		"action": "parse",
 		"schema_id": "test-schema",
 		"unknown_field": "should be ignored",
 		"another_field": 123,
@@ -794,7 +794,7 @@ func TestProcessWithDifferentNodeIDs(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.nodeID, func(t *testing.T) {
 			node := createTestNode(t, tc.nodeID)
-			config := jsonops.Config{Operation: "parse", SchemaID: "test-schema"}
+			config := jsonops.Config{Action: "parse", SchemaID: "test-schema"}
 			rawConfig, _ := json.Marshal(config)
 			input := createProcessInput(
 				map[string]interface{}{"data": "dGVzdA=="},
@@ -812,14 +812,14 @@ func TestProcessWithDifferentNodeIDs(t *testing.T) {
 	}
 }
 
-// TestProcessCaseSensitiveOperations tests that operations are case-sensitive
-func TestProcessCaseSensitiveOperations(t *testing.T) {
+// TestProcessCaseSensitiveActions tests that actions are case-sensitive
+func TestProcessCaseSensitiveActions(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	inputData := map[string]interface{}{"data": "test"}
 
 	testCases := []struct {
 		name      string
-		operation string
+		action string
 		shouldErr bool
 	}{
 		{"uppercase PARSE", "PARSE", true},
@@ -832,7 +832,7 @@ func TestProcessCaseSensitiveOperations(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			config := jsonops.Config{Operation: tc.operation, SchemaID: "test-schema"}
+			config := jsonops.Config{Action: tc.action, SchemaID: "test-schema"}
 			rawConfig, _ := json.Marshal(config)
 			input := createProcessInput(inputData, rawConfig, -1)
 			output := node.Process(input)
@@ -865,7 +865,7 @@ func TestProcessWithSchemaAndSchemaID(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	schemaJSON := json.RawMessage(`{"type": "object"}`)
 	config := jsonops.Config{
-		Operation: "parse",
+		Action: "parse",
 		SchemaID:  "test-schema-id",
 		Schema:    schemaJSON,
 	}
@@ -905,12 +905,12 @@ func TestProcessMultipleInvalidJSONScenarios(t *testing.T) {
 		{"unclosed array", json.RawMessage(`[`)},
 		{"unclosed object", json.RawMessage(`{`)},
 		{"mismatched brackets", json.RawMessage(`{[}`)},
-		{"double comma", json.RawMessage(`{"operation": "parse",, "schema_id": "sid"}`)},
-		{"missing colon", json.RawMessage(`{"operation" "parse"}`)},
-		{"invalid number", json.RawMessage(`{"operation": 12.34.56}`)},
-		{"invalid true", json.RawMessage(`{"operation": tru}`)},
-		{"invalid false", json.RawMessage(`{"operation": fals}`)},
-		{"invalid null", json.RawMessage(`{"operation": nul}`)},
+		{"double comma", json.RawMessage(`{"action": "parse",, "schema_id": "sid"}`)},
+		{"missing colon", json.RawMessage(`{"action" "parse"}`)},
+		{"invalid number", json.RawMessage(`{"action": 12.34.56}`)},
+		{"invalid true", json.RawMessage(`{"action": tru}`)},
+		{"invalid false", json.RawMessage(`{"action": fals}`)},
+		{"invalid null", json.RawMessage(`{"action": nul}`)},
 	}
 
 	for _, tc := range testCases {
@@ -930,7 +930,7 @@ func TestProcessMultipleInvalidJSONScenarios(t *testing.T) {
 // TestProcessConfigErrorDetails tests detailed ConfigError properties
 func TestProcessConfigErrorDetails(t *testing.T) {
 	node := createTestNode(t, "test-node-xyz")
-	config := jsonops.Config{Operation: "unknown-op", SchemaID: "sid"}
+	config := jsonops.Config{Action: "unknown-op", SchemaID: "sid"}
 	rawConfig, _ := json.Marshal(config)
 	input := createProcessInput(
 		map[string]interface{}{"data": "test"},
@@ -962,11 +962,11 @@ func TestProcessConfigErrorDetails(t *testing.T) {
 	if !contains(fullErrorMsg, "invalid configuration") {
 		t.Fatalf("expected error to mention 'invalid configuration', got: %s", fullErrorMsg)
 	}
-	// The underlying cause should mention invalid operation
+	// The underlying cause should mention invalid action
 	if configErr.Cause != nil {
 		causeMsg := configErr.Cause.Error()
-		if !contains(causeMsg, "invalid operation") && !contains(causeMsg, "unknown operation") {
-			t.Fatalf("expected cause to mention 'invalid operation' or 'unknown operation', got: %s", causeMsg)
+		if !contains(causeMsg, "invalid action") && !contains(causeMsg, "unknown action") {
+			t.Fatalf("expected cause to mention 'invalid action' or 'unknown action', got: %s", causeMsg)
 		}
 	}
 }
@@ -974,7 +974,7 @@ func TestProcessConfigErrorDetails(t *testing.T) {
 // TestProcessNegativeItemIndex tests Process with various negative ItemIndex values
 func TestProcessNegativeItemIndex(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
-	config := jsonops.Config{Operation: "parse", SchemaID: "test-schema"}
+	config := jsonops.Config{Action: "parse", SchemaID: "test-schema"}
 	rawConfig, _ := json.Marshal(config)
 	inputData := map[string]interface{}{"data": "dGVzdA=="}
 
@@ -1001,7 +1001,7 @@ func TestProcessNegativeItemIndex(t *testing.T) {
 // TestProcessLargeItemIndex tests Process with very large ItemIndex values
 func TestProcessLargeItemIndex(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
-	config := jsonops.Config{Operation: "parse", SchemaID: "test-schema"}
+	config := jsonops.Config{Action: "parse", SchemaID: "test-schema"}
 	rawConfig, _ := json.Marshal(config)
 	inputData := map[string]interface{}{"data": "dGVzdA=="}
 
@@ -1023,17 +1023,17 @@ func TestProcessEmptyStringVsMissingField(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	inputData := map[string]interface{}{"data": "test"}
 
-	// Empty operation string should fail validation
-	config1 := jsonops.Config{Operation: "", SchemaID: "sid"}
+	// Empty action string should fail validation
+	config1 := jsonops.Config{Action: "", SchemaID: "sid"}
 	rawConfig1, _ := json.Marshal(config1)
 	input1 := createProcessInput(inputData, rawConfig1, -1)
 	output1 := node.Process(input1)
 	if output1.Error == nil {
-		t.Fatalf("expected error for empty operation string")
+		t.Fatalf("expected error for empty action string")
 	}
 
 	// Empty schema_id string with no schema should fail validation
-	config2 := jsonops.Config{Operation: "parse", SchemaID: ""}
+	config2 := jsonops.Config{Action: "parse", SchemaID: ""}
 	rawConfig2, _ := json.Marshal(config2)
 	input2 := createProcessInput(inputData, rawConfig2, -1)
 	output2 := node.Process(input2)
@@ -1046,7 +1046,7 @@ func TestProcessEmptyStringVsMissingField(t *testing.T) {
 func TestProcessUnicodeCharacters(t *testing.T) {
 	node := createTestNode(t, "node-测试-🎉")
 	config := jsonops.Config{
-		Operation: "parse",
+		Action: "parse",
 		SchemaID:  "schema-测试-中文",
 	}
 	rawConfig, _ := json.Marshal(config)
@@ -1074,7 +1074,7 @@ func TestProcessVeryLongStrings(t *testing.T) {
 	// Create a very long schema_id
 	longSchemaID := strings.Repeat("a", 10000)
 	config := jsonops.Config{
-		Operation: "parse",
+		Action: "parse",
 		SchemaID:  longSchemaID,
 	}
 	rawConfig, _ := json.Marshal(config)
@@ -1102,7 +1102,7 @@ func TestProcessBooleanFieldEdgeCases(t *testing.T) {
 
 	// Test with nil pointers (should use defaults)
 	config1 := jsonops.Config{
-		Operation: "parse",
+		Action: "parse",
 		SchemaID:  "test-schema",
 		// ApplyDefaults, StructureData, StrictValidation are nil
 	}
@@ -1118,7 +1118,7 @@ func TestProcessBooleanFieldEdgeCases(t *testing.T) {
 	structureFalse := false
 	strictFalse := false
 	config2 := jsonops.Config{
-		Operation:        "produce",
+		Action:        "produce",
 		SchemaID:         "test-schema",
 		ApplyDefaults:    &applyFalse,
 		StructureData:    &structureFalse,
@@ -1136,7 +1136,7 @@ func TestProcessBooleanFieldEdgeCases(t *testing.T) {
 	structureTrue := true
 	strictTrue := true
 	config3 := jsonops.Config{
-		Operation:        "parse",
+		Action:        "parse",
 		SchemaID:         "test-schema",
 		ApplyDefaults:    &applyTrue,
 		StructureData:    &structureTrue,
@@ -1153,7 +1153,7 @@ func TestProcessBooleanFieldEdgeCases(t *testing.T) {
 // TestProcessEmptyDataMap tests Process with empty data map
 func TestProcessEmptyDataMap(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
-	config := jsonops.Config{Operation: "parse", SchemaID: "test-schema"}
+	config := jsonops.Config{Action: "parse", SchemaID: "test-schema"}
 	rawConfig, _ := json.Marshal(config)
 	input := createProcessInput(
 		map[string]interface{}{}, // Empty data map
@@ -1179,7 +1179,7 @@ func TestProcessEmptyDataMap(t *testing.T) {
 // TestProcessNilDataMap tests Process with nil data map
 func TestProcessNilDataMap(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
-	config := jsonops.Config{Operation: "parse", SchemaID: "test-schema"}
+	config := jsonops.Config{Action: "parse", SchemaID: "test-schema"}
 	rawConfig, _ := json.Marshal(config)
 	input := createProcessInput(
 		nil, // Nil data map
@@ -1204,18 +1204,18 @@ func TestProcessControlCharactersInJSON(t *testing.T) {
 		name      string
 		rawConfig json.RawMessage
 	}{
-		{"newline in string", json.RawMessage(`{"operation": "parse\n", "schema_id": "sid"}`)},
-		{"tab in string", json.RawMessage(`{"operation": "parse\t", "schema_id": "sid"}`)},
-		{"carriage return", json.RawMessage(`{"operation": "parse\r", "schema_id": "sid"}`)},
-		{"backspace", json.RawMessage(`{"operation": "parse\b", "schema_id": "sid"}`)},
-		{"form feed", json.RawMessage(`{"operation": "parse\f", "schema_id": "sid"}`)},
+		{"newline in string", json.RawMessage(`{"action": "parse\n", "schema_id": "sid"}`)},
+		{"tab in string", json.RawMessage(`{"action": "parse\t", "schema_id": "sid"}`)},
+		{"carriage return", json.RawMessage(`{"action": "parse\r", "schema_id": "sid"}`)},
+		{"backspace", json.RawMessage(`{"action": "parse\b", "schema_id": "sid"}`)},
+		{"form feed", json.RawMessage(`{"action": "parse\f", "schema_id": "sid"}`)},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			input := createProcessInput(inputData, tc.rawConfig, -1)
 			output := node.Process(input)
-			// Control characters in strings are valid JSON, but operation will be invalid
+			// Control characters in strings are valid JSON, but action will be invalid
 			if output.Error == nil {
 				t.Fatalf("expected error for %s", tc.name)
 			}
@@ -1229,7 +1229,7 @@ func TestProcessDeeplyNestedJSON(t *testing.T) {
 	inputData := map[string]interface{}{"data": "test"}
 
 	// Create deeply nested JSON (though config doesn't support nesting, test that it's ignored)
-	deepNested := `{"operation": "parse", "schema_id": "sid", "nested": {"level1": {"level2": {"level3": {"level4": "value"}}}}}`
+	deepNested := `{"action": "parse", "schema_id": "sid", "nested": {"level1": {"level2": {"level3": {"level4": "value"}}}}}`
 	rawConfig := json.RawMessage(deepNested)
 	input := createProcessInput(inputData, rawConfig, -1)
 
@@ -1297,7 +1297,7 @@ func TestProcessSpecialCharactersInSchemaID(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			config := jsonops.Config{Operation: "parse", SchemaID: tc.schemaID}
+			config := jsonops.Config{Action: "parse", SchemaID: tc.schemaID}
 			rawConfig, _ := json.Marshal(config)
 			input := createProcessInput(inputData, rawConfig, -1)
 			output := node.Process(input)
@@ -1320,7 +1320,7 @@ func TestProcessNodeIdMethod(t *testing.T) {
 	for _, nodeID := range testNodeIDs {
 		t.Run(nodeID, func(t *testing.T) {
 			node := createTestNode(t, nodeID)
-			config := jsonops.Config{Operation: "invalid-op", SchemaID: "sid"}
+			config := jsonops.Config{Action: "invalid-op", SchemaID: "sid"}
 			rawConfig, _ := json.Marshal(config)
 			input := createProcessInput(
 				map[string]interface{}{"data": "test"},
@@ -1341,8 +1341,8 @@ func TestProcessNodeIdMethod(t *testing.T) {
 	}
 }
 
-// TestProcessOrderOfOperations tests that operations happen in correct order
-func TestProcessOrderOfOperations(t *testing.T) {
+// TestProcessOrderOfActions tests that actions happen in correct order
+func TestProcessOrderOfActions(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	inputData := map[string]interface{}{"data": "test"}
 
@@ -1363,7 +1363,7 @@ func TestProcessOrderOfOperations(t *testing.T) {
 
 	// Test that validation happens after parsing
 	// Valid JSON but invalid config should fail at validation stage
-	config2 := jsonops.Config{Operation: "bad-op", SchemaID: "sid"}
+	config2 := jsonops.Config{Action: "bad-op", SchemaID: "sid"}
 	rawConfig2, _ := json.Marshal(config2)
 	input2 := createProcessInput(inputData, rawConfig2, -1)
 	output2 := node.Process(input2)
@@ -1389,10 +1389,10 @@ func TestProcessWithEscapedCharacters(t *testing.T) {
 		rawConfig json.RawMessage
 		shouldErr bool
 	}{
-		{"escaped quotes", json.RawMessage(`{"operation": "parse", "schema_id": "schema\"with\"quotes"}`), false},
-		{"escaped backslash", json.RawMessage(`{"operation": "parse", "schema_id": "schema\\with\\backslashes"}`), false},
-		{"escaped newline", json.RawMessage(`{"operation": "parse", "schema_id": "schema\nwith\nnewline"}`), false},
-		{"unicode escape", json.RawMessage(`{"operation": "parse", "schema_id": "schema\u0041"}`), false},
+		{"escaped quotes", json.RawMessage(`{"action": "parse", "schema_id": "schema\"with\"quotes"}`), false},
+		{"escaped backslash", json.RawMessage(`{"action": "parse", "schema_id": "schema\\with\\backslashes"}`), false},
+		{"escaped newline", json.RawMessage(`{"action": "parse", "schema_id": "schema\nwith\nnewline"}`), false},
+		{"unicode escape", json.RawMessage(`{"action": "parse", "schema_id": "schema\u0041"}`), false},
 	}
 
 	for _, tc := range testCases {
@@ -1423,7 +1423,7 @@ func TestProcessWithEscapedCharacters(t *testing.T) {
 func TestProcessPrettyField(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
 	config := jsonops.Config{
-		Operation: "produce",
+		Action: "produce",
 		SchemaID:  "test-schema",
 		Pretty:    true,
 	}
@@ -1459,7 +1459,7 @@ func TestProcessAllOptionalFieldsCombinations(t *testing.T) {
 			for _, strict := range values {
 				t.Run(fmt.Sprintf("apply_%v_structure_%v_strict_%v", apply, structure, strict), func(t *testing.T) {
 					config := jsonops.Config{
-						Operation:        "parse",
+						Action:        "parse",
 						SchemaID:         "test-schema",
 						ApplyDefaults:    &apply,
 						StructureData:    &structure,
@@ -1487,7 +1487,7 @@ func TestProcessAllOptionalFieldsCombinations(t *testing.T) {
 // TestProcessContextPreservation tests that context is preserved in ProcessInput
 func TestProcessContextPreservation(t *testing.T) {
 	node := createTestNode(t, "test-node-1")
-	config := jsonops.Config{Operation: "parse", SchemaID: "test-schema"}
+	config := jsonops.Config{Action: "parse", SchemaID: "test-schema"}
 	rawConfig, _ := json.Marshal(config)
 
 	// Test with background context
@@ -1526,7 +1526,7 @@ func TestProcessSwitchStatementCoverage(t *testing.T) {
 	inputData := map[string]interface{}{"data": "dGVzdA=="}
 
 	// Test parse case
-	config1 := jsonops.Config{Operation: "parse", SchemaID: "test-schema"}
+	config1 := jsonops.Config{Action: "parse", SchemaID: "test-schema"}
 	rawConfig1, _ := json.Marshal(config1)
 	input1 := createProcessInput(inputData, rawConfig1, -1)
 	output1 := node.Process(input1)
@@ -1541,7 +1541,7 @@ func TestProcessSwitchStatementCoverage(t *testing.T) {
 	}
 
 	// Test produce case
-	config2 := jsonops.Config{Operation: "produce", SchemaID: "test-schema"}
+	config2 := jsonops.Config{Action: "produce", SchemaID: "test-schema"}
 	rawConfig2, _ := json.Marshal(config2)
 	input2 := createProcessInput(inputData, rawConfig2, -1)
 	output2 := node.Process(input2)
@@ -1555,9 +1555,9 @@ func TestProcessSwitchStatementCoverage(t *testing.T) {
 		}
 	}
 
-	// Test default case (this is tricky - need an operation that passes validation but isn't parse/produce)
+	// Test default case (this is tricky - need an action that passes validation but isn't parse/produce)
 	// Since Validate() checks for parse/produce, we can't easily test default case
-	// But we can verify that operations that pass validation route correctly
+	// But we can verify that actions that pass validation route correctly
 }
 
 // Helper function to check if a string contains a substring (case-insensitive)

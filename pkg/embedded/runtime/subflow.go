@@ -790,7 +790,7 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 				Ctx:           ctx,
 				Data:          input,
 				Config:        nil,
-				RawConfig:     InjectOperationFromAction(normalized, config.PluginType, config.Action),
+				RawConfig:     InjectActionFromAction(normalized, config.PluginType, config.Action),
 				NodeId:        config.NodeId,
 				PluginType:    config.PluginType,
 				Label:         config.Label,
@@ -933,7 +933,7 @@ func (sp *SubflowProcessor) processSingleNodeAtDepth(
 		Ctx:           ctx,
 		Data:          input,
 		Config:        nil,
-		RawConfig:     InjectOperationFromAction(normalized, config.PluginType, config.Action),
+		RawConfig:     InjectActionFromAction(normalized, config.PluginType, config.Action),
 		NodeId:        config.NodeId,
 		PluginType:    config.PluginType,
 		Label:         config.Label,
@@ -1052,8 +1052,8 @@ func (sp *SubflowProcessor) buildItemInput(
 					for i, seg := range segments {
 						if seg.Path == iter.ArrayPath {
 							currentSegIdx = i
-						break
-					}
+							break
+						}
 					}
 
 					// If the mapping's path doesn't include the current iteration array path,

@@ -68,7 +68,7 @@ type EmbeddedNodeConfig struct {
 	Label string `json:"label"`
 	// PluginType identifies which processor handles this node
 	PluginType string `json:"pluginType"`
-	// Action is the node schema action (e.g. "JSON Parser", "CSV Producer"); used to derive operation for processors.
+	// Action is the node schema action (e.g. "JSON Parser", "CSV Producer"); used to derive action for processors.
 	Action string `json:"action,omitempty"`
 	// Embeddable indicates if this node can be embedded in a unit
 	Embeddable bool `json:"embeddable"`
@@ -171,7 +171,7 @@ type ExecutionUnit struct {
 	Type string `json:"type"`
 	// PluginType identifies which processor handles the parent node
 	PluginType string `json:"pluginType"`
-	// Action is the node schema action (e.g. "HTTP Trigger", "ESR Parser"); used to derive operation where applicable.
+	// Action is the node schema action (e.g. "HTTP Trigger", "ESR Parser"); used to derive action where applicable.
 	Action string `json:"action,omitempty"`
 	// Depth represents the unit's position in the execution graph
 	Depth int `json:"depth"`
