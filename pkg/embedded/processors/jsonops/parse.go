@@ -119,24 +119,15 @@ func (n *JsonOpsNode) executeParse(input runtime.ProcessInput, cfg *Config) runt
 		))
 	}
 
-	// Check if schema expects an array at root level
+	// Reject schemas with root-level array — root must always be an object
 	if parsedSchema.Type == schema.TypeArray {
-		// For array schemas, unmarshal to []interface{} and wrap it
-		var arrayData []interface{}
-		if err := json.Unmarshal(result.Data, &arrayData); err != nil {
-			return runtime.ErrorOutput(NewProcessingError(
-				n.NodeId(),
-				"parse",
-				"failed to unmarshal array data",
-				input.ItemIndex,
-				err,
-			))
-		}
-
-		// Wrap array under reserved key for root-as-array
-		return runtime.SuccessOutput(map[string]interface{}{
-			runtime.RootArrayKey: arrayData,
-		})
+		return runtime.ErrorOutput(NewValidationError(
+			n.NodeId(),
+			"parse",
+			"root of input data must be an object, not an array: array root schemas are not supported",
+			input.ItemIndex,
+			[]string{"schema root type is ARRAY but only OBJECT is supported at the root level"},
+		))
 	}
 
 	// Unmarshal validated data to map for output (for OBJECT schemas)

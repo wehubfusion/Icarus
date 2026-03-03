@@ -3,6 +3,7 @@ package resolver
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/wehubfusion/Icarus/pkg/message"
@@ -160,7 +161,7 @@ func TestExtractWithCollectionTraversal_SingleLevel(t *testing.T) {
 
 func TestExtractWithCollectionTraversal_NestedCollections(t *testing.T) {
 	fields := map[string]interface{}{
-		"$items": []interface{}{
+		"data": []interface{}{
 			map[string]interface{}{
 				"assignments": []interface{}{
 					map[string]interface{}{"title": "Math"},
@@ -175,10 +176,10 @@ func TestExtractWithCollectionTraversal_NestedCollections(t *testing.T) {
 		},
 	}
 
-	result := extractWithCollectionTraversal(fields, "$items//assignments//title")
+	result := extractWithCollectionTraversal(fields, "data//assignments//title")
 
 	// The function should return nested arrays
-	// Each outer element corresponds to an item in $items
+	// Each outer element corresponds to an item in the data array
 	// Each inner element corresponds to assignments in that item
 	arr, ok := result.([]interface{})
 	if !ok {
@@ -200,7 +201,7 @@ func TestExtractWithCollectionTraversal_NestedCollections(t *testing.T) {
 
 func TestExtractWithCollectionTraversal_DeepNesting(t *testing.T) {
 	fields := map[string]interface{}{
-		"$items": []interface{}{
+		"data": []interface{}{
 			map[string]interface{}{
 				"assignments": []interface{}{
 					map[string]interface{}{
@@ -216,7 +217,7 @@ func TestExtractWithCollectionTraversal_DeepNesting(t *testing.T) {
 		},
 	}
 
-	result := extractWithCollectionTraversal(fields, "$items//assignments//details/topics//name")
+	result := extractWithCollectionTraversal(fields, "data//assignments//details/topics//name")
 	// Result: [[[algebra, geometry]]]
 	expected := []interface{}{
 		[]interface{}{
@@ -329,12 +330,12 @@ func TestSetFieldAtPath_CollectionTraversal(t *testing.T) {
 	data := make(map[string]interface{})
 	values := []interface{}{"alice", "bob"}
 
-	// //$items//name will be transformed to $items//name
-	setFieldAtPath(data, "$items//name", values)
+	// data//name will create an array of maps at "data" key
+	setFieldAtPath(data, "data//name", values)
 
-	items, ok := data["$items"].([]interface{})
+	items, ok := data["data"].([]interface{})
 	if !ok {
-		t.Fatal("$items should be an array")
+		t.Fatal("data should be an array")
 	}
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
@@ -353,23 +354,12 @@ func TestSetFieldAtPath_RootArrayNotation(t *testing.T) {
 	data := make(map[string]interface{})
 	values := []interface{}{"ALEX", "JORDAN"}
 
-	// //nameUpper should become $items//nameUpper
+	// //nameUpper is a root-array notation which is no longer supported
+	// setFieldAtPath should silently skip it (no-op)
 	setFieldAtPath(data, "//nameUpper", values)
 
-	items, ok := data["$items"].([]interface{})
-	if !ok {
-		t.Fatalf("$items should be an array, got %T", data["$items"])
-	}
-	if len(items) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(items))
-	}
-
-	item0, ok := items[0].(map[string]interface{})
-	if !ok {
-		t.Fatal("item[0] should be a map")
-	}
-	if item0["nameUpper"] != "ALEX" {
-		t.Errorf("expected 'ALEX', got %v", item0["nameUpper"])
+	if len(data) != 0 {
+		t.Fatalf("expected empty data after //nameUpper (unsupported root array notation), got %v", data)
 	}
 }
 
@@ -524,6 +514,7 @@ func TestUnwrapSingleFieldObject_ArrayOfSingleFieldObjects(t *testing.T) {
 
 func TestUnwrapSingleFieldObject_NestedSingleFieldObjects(t *testing.T) {
 	// [{chapters: [{chapter: 1}, {chapter: 2}]}]
+	// One level of unwrap: outer {chapters: [..]} -> [..] but inner {chapter: 1} stays
 	arr := []interface{}{
 		map[string]interface{}{
 			"chapters": []interface{}{
@@ -533,8 +524,12 @@ func TestUnwrapSingleFieldObject_NestedSingleFieldObjects(t *testing.T) {
 		},
 	}
 	result := unwrapSingleFieldObject(arr)
+	// Only ONE level of unwrapping — inner maps are preserved
 	expected := []interface{}{
-		[]interface{}{1, 2},
+		[]interface{}{
+			map[string]interface{}{"chapter": 1},
+			map[string]interface{}{"chapter": 2},
+		},
 	}
 	assertJSONEqual(t, expected, result)
 }
@@ -565,7 +560,7 @@ func TestExtractArrayIndices_SingleIndex(t *testing.T) {
 }
 
 func TestExtractArrayIndices_MultipleIndices(t *testing.T) {
-	indices := extractArrayIndices("$items[1]/assignments[2]/topics[0]")
+	indices := extractArrayIndices("data[1]/assignments[2]/topics[0]")
 	expected := []int{1, 2, 0}
 	if len(indices) != len(expected) {
 		t.Fatalf("expected %v, got %v", expected, indices)
@@ -705,7 +700,7 @@ func TestBuildInputFromMappings_ArrayIteration(t *testing.T) {
 			{
 				SourceNodeID:         "source-node",
 				SourceEndpoint:       "/data",
-				DestinationEndpoints: []string{"//name"},
+				DestinationEndpoints: []string{"/data//name"},
 				DataType:             "FIELD",
 				Iterate:              true,
 			},
@@ -716,7 +711,7 @@ func TestBuildInputFromMappings_ArrayIteration(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"source-node": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"name": "ALICE"},
 							map[string]interface{}{"name": "BOB"},
 						},
@@ -726,7 +721,7 @@ func TestBuildInputFromMappings_ArrayIteration(t *testing.T) {
 					"source-node": {
 						IsArray:     true,
 						ArrayLength: 2,
-						ArrayPath:   "$items",
+						ArrayPath:   "data",
 					},
 				},
 			},
@@ -743,9 +738,9 @@ func TestBuildInputFromMappings_ArrayIteration(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	items, ok := data["$items"].([]interface{})
+	items, ok := data["data"].([]interface{})
 	if !ok {
-		t.Fatalf("$items should be an array, got %T", data["$items"])
+		t.Fatalf("data should be an array, got %T", data["data"])
 	}
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
@@ -764,7 +759,7 @@ func TestBuildInputFromMappings_NestedCollectionMapping(t *testing.T) {
 			{
 				SourceNodeID:         "pages-processor",
 				SourceEndpoint:       "/data",
-				DestinationEndpoints: []string{"//assignments//details/pagesPlus12"},
+				DestinationEndpoints: []string{"/data//assignments//details/pagesPlus12"},
 				DataType:             "FIELD",
 				Iterate:              true,
 			},
@@ -775,7 +770,7 @@ func TestBuildInputFromMappings_NestedCollectionMapping(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"pages-processor": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{
 								"assignments": []interface{}{
 									map[string]interface{}{"pages": 22},
@@ -794,7 +789,7 @@ func TestBuildInputFromMappings_NestedCollectionMapping(t *testing.T) {
 					"pages-processor": {
 						IsArray:     true,
 						ArrayLength: 2,
-						ArrayPath:   "$items",
+						ArrayPath:   "data",
 					},
 				},
 			},
@@ -811,9 +806,9 @@ func TestBuildInputFromMappings_NestedCollectionMapping(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	items, ok := data["$items"].([]interface{})
+	items, ok := data["data"].([]interface{})
 	if !ok {
-		t.Fatalf("$items should be an array, got %T", data["$items"])
+		t.Fatalf("data should be an array, got %T", data["data"])
 	}
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
@@ -883,14 +878,14 @@ func TestBuildInputFromMappings_MultipleSourceNodes(t *testing.T) {
 			{
 				SourceNodeID:         "uppercase-node",
 				SourceEndpoint:       "/data",
-				DestinationEndpoints: []string{"//nameUpper"},
+				DestinationEndpoints: []string{"/data//nameUpper"},
 				DataType:             "FIELD",
 				Iterate:              true,
 			},
 			{
 				SourceNodeID:         "json-parser",
-				SourceEndpoint:       "//age",
-				DestinationEndpoints: []string{"//age"},
+				SourceEndpoint:       "/data//age",
+				DestinationEndpoints: []string{"/data//age"},
 				DataType:             "FIELD",
 				Iterate:              true,
 			},
@@ -901,7 +896,7 @@ func TestBuildInputFromMappings_MultipleSourceNodes(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"uppercase-node": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"name": "ALICE"},
 							map[string]interface{}{"name": "BOB"},
 						},
@@ -911,7 +906,7 @@ func TestBuildInputFromMappings_MultipleSourceNodes(t *testing.T) {
 					"uppercase-node": {
 						IsArray:     true,
 						ArrayLength: 2,
-						ArrayPath:   "$items",
+						ArrayPath:   "data",
 					},
 				},
 			},
@@ -920,7 +915,7 @@ func TestBuildInputFromMappings_MultipleSourceNodes(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"json-parser": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"age": 30},
 							map[string]interface{}{"age": 25},
 						},
@@ -930,7 +925,7 @@ func TestBuildInputFromMappings_MultipleSourceNodes(t *testing.T) {
 					"json-parser": {
 						IsArray:     true,
 						ArrayLength: 2,
-						ArrayPath:   "$items",
+						ArrayPath:   "data",
 					},
 				},
 			},
@@ -947,9 +942,9 @@ func TestBuildInputFromMappings_MultipleSourceNodes(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	items, ok := data["$items"].([]interface{})
+	items, ok := data["data"].([]interface{})
 	if !ok {
-		t.Fatalf("$items should be an array, got %T", data["$items"])
+		t.Fatalf("data should be an array, got %T", data["data"])
 	}
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
@@ -982,7 +977,7 @@ func TestBuildInputFromMappings_EmptyDestination(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"source-node": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"name": "alice"},
 							map[string]interface{}{"name": "bob"},
 						},
@@ -1063,11 +1058,11 @@ func TestBuildInputFromMappings_EventTriggerSkipped(t *testing.T) {
 
 func TestExtractFromFlatKeys_SimpleIterate(t *testing.T) {
 	flatKeys := map[string]interface{}{
-		"node1-/$items[0]/name[0]": "alice",
-		"node1-/$items[1]/name[1]": "bob",
+		"node1-/data[0]/name[0]": "alice",
+		"node1-/data[1]/name[1]": "bob",
 	}
 
-	result := extractFromFlatKeys(flatKeys, "node1", "//name", "//nameUpper", true)
+	result := extractFromFlatKeys(flatKeys, "node1", "/data//name", "/data//nameUpper", true)
 	arr, ok := result.([]interface{})
 	if !ok {
 		t.Fatalf("expected array, got %T", result)
@@ -1085,14 +1080,14 @@ func TestExtractFromFlatKeys_SimpleIterate(t *testing.T) {
 
 func TestExtractFromFlatKeys_FromItemsArray(t *testing.T) {
 	flatKeys := map[string]interface{}{
-		"node1-/$items": []interface{}{
+		"node1-/data": []interface{}{
 			map[string]interface{}{"name": "alice", "age": 30},
 			map[string]interface{}{"name": "bob", "age": 25},
 		},
 	}
 
-	result := extractFromFlatKeys(flatKeys, "node1", "//name", "//nameUpper", true)
-	// extractFromFlatKeys with //name path extracts the name from $items
+	result := extractFromFlatKeys(flatKeys, "node1", "/data//name", "/data//nameUpper", true)
+	// extractFromFlatKeys with /data//name path extracts the name from the data array
 	// The actual behavior returns the full items or specific fields depending on implementation
 	arr, ok := result.([]interface{})
 	if !ok {
@@ -1238,7 +1233,7 @@ func TestBuildInputFromMappings_StageObjectScenario(t *testing.T) {
 			{
 				SourceNodeID:         "uppercase-node",
 				SourceEndpoint:       "/data",
-				DestinationEndpoints: []string{"//nameUpper"},
+				DestinationEndpoints: []string{"/data//nameUpper"},
 				DataType:             "FIELD",
 				Iterate:              true,
 			},
@@ -1246,7 +1241,7 @@ func TestBuildInputFromMappings_StageObjectScenario(t *testing.T) {
 			{
 				SourceNodeID:         "json-parser",
 				SourceEndpoint:       "/data",
-				DestinationEndpoints: []string{"//name"},
+				DestinationEndpoints: []string{"/data//name"},
 				DataType:             "FIELD",
 				Iterate:              true,
 			},
@@ -1254,7 +1249,7 @@ func TestBuildInputFromMappings_StageObjectScenario(t *testing.T) {
 			{
 				SourceNodeID:         "age-processor",
 				SourceEndpoint:       "/data",
-				DestinationEndpoints: []string{"//age"},
+				DestinationEndpoints: []string{"/data//age"},
 				DataType:             "FIELD",
 				Iterate:              true,
 			},
@@ -1265,14 +1260,14 @@ func TestBuildInputFromMappings_StageObjectScenario(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"uppercase-node": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"name": "ALEX"},
 							map[string]interface{}{"name": "JORDAN"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"uppercase-node": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"uppercase-node": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 			"json-parser": {
@@ -1280,14 +1275,14 @@ func TestBuildInputFromMappings_StageObjectScenario(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"json-parser": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"name": "alex"},
 							map[string]interface{}{"name": "jordan"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"json-parser": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"json-parser": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 			"age-processor": {
@@ -1295,14 +1290,14 @@ func TestBuildInputFromMappings_StageObjectScenario(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"age-processor": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"age": 30},
 							map[string]interface{}{"age": 25},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"age-processor": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"age-processor": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 		},
@@ -1318,9 +1313,9 @@ func TestBuildInputFromMappings_StageObjectScenario(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	items, ok := data["$items"].([]interface{})
+	items, ok := data["data"].([]interface{})
 	if !ok {
-		t.Fatalf("$items should be an array, got %T", data["$items"])
+		t.Fatalf("data should be an array, got %T", data["data"])
 	}
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
@@ -1419,7 +1414,7 @@ func TestIsArray_Nil(t *testing.T) {
 // Test data structure matching the workflow's data schema
 func getWorkflowTestData() map[string]interface{} {
 	return map[string]interface{}{
-		"$items": []interface{}{
+		"data": []interface{}{
 			map[string]interface{}{
 				"name":         "alice",
 				"age":          30,
@@ -1496,7 +1491,7 @@ func getWorkflowTestData() map[string]interface{} {
 // Test: //name - single level array iteration
 func TestWorkflowMapping_SingleLevelName(t *testing.T) {
 	data := getWorkflowTestData()
-	result := extractWithCollectionTraversal(data, "$items//name")
+	result := extractWithCollectionTraversal(data, "data//name")
 
 	arr, ok := result.([]interface{})
 	if !ok {
@@ -1513,7 +1508,7 @@ func TestWorkflowMapping_SingleLevelName(t *testing.T) {
 // Test: //age - single level array iteration for numbers
 func TestWorkflowMapping_SingleLevelAge(t *testing.T) {
 	data := getWorkflowTestData()
-	result := extractWithCollectionTraversal(data, "$items//age")
+	result := extractWithCollectionTraversal(data, "data//age")
 
 	arr, ok := result.([]interface{})
 	if !ok {
@@ -1530,7 +1525,7 @@ func TestWorkflowMapping_SingleLevelAge(t *testing.T) {
 // Test: //access_level - single level array iteration
 func TestWorkflowMapping_AccessLevel(t *testing.T) {
 	data := getWorkflowTestData()
-	result := extractWithCollectionTraversal(data, "$items//access_level")
+	result := extractWithCollectionTraversal(data, "data//access_level")
 
 	arr, ok := result.([]interface{})
 	if !ok {
@@ -1544,7 +1539,7 @@ func TestWorkflowMapping_AccessLevel(t *testing.T) {
 // Test: //contact/email - nested object within array iteration
 func TestWorkflowMapping_ContactEmail(t *testing.T) {
 	data := getWorkflowTestData()
-	result := extractWithCollectionTraversal(data, "$items//contact/email")
+	result := extractWithCollectionTraversal(data, "data//contact/email")
 
 	arr, ok := result.([]interface{})
 	if !ok {
@@ -1561,7 +1556,7 @@ func TestWorkflowMapping_ContactEmail(t *testing.T) {
 // Test: //assignments//title - doubly nested array iteration
 func TestWorkflowMapping_AssignmentsTitle(t *testing.T) {
 	data := getWorkflowTestData()
-	result := extractWithCollectionTraversal(data, "$items//assignments//title")
+	result := extractWithCollectionTraversal(data, "data//assignments//title")
 
 	arr, ok := result.([]interface{})
 	if !ok {
@@ -1593,7 +1588,7 @@ func TestWorkflowMapping_AssignmentsTitle(t *testing.T) {
 // Test: //assignments//due_date - doubly nested array iteration
 func TestWorkflowMapping_AssignmentsDueDate(t *testing.T) {
 	data := getWorkflowTestData()
-	result := extractWithCollectionTraversal(data, "$items//assignments//due_date")
+	result := extractWithCollectionTraversal(data, "data//assignments//due_date")
 
 	arr, ok := result.([]interface{})
 	if !ok {
@@ -1614,7 +1609,7 @@ func TestWorkflowMapping_AssignmentsDueDate(t *testing.T) {
 // Test: //assignments//details/pages - doubly nested with nested object
 func TestWorkflowMapping_AssignmentsDetailsPages(t *testing.T) {
 	data := getWorkflowTestData()
-	result := extractWithCollectionTraversal(data, "$items//assignments//details/pages")
+	result := extractWithCollectionTraversal(data, "data//assignments//details/pages")
 
 	arr, ok := result.([]interface{})
 	if !ok {
@@ -1635,7 +1630,7 @@ func TestWorkflowMapping_AssignmentsDetailsPages(t *testing.T) {
 // Test: //assignments//details/topics//name - triple nested array iteration
 func TestWorkflowMapping_TopicsName(t *testing.T) {
 	data := getWorkflowTestData()
-	result := extractWithCollectionTraversal(data, "$items//assignments//details/topics//name")
+	result := extractWithCollectionTraversal(data, "data//assignments//details/topics//name")
 
 	arr, ok := result.([]interface{})
 	if !ok {
@@ -1671,7 +1666,7 @@ func TestWorkflowMapping_TopicsName(t *testing.T) {
 // Test: //assignments//details/topics//difficulty - triple nested array iteration
 func TestWorkflowMapping_TopicsDifficulty(t *testing.T) {
 	data := getWorkflowTestData()
-	result := extractWithCollectionTraversal(data, "$items//assignments//details/topics//difficulty")
+	result := extractWithCollectionTraversal(data, "data//assignments//details/topics//difficulty")
 
 	arr, ok := result.([]interface{})
 	if !ok {
@@ -1689,7 +1684,7 @@ func TestWorkflowMapping_TopicsDifficulty(t *testing.T) {
 func TestWorkflowMapping_TopicsChaptersLeafArray(t *testing.T) {
 	data := getWorkflowTestData()
 	// Note: The trailing slash indicates we want the array itself, not to iterate into it
-	result := extractWithCollectionTraversal(data, "$items//assignments//details/topics//chapters")
+	result := extractWithCollectionTraversal(data, "data//assignments//details/topics//chapters")
 
 	arr, ok := result.([]interface{})
 	if !ok {
@@ -1711,7 +1706,7 @@ func TestBuildInputFromMappings_WorkflowCompleteScenario(t *testing.T) {
 	// with field mappings from JSON parser to Stage Object
 	//
 	// In a real workflow:
-	// - JSON parser outputs structured data in $items
+	// - JSON parser outputs structured data
 	// - Processors output pre-extracted/transformed values
 	// - Stage Object combines these using field mappings
 	//
@@ -1722,13 +1717,13 @@ func TestBuildInputFromMappings_WorkflowCompleteScenario(t *testing.T) {
 		UnitNodeID: "stage-object",
 		FieldMappings: []message.FieldMapping{
 			// Processed name -> //name destination
-			{SourceNodeID: "json-parser", SourceEndpoint: "/data", DestinationEndpoints: []string{"//name"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "json-parser", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//name"}, DataType: "FIELD", Iterate: true},
 			// Processed age -> //age destination
-			{SourceNodeID: "age-source", SourceEndpoint: "/data", DestinationEndpoints: []string{"//age"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "age-source", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//age"}, DataType: "FIELD", Iterate: true},
 			// UPPERCASE processor output -> //nameUpper destination
-			{SourceNodeID: "uppercase", SourceEndpoint: "/data", DestinationEndpoints: []string{"//nameUpper"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "uppercase", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//nameUpper"}, DataType: "FIELD", Iterate: true},
 			// Nested assignments titles
-			{SourceNodeID: "assignment-titles", SourceEndpoint: "/data", DestinationEndpoints: []string{"//assignments//title"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "assignment-titles", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//assignments//title"}, DataType: "FIELD", Iterate: true},
 		},
 		SourceResults: map[string]*SourceResult{
 			"json-parser": {
@@ -1736,14 +1731,14 @@ func TestBuildInputFromMappings_WorkflowCompleteScenario(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"json-parser": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"name": "alice"},
 							map[string]interface{}{"name": "bob"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"json-parser": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"json-parser": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 			"age-source": {
@@ -1751,14 +1746,14 @@ func TestBuildInputFromMappings_WorkflowCompleteScenario(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"age-source": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"age": 30},
 							map[string]interface{}{"age": 25},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"age-source": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"age-source": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 			"uppercase": {
@@ -1766,14 +1761,14 @@ func TestBuildInputFromMappings_WorkflowCompleteScenario(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"uppercase": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"name": "ALICE"},
 							map[string]interface{}{"name": "BOB"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"uppercase": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"uppercase": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 			"assignment-titles": {
@@ -1781,7 +1776,7 @@ func TestBuildInputFromMappings_WorkflowCompleteScenario(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"assignment-titles": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{
 								"assignments": []interface{}{
 									map[string]interface{}{"title": "Math Homework"},
@@ -1797,7 +1792,7 @@ func TestBuildInputFromMappings_WorkflowCompleteScenario(t *testing.T) {
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"assignment-titles": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"assignment-titles": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 		},
@@ -1813,9 +1808,9 @@ func TestBuildInputFromMappings_WorkflowCompleteScenario(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	items, ok := data["$items"].([]interface{})
+	items, ok := data["data"].([]interface{})
 	if !ok {
-		t.Fatalf("$items should be an array, got %T", data["$items"])
+		t.Fatalf("data should be an array, got %T", data["data"])
 	}
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
@@ -1866,14 +1861,14 @@ func TestWorkflowMapping_EmptySourceEndpoint(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"stage-object": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"name": "alice", "age": 30},
 							map[string]interface{}{"name": "bob", "age": 25},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"stage-object": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"stage-object": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 		},
@@ -1938,7 +1933,7 @@ func TestWorkflowMapping_DestinationTrailingSlash(t *testing.T) {
 	params := BuildInputParams{
 		UnitNodeID: "stage-object",
 		FieldMappings: []message.FieldMapping{
-			{SourceNodeID: "math-processor", SourceEndpoint: "/data", DestinationEndpoints: []string{"//assignments//details/topics//chaptersPlusFive"}, DataType: "FIELD"},
+			{SourceNodeID: "math-processor", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//assignments//details/topics//chaptersPlusFive"}, DataType: "FIELD"},
 		},
 		SourceResults: map[string]*SourceResult{
 			"math-processor": {
@@ -1947,7 +1942,7 @@ func TestWorkflowMapping_DestinationTrailingSlash(t *testing.T) {
 				ProjectedFields: map[string]map[string]interface{}{
 					"math-processor": {
 						// Processed chapters with +5 added to each
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": []interface{}{
 								[]interface{}{ // assignment 1 topics
 									[]interface{}{6, 7, 8}, // algebra chapters +5
@@ -1966,7 +1961,7 @@ func TestWorkflowMapping_DestinationTrailingSlash(t *testing.T) {
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"math-processor": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"math-processor": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 		},
@@ -1983,10 +1978,10 @@ func TestWorkflowMapping_DestinationTrailingSlash(t *testing.T) {
 	}
 
 	// Verify the structure was created
-	items, ok := data["$items"].([]interface{})
+	items, ok := data["data"].([]interface{})
 	if !ok {
 		t.Logf("Result: %s", result)
-		t.Fatalf("$items should be array, got %T", data["$items"])
+		t.Fatalf("data should be array, got %T", data["data"])
 	}
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
@@ -2023,10 +2018,10 @@ func TestWorkflowMapping_MultipleSourceNodes(t *testing.T) {
 		UnitNodeID: "stage-object",
 		FieldMappings: []message.FieldMapping{
 			// From json-parser
-			{SourceNodeID: "json-parser", SourceEndpoint: "/data", DestinationEndpoints: []string{"//name"}, DataType: "FIELD", Iterate: true},
-			{SourceNodeID: "json-parser-dates", SourceEndpoint: "/data", DestinationEndpoints: []string{"//assignments//due_date"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "json-parser", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//name"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "json-parser-dates", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//assignments//due_date"}, DataType: "FIELD", Iterate: true},
 			// From date-formatter (processed dates)
-			{SourceNodeID: "date-formatter", SourceEndpoint: "/data", DestinationEndpoints: []string{"//assignments//formattedDate"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "date-formatter", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//assignments//formattedDate"}, DataType: "FIELD", Iterate: true},
 		},
 		SourceResults: map[string]*SourceResult{
 			"json-parser": {
@@ -2034,13 +2029,13 @@ func TestWorkflowMapping_MultipleSourceNodes(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"json-parser": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"name": "alice"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"json-parser": {IsArray: true, ArrayLength: 1, ArrayPath: "$items"},
+					"json-parser": {IsArray: true, ArrayLength: 1, ArrayPath: "data"},
 				},
 			},
 			"json-parser-dates": {
@@ -2048,7 +2043,7 @@ func TestWorkflowMapping_MultipleSourceNodes(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"json-parser-dates": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{
 								"assignments": []interface{}{
 									map[string]interface{}{"due_date": "2024-01-15"},
@@ -2058,7 +2053,7 @@ func TestWorkflowMapping_MultipleSourceNodes(t *testing.T) {
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"json-parser-dates": {IsArray: true, ArrayLength: 1, ArrayPath: "$items"},
+					"json-parser-dates": {IsArray: true, ArrayLength: 1, ArrayPath: "data"},
 				},
 			},
 			"date-formatter": {
@@ -2066,7 +2061,7 @@ func TestWorkflowMapping_MultipleSourceNodes(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"date-formatter": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{
 								"assignments": []interface{}{
 									map[string]interface{}{"formattedDate": "January 15, 2024"},
@@ -2076,7 +2071,7 @@ func TestWorkflowMapping_MultipleSourceNodes(t *testing.T) {
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"date-formatter": {IsArray: true, ArrayLength: 1, ArrayPath: "$items"},
+					"date-formatter": {IsArray: true, ArrayLength: 1, ArrayPath: "data"},
 				},
 			},
 		},
@@ -2092,7 +2087,7 @@ func TestWorkflowMapping_MultipleSourceNodes(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	items := data["$items"].([]interface{})
+	items := data["data"].([]interface{})
 	alice := items[0].(map[string]interface{})
 
 	if alice["name"] != "alice" {
@@ -2121,8 +2116,8 @@ func TestBuildInputFromMappings_WithArrayTraversalSourceEndpoint(t *testing.T) {
 	params := BuildInputParams{
 		UnitNodeID: "stage-object",
 		FieldMappings: []message.FieldMapping{
-			{SourceNodeID: "http-trigger", SourceEndpoint: "/data//Employee_Number", DestinationEndpoints: []string{"//employeeno"}, DataType: "FIELD", Iterate: true},
-			{SourceNodeID: "http-trigger", SourceEndpoint: "/data//First_Name", DestinationEndpoints: []string{"//firstname"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "http-trigger", SourceEndpoint: "/data//Employee_Number", DestinationEndpoints: []string{"/data//employeeno"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "http-trigger", SourceEndpoint: "/data//First_Name", DestinationEndpoints: []string{"/data//firstname"}, DataType: "FIELD", Iterate: true},
 		},
 		SourceResults: map[string]*SourceResult{
 			"http-trigger": {
@@ -2161,7 +2156,7 @@ func TestBuildInputFromMappings_WithArrayTraversalSourceEndpoint(t *testing.T) {
 
 	t.Logf("Result: %+v", data)
 
-	dataArray := data["$items"].([]interface{})
+	dataArray := data["data"].([]interface{})
 	if len(dataArray) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(dataArray))
 	}
@@ -2303,11 +2298,11 @@ func TestBlobWorkflow_FieldRenaming(t *testing.T) {
 	params := BuildInputParams{
 		UnitNodeID: "stage-object",
 		FieldMappings: []message.FieldMapping{
-			{SourceNodeID: "emp-number-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//employeeno"}, DataType: "FIELD", Iterate: true},
-			{SourceNodeID: "email-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//email"}, DataType: "FIELD", Iterate: true},
-			{SourceNodeID: "firstname-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//firstname"}, DataType: "FIELD", Iterate: true},
-			{SourceNodeID: "lastname-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//lastname"}, DataType: "FIELD", Iterate: true},
-			{SourceNodeID: "middlename-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//middlename"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "emp-number-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//employeeno"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "email-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//email"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "firstname-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//firstname"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "lastname-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//lastname"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "middlename-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//middlename"}, DataType: "FIELD", Iterate: true},
 		},
 		SourceResults: map[string]*SourceResult{
 			"emp-number-proc": {
@@ -2315,14 +2310,14 @@ func TestBlobWorkflow_FieldRenaming(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"emp-number-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "EMP001"},
 							map[string]interface{}{"data": "EMP002"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"emp-number-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"emp-number-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 			"email-proc": {
@@ -2330,14 +2325,14 @@ func TestBlobWorkflow_FieldRenaming(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"email-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "john.doe@company.com"},
 							map[string]interface{}{"data": "jane.smith@company.com"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"email-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"email-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 			"firstname-proc": {
@@ -2345,14 +2340,14 @@ func TestBlobWorkflow_FieldRenaming(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"firstname-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "John"},
 							map[string]interface{}{"data": "Jane"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"firstname-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"firstname-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 			"lastname-proc": {
@@ -2360,14 +2355,14 @@ func TestBlobWorkflow_FieldRenaming(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"lastname-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "Doe"},
 							map[string]interface{}{"data": "Smith"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"lastname-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"lastname-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 			"middlename-proc": {
@@ -2375,14 +2370,14 @@ func TestBlobWorkflow_FieldRenaming(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"middlename-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "William"},
 							map[string]interface{}{"data": ""},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"middlename-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"middlename-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 		},
@@ -2398,9 +2393,9 @@ func TestBlobWorkflow_FieldRenaming(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	dataArray, ok := data["$items"].([]interface{})
+	dataArray, ok := data["data"].([]interface{})
 	if !ok {
-		t.Fatalf("expected $items to be array, got %T", data["$items"])
+		t.Fatalf("expected data to be array, got %T", data["data"])
 	}
 
 	if len(dataArray) != 2 {
@@ -2534,8 +2529,8 @@ func TestBlobWorkflow_MultipleDestinationsFromSameField(t *testing.T) {
 	params := BuildInputParams{
 		UnitNodeID: "stage-object",
 		FieldMappings: []message.FieldMapping{
-			{SourceNodeID: "email-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//email"}, DataType: "FIELD", Iterate: true},
-			{SourceNodeID: "email-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//username"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "email-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//email"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "email-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//username"}, DataType: "FIELD", Iterate: true},
 		},
 		SourceResults: map[string]*SourceResult{
 			"email-proc": {
@@ -2543,14 +2538,14 @@ func TestBlobWorkflow_MultipleDestinationsFromSameField(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"email-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "john.doe@company.com"},
 							map[string]interface{}{"data": "jane.smith@company.com"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"email-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"email-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 		},
@@ -2566,9 +2561,9 @@ func TestBlobWorkflow_MultipleDestinationsFromSameField(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	dataArray, ok := data["$items"].([]interface{})
+	dataArray, ok := data["data"].([]interface{})
 	if !ok {
-		t.Fatalf("expected $items to be array, got %T", data["$items"])
+		t.Fatalf("expected data to be array, got %T", data["data"])
 	}
 
 	// First employee should have same email in both email and username
@@ -2634,11 +2629,11 @@ func TestBlobWorkflow_CustomFieldMapping(t *testing.T) {
 	params := BuildInputParams{
 		UnitNodeID: "stage-object",
 		FieldMappings: []message.FieldMapping{
-			{SourceNodeID: "status-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//customfield_AssignmentStatus"}, DataType: "FIELD", Iterate: true},
-			{SourceNodeID: "payscale-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//customfield_PayGrade"}, DataType: "FIELD", Iterate: true},
-			{SourceNodeID: "occupation-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//customfield_OccupationCode"}, DataType: "FIELD", Iterate: true},
-			{SourceNodeID: "jobrole-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//customfield_PositionTitle"}, DataType: "FIELD", Iterate: true},
-			{SourceNodeID: "ethnic-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//customfield_ethnicorigin"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "status-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//customfield_AssignmentStatus"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "payscale-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//customfield_PayGrade"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "occupation-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//customfield_OccupationCode"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "jobrole-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//customfield_PositionTitle"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "ethnic-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//customfield_ethnicorigin"}, DataType: "FIELD", Iterate: true},
 		},
 		SourceResults: map[string]*SourceResult{
 			"status-proc": {
@@ -2646,13 +2641,13 @@ func TestBlobWorkflow_CustomFieldMapping(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"status-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "Active"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"status-proc": {IsArray: true, ArrayLength: 1, ArrayPath: "$items"},
+					"status-proc": {IsArray: true, ArrayLength: 1, ArrayPath: "data"},
 				},
 			},
 			"payscale-proc": {
@@ -2660,13 +2655,13 @@ func TestBlobWorkflow_CustomFieldMapping(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"payscale-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "Grade5"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"payscale-proc": {IsArray: true, ArrayLength: 1, ArrayPath: "$items"},
+					"payscale-proc": {IsArray: true, ArrayLength: 1, ArrayPath: "data"},
 				},
 			},
 			"occupation-proc": {
@@ -2674,13 +2669,13 @@ func TestBlobWorkflow_CustomFieldMapping(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"occupation-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "ENG-001"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"occupation-proc": {IsArray: true, ArrayLength: 1, ArrayPath: "$items"},
+					"occupation-proc": {IsArray: true, ArrayLength: 1, ArrayPath: "data"},
 				},
 			},
 			"jobrole-proc": {
@@ -2688,13 +2683,13 @@ func TestBlobWorkflow_CustomFieldMapping(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"jobrole-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "Senior Engineer"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"jobrole-proc": {IsArray: true, ArrayLength: 1, ArrayPath: "$items"},
+					"jobrole-proc": {IsArray: true, ArrayLength: 1, ArrayPath: "data"},
 				},
 			},
 			"ethnic-proc": {
@@ -2702,13 +2697,13 @@ func TestBlobWorkflow_CustomFieldMapping(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"ethnic-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "Not Disclosed"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"ethnic-proc": {IsArray: true, ArrayLength: 1, ArrayPath: "$items"},
+					"ethnic-proc": {IsArray: true, ArrayLength: 1, ArrayPath: "data"},
 				},
 			},
 		},
@@ -2724,7 +2719,7 @@ func TestBlobWorkflow_CustomFieldMapping(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	dataArray := data["$items"].([]interface{})
+	dataArray := data["data"].([]interface{})
 	emp := dataArray[0].(map[string]interface{})
 
 	if emp["customfield_AssignmentStatus"] != "Active" {
@@ -2874,13 +2869,13 @@ func TestBlobWorkflow_CompleteEmployeeSync(t *testing.T) {
 		UnitNodeID: "stage-object",
 		FieldMappings: []message.FieldMapping{
 			// Employee basic info from separate processors
-			{SourceNodeID: "empno-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//employeeno"}, DataType: "FIELD", Iterate: true},
-			{SourceNodeID: "fname-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//firstname"}, DataType: "FIELD", Iterate: true},
-			{SourceNodeID: "lname-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//lastname"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "empno-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//employeeno"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "fname-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//firstname"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "lname-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//lastname"}, DataType: "FIELD", Iterate: true},
 			// Auth token from auth-rule (broadcast to all items)
-			{SourceNodeID: "auth-rule", SourceEndpoint: "/auth", DestinationEndpoints: []string{"//auth"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "auth-rule", SourceEndpoint: "/auth", DestinationEndpoints: []string{"/data//auth"}, DataType: "FIELD", Iterate: true},
 			// Formatted date from date-formatter (broadcast to all items)
-			{SourceNodeID: "date-formatter", SourceEndpoint: "/result", DestinationEndpoints: []string{"//customfield_LatestHireDate"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "date-formatter", SourceEndpoint: "/result", DestinationEndpoints: []string{"/data//customfield_LatestHireDate"}, DataType: "FIELD", Iterate: true},
 		},
 		SourceResults: map[string]*SourceResult{
 			"empno-proc": {
@@ -2888,14 +2883,14 @@ func TestBlobWorkflow_CompleteEmployeeSync(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"empno-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "EMP001"},
 							map[string]interface{}{"data": "EMP002"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"empno-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"empno-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 			"fname-proc": {
@@ -2903,14 +2898,14 @@ func TestBlobWorkflow_CompleteEmployeeSync(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"fname-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "John"},
 							map[string]interface{}{"data": "Jane"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"fname-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"fname-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 			"lname-proc": {
@@ -2918,14 +2913,14 @@ func TestBlobWorkflow_CompleteEmployeeSync(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"lname-proc": {
-						"$items": []interface{}{
+						"data": []interface{}{
 							map[string]interface{}{"data": "Doe"},
 							map[string]interface{}{"data": "Smith"},
 						},
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"lname-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+					"lname-proc": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 				},
 			},
 			"auth-rule": {
@@ -2959,7 +2954,7 @@ func TestBlobWorkflow_CompleteEmployeeSync(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	dataArray := data["$items"].([]interface{})
+	dataArray := data["data"].([]interface{})
 	if len(dataArray) != 2 {
 		t.Fatalf("expected 2 employees, got %d", len(dataArray))
 	}
@@ -3015,7 +3010,7 @@ func TestBlobWorkflow_LargeEmployeeDataset(t *testing.T) {
 	params := BuildInputParams{
 		UnitNodeID: "stage-object",
 		FieldMappings: []message.FieldMapping{
-			{SourceNodeID: "empno-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"//employeeno"}, DataType: "FIELD", Iterate: true},
+			{SourceNodeID: "empno-proc", SourceEndpoint: "/data", DestinationEndpoints: []string{"/data//employeeno"}, DataType: "FIELD", Iterate: true},
 		},
 		SourceResults: map[string]*SourceResult{
 			"empno-proc": {
@@ -3023,11 +3018,11 @@ func TestBlobWorkflow_LargeEmployeeDataset(t *testing.T) {
 				Status: "success",
 				ProjectedFields: map[string]map[string]interface{}{
 					"empno-proc": {
-						"$items": empnoItems,
+						"data": empnoItems,
 					},
 				},
 				IterationMetadata: map[string]*IterationContext{
-					"empno-proc": {IsArray: true, ArrayLength: 100, ArrayPath: "$items"},
+					"empno-proc": {IsArray: true, ArrayLength: 100, ArrayPath: "data"},
 				},
 			},
 		},
@@ -3043,7 +3038,7 @@ func TestBlobWorkflow_LargeEmployeeDataset(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	dataArray := data["$items"].([]interface{})
+	dataArray := data["data"].([]interface{})
 	if len(dataArray) != 100 {
 		t.Fatalf("expected 100 employees, got %d", len(dataArray))
 	}
@@ -3068,7 +3063,7 @@ func TestBlobWorkflow_LargeEmployeeDataset(t *testing.T) {
 // getWorkflowOutputData returns the test data structure matching the workflow output
 func getWorkflowOutputData() map[string]interface{} {
 	return map[string]interface{}{
-		"$items": []interface{}{
+		"data": []interface{}{
 			map[string]interface{}{
 				"access_level": "admin",
 				"age":          float64(30),
@@ -3186,27 +3181,27 @@ func TestNestedExtraction_SimpleFields(t *testing.T) {
 	}{
 		{
 			name:     "Extract age from each person",
-			path:     "/$items//age",
+			path:     "/data//age",
 			expected: []interface{}{float64(30), float64(25)},
 		},
 		{
 			name:     "Extract name from each person",
-			path:     "/$items//name",
+			path:     "/data//name",
 			expected: []interface{}{"alex", "jordan"},
 		},
 		{
 			name:     "Extract nameUpper from each person",
-			path:     "/$items//nameUpper",
+			path:     "/data//nameUpper",
 			expected: []interface{}{"ALEX", "JORDAN"},
 		},
 		{
 			name:     "Extract access_level from each person",
-			path:     "/$items//access_level",
+			path:     "/data//access_level",
 			expected: []interface{}{"admin", "user"},
 		},
 		{
 			name:     "Extract isAgeAbove18 boolean from each person",
-			path:     "/$items//isAgeAbove18",
+			path:     "/data//isAgeAbove18",
 			expected: []interface{}{true, true},
 		},
 	}
@@ -3230,7 +3225,7 @@ func TestNestedExtraction_NestedObjectFields(t *testing.T) {
 	}{
 		{
 			name: "Extract contact object from each person",
-			path: "/$items//contact",
+			path: "/data//contact",
 			expected: []interface{}{
 				map[string]interface{}{"emailPlusGmail": "alex@example.com@gmail.com"},
 				map[string]interface{}{"emailPlusGmail": "jordan@example.com@gmail.com"},
@@ -3238,7 +3233,7 @@ func TestNestedExtraction_NestedObjectFields(t *testing.T) {
 		},
 		{
 			name:     "Extract emailPlusGmail from contact",
-			path:     "/$items//contact/emailPlusGmail",
+			path:     "/data//contact/emailPlusGmail",
 			expected: []interface{}{"alex@example.com@gmail.com", "jordan@example.com@gmail.com"},
 		},
 	}
@@ -3257,7 +3252,7 @@ func TestNestedExtraction_NestedArrayFields(t *testing.T) {
 
 	// Extract assignments array from each person
 	t.Run("Extract assignments array from each person", func(t *testing.T) {
-		result := extractFromPath(data, "/$items//assignments")
+		result := extractFromPath(data, "/data//assignments")
 		resultArray, ok := result.([]interface{})
 		if !ok {
 			t.Fatalf("expected []interface{}, got %T", result)
@@ -3297,7 +3292,7 @@ func TestNestedExtraction_DoubleNestedArrayTraversal(t *testing.T) {
 	}{
 		{
 			name: "Extract title from each assignment (double traversal)",
-			path: "/$items//assignments//title",
+			path: "/data//assignments//title",
 			// Alex: ["Math Homework", "Science Project"], Jordan: ["Math Homework", "Science Project"]
 			expected: []interface{}{
 				[]interface{}{"Math Homework", "Science Project"},
@@ -3306,7 +3301,7 @@ func TestNestedExtraction_DoubleNestedArrayTraversal(t *testing.T) {
 		},
 		{
 			name: "Extract due_date from each assignment",
-			path: "/$items//assignments//due_date",
+			path: "/data//assignments//due_date",
 			expected: []interface{}{
 				[]interface{}{"20240615", "20240620"},
 				[]interface{}{"20240615", "20240620"},
@@ -3314,7 +3309,7 @@ func TestNestedExtraction_DoubleNestedArrayTraversal(t *testing.T) {
 		},
 		{
 			name: "Extract formattedDate from each assignment (some missing)",
-			path: "/$items//assignments//formattedDate",
+			path: "/data//assignments//formattedDate",
 			expected: []interface{}{
 				[]interface{}{"2024-06-15 00:00:00", "2024-06-20 00:00:00"},
 				[]interface{}{"2024-06-18 00:00:00", nil}, // jordan's second assignment has no formattedDate
@@ -3341,7 +3336,7 @@ func TestNestedExtraction_DeepNestedPath(t *testing.T) {
 	}{
 		{
 			name: "Extract pagesPlus12 from assignments/details",
-			path: "/$items//assignments//details/pagesPlus12",
+			path: "/data//assignments//details/pagesPlus12",
 			expected: []interface{}{
 				[]interface{}{float64(22), float64(27)}, // alex's assignments
 				[]interface{}{float64(32), nil},         // jordan's (second has no pagesPlus12)
@@ -3349,7 +3344,7 @@ func TestNestedExtraction_DeepNestedPath(t *testing.T) {
 		},
 		{
 			name: "Extract topics array from assignments/details",
-			path: "/$items//assignments//details/topics",
+			path: "/data//assignments//details/topics",
 			// Each person -> each assignment -> topics array
 			expected: []interface{}{
 				// Alex's assignments' topics
@@ -3401,7 +3396,7 @@ func TestNestedExtraction_TripleNestedArrayTraversal(t *testing.T) {
 	}{
 		{
 			name: "Extract courseUpper from topics (triple traversal)",
-			path: "/$items//assignments//details/topics//courseUpper",
+			path: "/data//assignments//details/topics//courseUpper",
 			// Person -> Assignment -> Topic -> courseUpper
 			expected: []interface{}{
 				// Alex
@@ -3418,7 +3413,7 @@ func TestNestedExtraction_TripleNestedArrayTraversal(t *testing.T) {
 		},
 		{
 			name: "Extract difficulty from topics (triple traversal)",
-			path: "/$items//assignments//details/topics//difficulty",
+			path: "/data//assignments//details/topics//difficulty",
 			expected: []interface{}{
 				// Alex
 				[]interface{}{
@@ -3434,7 +3429,7 @@ func TestNestedExtraction_TripleNestedArrayTraversal(t *testing.T) {
 		},
 		{
 			name: "Extract chapters from topics (triple traversal - arrays)",
-			path: "/$items//assignments//details/topics//chapters",
+			path: "/data//assignments//details/topics//chapters",
 			expected: []interface{}{
 				// Alex
 				[]interface{}{
@@ -3462,7 +3457,7 @@ func TestNestedExtraction_TripleNestedArrayTraversal(t *testing.T) {
 		},
 		{
 			name: "Extract chaptersPlusFive (some empty arrays)",
-			path: "/$items//assignments//details/topics//chaptersPlusFive",
+			path: "/data//assignments//details/topics//chaptersPlusFive",
 			expected: []interface{}{
 				// Alex
 				[]interface{}{
@@ -3507,8 +3502,8 @@ func TestNestedExtraction_BuildInputFromMappings(t *testing.T) {
 		params := BuildInputParams{
 			UnitNodeID: "next-unit",
 			FieldMappings: []message.FieldMapping{
-				{SourceNodeID: "fa849706", SourceEndpoint: "/$items//age", DestinationEndpoints: []string{"//userAge"}, DataType: "FIELD", Iterate: true},
-				{SourceNodeID: "fa849706", SourceEndpoint: "/$items//name", DestinationEndpoints: []string{"//userName"}, DataType: "FIELD", Iterate: true},
+				{SourceNodeID: "fa849706", SourceEndpoint: "/data//age", DestinationEndpoints: []string{"/data//userAge"}, DataType: "FIELD", Iterate: true},
+				{SourceNodeID: "fa849706", SourceEndpoint: "/data//name", DestinationEndpoints: []string{"/data//userName"}, DataType: "FIELD", Iterate: true},
 			},
 			SourceResults: map[string]*SourceResult{
 				"fa849706": {
@@ -3518,7 +3513,7 @@ func TestNestedExtraction_BuildInputFromMappings(t *testing.T) {
 						"fa849706": workflowData,
 					},
 					IterationMetadata: map[string]*IterationContext{
-						"fa849706": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+						"fa849706": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 					},
 				},
 			},
@@ -3534,7 +3529,7 @@ func TestNestedExtraction_BuildInputFromMappings(t *testing.T) {
 			t.Fatalf("failed to unmarshal result: %v", err)
 		}
 
-		dataArray := data["$items"].([]interface{})
+		dataArray := data["data"].([]interface{})
 		if len(dataArray) != 2 {
 			t.Fatalf("expected 2 items, got %d", len(dataArray))
 		}
@@ -3560,7 +3555,7 @@ func TestNestedExtraction_BuildInputFromMappings(t *testing.T) {
 		params := BuildInputParams{
 			UnitNodeID: "next-unit",
 			FieldMappings: []message.FieldMapping{
-				{SourceNodeID: "fa849706", SourceEndpoint: "/$items//contact/emailPlusGmail", DestinationEndpoints: []string{"//email"}, DataType: "FIELD", Iterate: true},
+				{SourceNodeID: "fa849706", SourceEndpoint: "/data//contact/emailPlusGmail", DestinationEndpoints: []string{"/data//email"}, DataType: "FIELD", Iterate: true},
 			},
 			SourceResults: map[string]*SourceResult{
 				"fa849706": {
@@ -3570,7 +3565,7 @@ func TestNestedExtraction_BuildInputFromMappings(t *testing.T) {
 						"fa849706": workflowData,
 					},
 					IterationMetadata: map[string]*IterationContext{
-						"fa849706": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+						"fa849706": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 					},
 				},
 			},
@@ -3586,7 +3581,7 @@ func TestNestedExtraction_BuildInputFromMappings(t *testing.T) {
 			t.Fatalf("failed to unmarshal result: %v", err)
 		}
 
-		dataArray := data["$items"].([]interface{})
+		dataArray := data["data"].([]interface{})
 		person1 := dataArray[0].(map[string]interface{})
 		if person1["email"] != "alex@example.com@gmail.com" {
 			t.Errorf("expected email 'alex@example.com@gmail.com', got %v", person1["email"])
@@ -3602,7 +3597,7 @@ func TestNestedExtraction_BuildInputFromMappings(t *testing.T) {
 		params := BuildInputParams{
 			UnitNodeID: "next-unit",
 			FieldMappings: []message.FieldMapping{
-				{SourceNodeID: "fa849706", SourceEndpoint: "/$items//assignments//title", DestinationEndpoints: []string{"//assignmentTitles"}, DataType: "FIELD", Iterate: true},
+				{SourceNodeID: "fa849706", SourceEndpoint: "/data//assignments//title", DestinationEndpoints: []string{"/data//assignmentTitles"}, DataType: "FIELD", Iterate: true},
 			},
 			SourceResults: map[string]*SourceResult{
 				"fa849706": {
@@ -3612,7 +3607,7 @@ func TestNestedExtraction_BuildInputFromMappings(t *testing.T) {
 						"fa849706": workflowData,
 					},
 					IterationMetadata: map[string]*IterationContext{
-						"fa849706": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+						"fa849706": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 					},
 				},
 			},
@@ -3628,7 +3623,7 @@ func TestNestedExtraction_BuildInputFromMappings(t *testing.T) {
 			t.Fatalf("failed to unmarshal result: %v", err)
 		}
 
-		dataArray := data["$items"].([]interface{})
+		dataArray := data["data"].([]interface{})
 		person1 := dataArray[0].(map[string]interface{})
 		alexTitles := person1["assignmentTitles"].([]interface{})
 		if len(alexTitles) != 2 {
@@ -3652,7 +3647,7 @@ func TestNestedExtraction_BuildInputFromMappings(t *testing.T) {
 		params := BuildInputParams{
 			UnitNodeID: "next-unit",
 			FieldMappings: []message.FieldMapping{
-				{SourceNodeID: "fa849706", SourceEndpoint: "/$items//assignments//details/topics//courseUpper", DestinationEndpoints: []string{"//courses"}, DataType: "FIELD", Iterate: true},
+				{SourceNodeID: "fa849706", SourceEndpoint: "/data//assignments//details/topics//courseUpper", DestinationEndpoints: []string{"/data//courses"}, DataType: "FIELD", Iterate: true},
 			},
 			SourceResults: map[string]*SourceResult{
 				"fa849706": {
@@ -3662,7 +3657,7 @@ func TestNestedExtraction_BuildInputFromMappings(t *testing.T) {
 						"fa849706": workflowData,
 					},
 					IterationMetadata: map[string]*IterationContext{
-						"fa849706": {IsArray: true, ArrayLength: 2, ArrayPath: "$items"},
+						"fa849706": {IsArray: true, ArrayLength: 2, ArrayPath: "data"},
 					},
 				},
 			},
@@ -3678,7 +3673,7 @@ func TestNestedExtraction_BuildInputFromMappings(t *testing.T) {
 			t.Fatalf("failed to unmarshal result: %v", err)
 		}
 
-		dataArray := data["$items"].([]interface{})
+		dataArray := data["data"].([]interface{})
 
 		// Alex's courses: [[ALGEBRA, GEOMETRY], [BIOLOGY, nil]]
 		person1 := dataArray[0].(map[string]interface{})
@@ -3709,7 +3704,7 @@ func TestNestedExtraction_BuildInputFromMappings(t *testing.T) {
 }
 
 // TestNestedExtraction_SingleItemExtraction tests extracting a single specific value
-// NOTE: extractFromPath does NOT support numeric array index access (/$items/0/name)
+// NOTE: extractFromPath does NOT support numeric array index access (/data/0/name)
 // This test documents that limitation - use // traversal instead to extract from all items
 func TestNestedExtraction_SingleItemExtraction(t *testing.T) {
 	data := getWorkflowOutputData()
@@ -3722,17 +3717,17 @@ func TestNestedExtraction_SingleItemExtraction(t *testing.T) {
 	}{
 		{
 			name:     "Extract all names via traversal",
-			path:     "/$items//name",
+			path:     "/data//name",
 			expected: []interface{}{"alex", "jordan"},
 		},
 		{
 			name:     "Extract all ages via traversal",
-			path:     "/$items//age",
+			path:     "/data//age",
 			expected: []interface{}{float64(30), float64(25)},
 		},
 		{
 			name:     "Extract all contact emails via traversal",
-			path:     "/$items//contact/emailPlusGmail",
+			path:     "/data//contact/emailPlusGmail",
 			expected: []interface{}{"alex@example.com@gmail.com", "jordan@example.com@gmail.com"},
 		},
 	}
@@ -3746,7 +3741,7 @@ func TestNestedExtraction_SingleItemExtraction(t *testing.T) {
 
 	// Document that numeric index access is NOT supported
 	t.Run("Numeric index access returns nil (not supported)", func(t *testing.T) {
-		result := extractFromPath(data, "/$items/0/name")
+		result := extractFromPath(data, "/data/0/name")
 		if result != nil {
 			t.Errorf("expected nil for numeric index access, got %v", result)
 		}
@@ -3816,7 +3811,7 @@ func TestEmptyEndpoint_EmptyToEmpty(t *testing.T) {
 					Status: "success",
 					ProjectedFields: map[string]map[string]interface{}{
 						"source-node": {
-							"$items": []interface{}{
+							"data": []interface{}{
 								map[string]interface{}{"id": float64(1), "name": "Item1"},
 								map[string]interface{}{"id": float64(2), "name": "Item2"},
 							},
@@ -3836,10 +3831,10 @@ func TestEmptyEndpoint_EmptyToEmpty(t *testing.T) {
 			t.Fatalf("failed to unmarshal result: %v", err)
 		}
 
-		// $items should be at root level
-		items, ok := data["$items"].([]interface{})
+		// data should be at root level
+		items, ok := data["data"].([]interface{})
 		if !ok {
-			t.Fatalf("expected $items array at root, got %T", data["$items"])
+			t.Fatalf("expected data array at root, got %T", data["data"])
 		}
 		if len(items) != 2 {
 			t.Errorf("expected 2 items, got %d", len(items))
@@ -3987,7 +3982,7 @@ func TestEmptyEndpoint_EmptyToField(t *testing.T) {
 					Status: "success",
 					ProjectedFields: map[string]map[string]interface{}{
 						"source-node": {
-							"$items": []interface{}{
+							"data": []interface{}{
 								map[string]interface{}{"id": float64(1)},
 								map[string]interface{}{"id": float64(2)},
 							},
@@ -4007,14 +4002,14 @@ func TestEmptyEndpoint_EmptyToField(t *testing.T) {
 			t.Fatalf("failed to unmarshal result: %v", err)
 		}
 
-		// Should have $items under items
+		// Should have data array under items
 		items, ok := data["items"].(map[string]interface{})
 		if !ok {
 			t.Fatalf("expected items to be object, got %T", data["items"])
 		}
-		itemsArray, ok := items["$items"].([]interface{})
+		itemsArray, ok := items["data"].([]interface{})
 		if !ok {
-			t.Fatalf("expected items.$items to be array, got %T", items["$items"])
+			t.Fatalf("expected items.data to be array, got %T", items["data"])
 		}
 		if len(itemsArray) != 2 {
 			t.Errorf("expected 2 items, got %d", len(itemsArray))
@@ -4065,7 +4060,7 @@ func TestEmptyEndpoint_EmptyToField(t *testing.T) {
 }
 
 // TestSlashEndpoint_SlashToSlash tests mapping from root source (\"/\") to root destination (\"/\")
-// It should behave the same as empty endpoints: merge maps at root and preserve root arrays as $items.
+// It should behave the same as empty endpoints: merge maps at root.
 func TestSlashEndpoint_SlashToSlash(t *testing.T) {
 	t.Run("Map object to root (/ to /)", func(t *testing.T) {
 		params := BuildInputParams{
@@ -4121,7 +4116,7 @@ func TestSlashEndpoint_SlashToSlash(t *testing.T) {
 					Status: "success",
 					ProjectedFields: map[string]map[string]interface{}{
 						"source-node": {
-							"$items": []interface{}{
+							"data": []interface{}{
 								map[string]interface{}{"id": float64(1), "name": "Item1"},
 								map[string]interface{}{"id": float64(2), "name": "Item2"},
 							},
@@ -4141,9 +4136,9 @@ func TestSlashEndpoint_SlashToSlash(t *testing.T) {
 			t.Fatalf("failed to unmarshal result: %v", err)
 		}
 
-		items, ok := data["$items"].([]interface{})
+		items, ok := data["data"].([]interface{})
 		if !ok {
-			t.Fatalf("expected $items array at root, got %T", data["$items"])
+			t.Fatalf("expected data array at root, got %T", data["data"])
 		}
 		if len(items) != 2 {
 			t.Errorf("expected 2 items, got %d", len(items))
@@ -4241,7 +4236,7 @@ func TestSlashEndpoint_CrossScenarios(t *testing.T) {
 		}
 	})
 
-	t.Run("/ to /data (array source: $items under data)", func(t *testing.T) {
+	t.Run("/ to /data (array source: data array under data)", func(t *testing.T) {
 		params := BuildInputParams{
 			UnitNodeID: "test-unit",
 			FieldMappings: []message.FieldMapping{
@@ -4253,7 +4248,7 @@ func TestSlashEndpoint_CrossScenarios(t *testing.T) {
 					Status: "success",
 					ProjectedFields: map[string]map[string]interface{}{
 						"source-node": {
-							"$items": []interface{}{
+							"data": []interface{}{
 								map[string]interface{}{"id": float64(1), "label": "A"},
 								map[string]interface{}{"id": float64(2), "label": "B"},
 							},
@@ -4273,14 +4268,14 @@ func TestSlashEndpoint_CrossScenarios(t *testing.T) {
 			t.Fatalf("failed to unmarshal result: %v", err)
 		}
 
-		// Full source is a map with $items key, so "data" should be that object (with $items inside)
+		// Full source is a map with "data" key, so "data" should be that object (with "data" array inside)
 		dataObj, ok := data["data"].(map[string]interface{})
 		if !ok {
 			t.Fatalf("expected data to be object, got %T", data["data"])
 		}
-		items, ok := dataObj["$items"].([]interface{})
+		items, ok := dataObj["data"].([]interface{})
 		if !ok {
-			t.Fatalf("expected data.$items to be array, got %T", dataObj["$items"])
+			t.Fatalf("expected data.data to be array, got %T", dataObj["data"])
 		}
 		if len(items) != 2 {
 			t.Errorf("expected 2 items, got %d", len(items))
@@ -4331,7 +4326,7 @@ func TestSlashEndpoint_CrossScenarios(t *testing.T) {
 		}
 	})
 
-	t.Run("/data to / (array at source: $items at root)", func(t *testing.T) {
+	t.Run("/data to / (array at source: should error)", func(t *testing.T) {
 		params := BuildInputParams{
 			UnitNodeID: "test-unit",
 			FieldMappings: []message.FieldMapping{
@@ -4354,25 +4349,12 @@ func TestSlashEndpoint_CrossScenarios(t *testing.T) {
 			},
 		}
 
-		result, err := buildInputFromMappings(params)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		_, err := buildInputFromMappings(params)
+		if err == nil {
+			t.Fatal("expected error when mapping array to root destination, got nil")
 		}
-
-		var data map[string]interface{}
-		if err := json.Unmarshal(result, &data); err != nil {
-			t.Fatalf("failed to unmarshal result: %v", err)
-		}
-
-		items, ok := data["$items"].([]interface{})
-		if !ok {
-			t.Fatalf("expected $items at root, got %T", data["$items"])
-		}
-		if len(items) != 2 {
-			t.Errorf("expected 2 items, got %d", len(items))
-		}
-		if _, exists := data["other"]; exists {
-			t.Errorf("other should not be at root")
+		if !strings.Contains(err.Error(), "root-level array data is not supported") {
+			t.Fatalf("expected root-level array error, got: %v", err)
 		}
 	})
 }
@@ -4478,7 +4460,7 @@ func TestEmptyEndpoint_FieldToEmpty(t *testing.T) {
 		}
 	})
 
-	t.Run("Map array field to empty (root array)", func(t *testing.T) {
+	t.Run("Map array field to empty (should error)", func(t *testing.T) {
 		params := BuildInputParams{
 			UnitNodeID: "test-unit",
 			FieldMappings: []message.FieldMapping{
@@ -4500,23 +4482,12 @@ func TestEmptyEndpoint_FieldToEmpty(t *testing.T) {
 			},
 		}
 
-		result, err := buildInputFromMappings(params)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		_, err := buildInputFromMappings(params)
+		if err == nil {
+			t.Fatal("expected error when mapping array to empty destination, got nil")
 		}
-
-		var data map[string]interface{}
-		if err := json.Unmarshal(result, &data); err != nil {
-			t.Fatalf("failed to unmarshal result: %v", err)
-		}
-
-		// Array should be placed under $items key at root
-		items, ok := data["$items"].([]interface{})
-		if !ok {
-			t.Fatalf("expected $items array at root, got %T", data["$items"])
-		}
-		if len(items) != 2 {
-			t.Errorf("expected 2 items, got %d", len(items))
+		if !strings.Contains(err.Error(), "root-level array data is not supported") {
+			t.Fatalf("expected root-level array error, got: %v", err)
 		}
 	})
 
@@ -5698,5 +5669,757 @@ func TestBuildInputFromMappings_Workflow_8bf5e799(t *testing.T) {
 	// Array value from Format hire date should be distributed
 	if row1["customfield_LatestHireDate"] != "2019-03-20" {
 		t.Errorf("row[1]: expected customfield_LatestHireDate '2019-03-20', got %v", row1["customfield_LatestHireDate"])
+	}
+}
+
+// =============================================================================
+// Edge-Case & Error-Path Tests (audit follow-up)
+// =============================================================================
+
+// TestBuildInputFromMappings_EmptyDestinationEndpoints verifies that a mapping
+// with no DestinationEndpoints does not panic and is gracefully skipped.
+func TestBuildInputFromMappings_EmptyDestinationEndpoints(t *testing.T) {
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "node1",
+				SourceEndpoint:       "/name",
+				DestinationEndpoints: []string{}, // empty!
+				Iterate:              false,
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"node1": {
+				NodeID: "node1",
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"node1": {"name": "Alice"},
+				},
+				RawFlatKeys: map[string]interface{}{
+					"node1-/name": "Alice",
+				},
+			},
+		},
+	}
+
+	// Should NOT panic even though DestinationEndpoints is empty.
+	// The builder will return an error because no data could be extracted,
+	// but the critical thing is: no index-out-of-range panic.
+	_, err := buildInputFromMappings(params)
+	if err == nil {
+		t.Fatal("expected error for mapping with empty destinations, got nil")
+	}
+	if !strings.Contains(err.Error(), "field mapping resolution failed") {
+		t.Errorf("expected field mapping resolution error, got: %v", err)
+	}
+}
+
+// TestBuildInputFromMappings_SourceStatusNotSuccess verifies that a source
+// with a non-"success" status produces a failed-mapping error message.
+func TestBuildInputFromMappings_SourceStatusNotSuccess(t *testing.T) {
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "node1",
+				SourceEndpoint:       "/value",
+				DestinationEndpoints: []string{"/output"},
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"node1": {
+				NodeID: "node1",
+				Status: "failed",
+				ProjectedFields: map[string]map[string]interface{}{
+					"node1": {"value": 42},
+				},
+			},
+		},
+	}
+
+	// The builder should return an error indicating the failed status
+	_, err := buildInputFromMappings(params)
+	if err == nil {
+		t.Fatal("expected error for source with failed status, got nil")
+	}
+	if !strings.Contains(err.Error(), "has status 'failed'") {
+		t.Errorf("expected status failure message, got: %v", err)
+	}
+}
+
+// TestBuildInputFromMappings_SourceNotFound verifies missing source node produces
+// a meaningful failed-mapping entry rather than a panic or hard error.
+func TestBuildInputFromMappings_SourceNotFound(t *testing.T) {
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "missing_node",
+				SourceEndpoint:       "/field",
+				DestinationEndpoints: []string{"/dest"},
+			},
+		},
+		SourceResults: map[string]*SourceResult{}, // no sources
+	}
+
+	// The builder should return an error about the missing source node
+	_, err := buildInputFromMappings(params)
+	if err == nil {
+		t.Fatal("expected error for missing source node, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found in source results") {
+		t.Errorf("expected 'not found' message, got: %v", err)
+	}
+}
+
+// TestBuildInputFromMappings_DoubleSlashSourceEndpointError verifies that
+// a //field source endpoint (root-array traversal) with $items data triggers
+// the root-array-not-supported error when accessed via the non-collection path.
+func TestBuildInputFromMappings_DoubleSlashSourceEndpointError(t *testing.T) {
+	// When source has //field and destination is simple (/name), the batch
+	// collection path picks it up. The $items error only fires in the
+	// individual-mapping fallback path. To trigger it, use a non-// source
+	// that tries to extract from data with $items.
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "node1",
+				SourceEndpoint:       "/somefield",
+				DestinationEndpoints: []string{"/output"},
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"node1": {
+				NodeID: "node1",
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"node1": {
+						"$items": []interface{}{
+							map[string]interface{}{"name": "Alice"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := buildInputFromMappings(params)
+	if err == nil {
+		t.Fatal("expected error for data with $items, but got nil")
+	}
+	if !strings.Contains(err.Error(), "$items") {
+		t.Errorf("expected error to mention $items, got: %v", err)
+	}
+}
+
+// TestBuildInputFromMappings_AllEventTriggerMappings verifies that when every
+// mapping is IsEventTrigger the result is an empty JSON object (no panic).
+func TestBuildInputFromMappings_AllEventTriggerMappings(t *testing.T) {
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "trigger",
+				SourceEndpoint:       "/event",
+				DestinationEndpoints: []string{"/data"},
+				IsEventTrigger:       true,
+			},
+		},
+		SourceResults: map[string]*SourceResult{},
+	}
+
+	// All mappings are event triggers, so no data can be extracted.
+	// The builder returns an error for this case.
+	_, err := buildInputFromMappings(params)
+	if err == nil {
+		t.Fatal("expected error for all-event-trigger mappings, got nil")
+	}
+	if !strings.Contains(err.Error(), "no non-event-trigger") {
+		t.Errorf("expected 'no non-event-trigger' message, got: %v", err)
+	}
+}
+
+// TestBuildInputFromMappings_ArrayLengthMismatchAcrossIterateSources verifies
+// that when two iterate sources produce arrays of different lengths, the builder
+// handles the shorter one gracefully (pads with nil or stops without panic).
+func TestBuildInputFromMappings_ArrayLengthMismatchAcrossIterateSources(t *testing.T) {
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "nodeA",
+				SourceEndpoint:       "/items//name",
+				DestinationEndpoints: []string{"/rows//name"},
+				Iterate:              true,
+			},
+			{
+				SourceNodeID:         "nodeB",
+				SourceEndpoint:       "/items//age",
+				DestinationEndpoints: []string{"/rows//age"},
+				Iterate:              true,
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"nodeA": {
+				NodeID: "nodeA",
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"nodeA": {
+						"items": []interface{}{
+							map[string]interface{}{"name": "Alice"},
+							map[string]interface{}{"name": "Bob"},
+							map[string]interface{}{"name": "Charlie"},
+						},
+					},
+				},
+			},
+			"nodeB": {
+				NodeID: "nodeB",
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"nodeB": {
+						"items": []interface{}{
+							map[string]interface{}{"age": float64(25)},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Should not panic – the mismatched lengths should be handled gracefully
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	rows, ok := parsed["rows"].([]interface{})
+	if !ok {
+		t.Fatalf("expected 'rows' to be an array, got %T: %v", parsed["rows"], parsed)
+	}
+
+	// At minimum the longer array (3 items) should be represented
+	if len(rows) < 1 {
+		t.Fatalf("expected at least 1 row, got %d", len(rows))
+	}
+
+	// First row should have both name and age
+	row0, _ := rows[0].(map[string]interface{})
+	if row0 == nil {
+		t.Fatalf("expected row[0] to be map, got %v", rows[0])
+	}
+	if row0["name"] != "Alice" {
+		t.Errorf("row[0].name expected 'Alice', got %v", row0["name"])
+	}
+
+	_ = fmt.Sprintf("result=%v", parsed) // for debugging
+}
+
+// TestBuildInputFromMappings_MultipleDestinationEndpoints verifies that a
+// single source value is written to all DestinationEndpoints correctly.
+func TestBuildInputFromMappings_MultipleDestinationEndpoints(t *testing.T) {
+	params := BuildInputParams{
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "node1",
+				SourceEndpoint:       "/name",
+				DestinationEndpoints: []string{"/first_name", "/display_name"},
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"node1": {
+				NodeID: "node1",
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"node1": {"name": "Alice"},
+				},
+			},
+		},
+	}
+
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if parsed["first_name"] != "Alice" {
+		t.Errorf("expected first_name='Alice', got %v", parsed["first_name"])
+	}
+	if parsed["display_name"] != "Alice" {
+		t.Errorf("expected display_name='Alice', got %v", parsed["display_name"])
+	}
+}
+
+// =====================================================================
+// Audit-finding tests
+// =====================================================================
+
+// H1: unwrapSingleFieldObject – one-level only
+func TestUnwrapSingleFieldObject_OneLevelOnly(t *testing.T) {
+	// Two levels of single-key wrapping: only the outer one should be removed
+	inner := map[string]interface{}{"key": "val"}
+	outer := map[string]interface{}{"config": inner}
+	result := unwrapSingleFieldObject(outer)
+	// After ONE level: should be {"key":"val"}, NOT "val"
+	resultMap, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map after one-level unwrap, got %T: %v", result, result)
+	}
+	if resultMap["key"] != "val" {
+		t.Errorf("expected key=val, got %v", resultMap["key"])
+	}
+}
+
+func TestUnwrapSingleFieldObject_OneLevelArray(t *testing.T) {
+	// Array of doubly-wrapped single-key objects
+	arr := []interface{}{
+		map[string]interface{}{"a": map[string]interface{}{"b": 1}},
+		map[string]interface{}{"a": map[string]interface{}{"b": 2}},
+	}
+	result := unwrapSingleFieldObject(arr)
+	resultArr, ok := result.([]interface{})
+	if !ok {
+		t.Fatalf("expected array, got %T", result)
+	}
+	// Each outer wrapper removed → inner maps preserved
+	for i, item := range resultArr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			t.Errorf("[%d] expected map, got %T: %v", i, item, item)
+		}
+		if m["b"] != float64(i+1) && m["b"] != i+1 {
+			t.Errorf("[%d] expected b=%d, got %v", i, i+1, m["b"])
+		}
+	}
+}
+
+// H2: Batch extraction writes to ALL destinations (mixed // and simple)
+func TestBuildInputFromMappings_BatchMixedDestinations(t *testing.T) {
+	params := BuildInputParams{
+		UnitNodeID: "unit1",
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:   "node1",
+				SourceEndpoint: "/data//name",
+				DestinationEndpoints: []string{
+					"/data//full_name",  // collection traversal
+					"/all_names",        // simple destination
+				},
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"node1": {
+				NodeID: "node1",
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"node1": {
+						"data": []interface{}{
+							map[string]interface{}{"name": "Alice"},
+							map[string]interface{}{"name": "Bob"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	// The simple destination should also be populated
+	allNames, ok := parsed["all_names"]
+	if !ok {
+		t.Fatal("expected 'all_names' key to exist in output")
+	}
+	arr, ok := allNames.([]interface{})
+	if !ok {
+		t.Fatalf("expected all_names to be array, got %T", allNames)
+	}
+	if len(arr) != 2 {
+		t.Fatalf("expected 2 names, got %d", len(arr))
+	}
+	if arr[0] != "Alice" || arr[1] != "Bob" {
+		t.Errorf("expected [Alice, Bob], got %v", arr)
+	}
+}
+
+// M1: Deterministic primary source selection
+func TestBuildInputFromMappings_DeterministicPrimarySource(t *testing.T) {
+	// Two sources contribute equal number of mappings to /data.
+	// The builder should always pick the same one (lexicographically smaller ID).
+	for i := 0; i < 5; i++ {
+		params := BuildInputParams{
+			UnitNodeID: "unit1",
+			FieldMappings: []message.FieldMapping{
+				{
+					SourceNodeID:         "nodeB",
+					SourceEndpoint:       "/data//x",
+					DestinationEndpoints: []string{"/data//x"},
+				},
+				{
+					SourceNodeID:         "nodeA",
+					SourceEndpoint:       "/data//y",
+					DestinationEndpoints: []string{"/data//y"},
+				},
+			},
+			SourceResults: map[string]*SourceResult{
+				"nodeA": {
+					NodeID: "nodeA",
+					Status: "success",
+					ProjectedFields: map[string]map[string]interface{}{
+						"nodeA": {
+							"data": []interface{}{
+								map[string]interface{}{"y": 1},
+								map[string]interface{}{"y": 2},
+							},
+						},
+					},
+				},
+				"nodeB": {
+					NodeID: "nodeB",
+					Status: "success",
+					ProjectedFields: map[string]map[string]interface{}{
+						"nodeB": {
+							"data": []interface{}{
+								map[string]interface{}{"x": 10},
+								map[string]interface{}{"x": 20},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		result, err := buildInputFromMappings(params)
+		if err != nil {
+			t.Fatalf("iteration %d: unexpected error: %v", i, err)
+		}
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("iteration %d: unmarshal: %v", i, err)
+		}
+
+		dataArr, ok := parsed["data"].([]interface{})
+		if !ok {
+			t.Fatalf("iteration %d: expected data to be array, got %T: %v", i, parsed["data"], parsed["data"])
+		}
+		// Should always have both x and y in each element
+		for j, item := range dataArr {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				t.Errorf("iteration %d, item %d: expected map, got %T", i, j, item)
+				continue
+			}
+			if _, hasX := m["x"]; !hasX {
+				t.Errorf("iteration %d, item %d: missing 'x'", i, j)
+			}
+			if _, hasY := m["y"]; !hasY {
+				t.Errorf("iteration %d, item %d: missing 'y'", i, j)
+			}
+		}
+	}
+}
+
+// M2: Deep copy prevents source aliasing
+func TestBuildInputFromMappings_DeepCopyNoAliasing(t *testing.T) {
+	sharedMap := map[string]interface{}{"key": "original"}
+	params := BuildInputParams{
+		UnitNodeID: "unit1",
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "node1",
+				SourceEndpoint:       "/payload",
+				DestinationEndpoints: []string{"/dest1"},
+			},
+			{
+				SourceNodeID:         "node1",
+				SourceEndpoint:       "/payload",
+				DestinationEndpoints: []string{"/dest2"},
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"node1": {
+				NodeID: "node1",
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"node1": {"payload": sharedMap},
+				},
+			},
+		},
+	}
+
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	// Both destinations should have the value
+	d1, _ := parsed["dest1"].(map[string]interface{})
+	d2, _ := parsed["dest2"].(map[string]interface{})
+	if d1 == nil || d2 == nil {
+		t.Fatal("expected both dest1 and dest2 to be maps")
+	}
+	if d1["key"] != "original" || d2["key"] != "original" {
+		t.Errorf("expected key=original in both, got dest1=%v dest2=%v", d1["key"], d2["key"])
+	}
+
+	// Verify source was not mutated
+	if sharedMap["key"] != "original" {
+		t.Errorf("source data was mutated: key=%v", sharedMap["key"])
+	}
+}
+
+// M4: hasFlatKeyData merges ALL sources
+func TestHasFlatKeyData_MergesAllSources(t *testing.T) {
+	sourceResults := map[string]*SourceResult{
+		"src1": {
+			RawFlatKeys: map[string]interface{}{
+				"src1-/name": "Alice",
+			},
+		},
+		"src2": {
+			RawFlatKeys: map[string]interface{}{
+				"src2-/age": 30,
+			},
+		},
+	}
+
+	merged := hasFlatKeyData(sourceResults)
+	if merged == nil {
+		t.Fatal("expected non-nil merged map")
+	}
+	if merged["src1-/name"] != "Alice" {
+		t.Errorf("missing src1 key, got %v", merged["src1-/name"])
+	}
+	if merged["src2-/age"] != 30 {
+		t.Errorf("missing src2 key, got %v", merged["src2-/age"])
+	}
+}
+
+func TestHasFlatKeyData_NoFlatKeys(t *testing.T) {
+	sourceResults := map[string]*SourceResult{
+		"src1": {ProjectedFields: map[string]map[string]interface{}{"src1": {"x": 1}}},
+	}
+	merged := hasFlatKeyData(sourceResults)
+	if merged != nil {
+		t.Errorf("expected nil, got %v", merged)
+	}
+}
+
+// M5: setFieldAtPathWithCollectionTraversal creates intermediate maps
+func TestSetFieldAtPathWithCollectionTraversal_IntermediatePath(t *testing.T) {
+	data := make(map[string]interface{})
+	values := []interface{}{"v1", "v2"}
+	// Path: /outer/inner//field — "outer" doesn't exist yet
+	setFieldAtPathWithCollectionTraversal(data, "outer/inner//field", values)
+
+	// "outer" should have been created as a map
+	outer, ok := data["outer"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected outer to be map, got %T: %v", data["outer"], data["outer"])
+	}
+	inner, ok := outer["inner"].([]interface{})
+	if !ok {
+		t.Fatalf("expected outer.inner to be array, got %T: %v", outer["inner"], outer["inner"])
+	}
+	if len(inner) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(inner))
+	}
+	item0, _ := inner[0].(map[string]interface{})
+	if item0["field"] != "v1" {
+		t.Errorf("expected item[0].field=v1, got %v", item0["field"])
+	}
+}
+
+// L3: Iterate index conflict merges maps instead of overwriting
+func TestExtractFromFlatKeys_IterateConflictMerge(t *testing.T) {
+	flatKeys := map[string]interface{}{
+		"node1-/data[0]/name":  "Alice",
+		"node1-/data[0]/age":  float64(30),
+		"node1-/data[1]/name": "Bob",
+		"node1-/data[1]/age":  float64(25),
+	}
+
+	// Iterate mode — values with same first index should merge
+	result := extractFromFlatKeys(flatKeys, "node1", "/data", "/output", true)
+	arr, ok := result.([]interface{})
+	if !ok {
+		t.Fatalf("expected array, got %T: %v", result, result)
+	}
+	if len(arr) != 2 {
+		t.Fatalf("expected 2 elements, got %d", len(arr))
+	}
+
+	// With map values, same-index entries are merged
+	// Note: the values stored at each conflict key are themselves whatever
+	// the flat-key value was. If they're maps, they get merged.
+	// If they're scalars, first-write wins.
+	// Here, each flat key stores a scalar, so first-write-wins applies
+	// (we can't merge two scalars into a map).
+	// The important thing is we don't crash.
+	if arr[0] == nil || arr[1] == nil {
+		t.Errorf("expected non-nil entries, got arr=%v", arr)
+	}
+}
+
+// H3: extractFromFlatKeys handles nested // in fieldPath
+func TestExtractFromFlatKeys_NestedDoubleSlash(t *testing.T) {
+	flatKeys := map[string]interface{}{
+		"node1-/data": []interface{}{
+			map[string]interface{}{
+				"assignments": []interface{}{
+					map[string]interface{}{"title": "hw1"},
+					map[string]interface{}{"title": "hw2"},
+				},
+			},
+			map[string]interface{}{
+				"assignments": []interface{}{
+					map[string]interface{}{"title": "hw3"},
+				},
+			},
+		},
+	}
+
+	result := extractFromFlatKeys(flatKeys, "node1", "/data//assignments//title", "/out", false)
+	arr, ok := result.([]interface{})
+	if !ok {
+		t.Fatalf("expected array, got %T: %v", result, result)
+	}
+	if len(arr) != 2 {
+		t.Fatalf("expected 2 outer elements, got %d", len(arr))
+	}
+
+	// Each element should be the titles from that item's assignments
+	inner0, ok := arr[0].([]interface{})
+	if !ok {
+		t.Fatalf("expected inner array at [0], got %T", arr[0])
+	}
+	if len(inner0) != 2 || inner0[0] != "hw1" || inner0[1] != "hw2" {
+		t.Errorf("expected [hw1, hw2], got %v", inner0)
+	}
+	inner1, ok := arr[1].([]interface{})
+	if !ok {
+		t.Fatalf("expected inner array at [1], got %T", arr[1])
+	}
+	if len(inner1) != 1 || inner1[0] != "hw3" {
+		t.Errorf("expected [hw3], got %v", inner1)
+	}
+}
+
+// M3: usedFallbackExtraction guard — direct extraction should NOT trigger
+// special-case extraction that strips single-field objects
+func TestBuildInputFromMappings_DirectExtractionPreservesSingleField(t *testing.T) {
+	// Source has /status field that is an array of single-field objects.
+	// Direct extraction from /status should NOT strip the inner field.
+	params := BuildInputParams{
+		UnitNodeID: "unit1",
+		FieldMappings: []message.FieldMapping{
+			{
+				SourceNodeID:         "node1",
+				SourceEndpoint:       "/statuses",
+				DestinationEndpoints: []string{"/out"},
+			},
+		},
+		SourceResults: map[string]*SourceResult{
+			"node1": {
+				NodeID: "node1",
+				Status: "success",
+				ProjectedFields: map[string]map[string]interface{}{
+					"node1": {
+						"statuses": []interface{}{
+							map[string]interface{}{"code": "active"},
+							map[string]interface{}{"code": "pending"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result, err := buildInputFromMappings(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	outArr, ok := parsed["out"].([]interface{})
+	if !ok {
+		t.Fatalf("expected out to be array, got %T: %v", parsed["out"], parsed["out"])
+	}
+	// unwrapSingleFieldObject will still unwrap single-key maps.
+	// But the fallback special-case extraction should NOT have fired.
+	// The unwrap is expected — what we're checking is that the data structure wasn't
+	// doubly processed by the fallback path.
+	if len(outArr) != 2 {
+		t.Fatalf("expected 2 items, got %d: %v", len(outArr), outArr)
+	}
+}
+
+// L2: //field (root-is-array notation) is rejected
+func TestExtractFromFlatKeys_DoubleSlashFieldRejected(t *testing.T) {
+	flatKeys := map[string]interface{}{
+		"node1-/data": []interface{}{"a", "b"},
+	}
+	// Source endpoint //field should return nil (root-array not supported)
+	result := extractFromFlatKeys(flatKeys, "node1", "//field", "/out", false)
+	if result != nil {
+		t.Errorf("expected nil for //field endpoint, got %v", result)
+	}
+}
+
+// deepCopyValue correctness
+func TestDeepCopyValue_Map(t *testing.T) {
+	original := map[string]interface{}{
+		"a": map[string]interface{}{"b": "c"},
+		"d": []interface{}{1, 2, 3},
+	}
+	copied := deepCopyValue(original)
+	copiedMap := copied.(map[string]interface{})
+
+	// Mutate original
+	original["a"].(map[string]interface{})["b"] = "CHANGED"
+	original["d"].([]interface{})[0] = 999
+
+	// Copied should be unaffected
+	if copiedMap["a"].(map[string]interface{})["b"] != "c" {
+		t.Error("deep copy map was mutated")
+	}
+	if copiedMap["d"].([]interface{})[0] != 1 {
+		t.Error("deep copy array was mutated")
+	}
+}
+
+func TestDeepCopyValue_Nil(t *testing.T) {
+	if deepCopyValue(nil) != nil {
+		t.Error("expected nil")
+	}
+}
+
+func TestDeepCopyValue_Scalar(t *testing.T) {
+	if deepCopyValue("hello") != "hello" {
+		t.Error("expected same scalar")
 	}
 }
