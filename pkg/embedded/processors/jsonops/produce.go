@@ -32,12 +32,7 @@ func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) ru
 	// Only extract $items or single-key arrays if schema expects ARRAY at root
 	schemaExpectsArray := parseErr == nil && parsedSchema != nil && parsedSchema.Type == schema.TypeArray
 
-	if items, hasItems := input.Data[runtime.RootArrayKey]; hasItems {
-		// Only use $items as root if schema expects an array AND $items is the only key
-		if schemaExpectsArray && len(input.Data) == 1 {
-			dataToMarshal = items
-		}
-	} else if schemaExpectsArray && len(input.Data) == 1 {
+	if schemaExpectsArray && len(input.Data) == 1 {
 		// Also check for single key containing an array (generic case)
 		// Only extract if schema expects ARRAY at root
 		for _, v := range input.Data {

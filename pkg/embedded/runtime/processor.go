@@ -267,14 +267,17 @@ func (p *EmbeddedProcessor) analyzeIterationContext(unit ExecutionUnit) Iteratio
 
 	for _, node := range unit.EmbeddedNodes {
 		for _, mapping := range node.FieldMappings {
-			// Look for patterns like "/data//field" or "//field" (root-is-array) with iterate=true from parent
+			// Look for patterns like "/data//field" with iterate=true from parent
+			// Note: "//field" (root-is-array) patterns are no longer supported
 			if mapping.Iterate && mapping.SourceNodeId == unit.NodeId {
 				endpoint := mapping.SourceEndpoint
 				endpointTrimmed := strings.TrimPrefix(endpoint, "/")
 				if strings.HasPrefix(endpointTrimmed, "//") {
-					ctx.IsArrayIteration = true
-					ctx.ArrayPath = RootArrayKey
-					return ctx
+					// Root-is-array (//field) is no longer supported — skip this mapping
+					p.logger.Warn("root-level array iteration (//field) is no longer supported, skipping",
+						Field{Key: "endpoint", Value: endpoint},
+						Field{Key: "nodeId", Value: node.NodeId})
+					continue
 				}
 				if idx := strings.Index(endpoint, "//"); idx > 0 {
 					arrayPath := strings.TrimPrefix(endpoint[:idx], "/")
@@ -299,17 +302,9 @@ func (p *EmbeddedProcessor) processSingleObject(
 	priorUnitOutputs map[string]map[string]interface{},
 ) (StandardUnitOutput, error) {
 	// Check if parentOutput has transposed array fields (e.g., {name: ["alex", "jordan"], age: [30, 25]})
-	// If so, reconstruct $items BEFORE passing to subflow so embedded nodes can access it
+	// Note: $items reconstruction from transposed data is no longer supported since root-level arrays
+	// are not allowed. The transposed data will be passed through as-is.
 	enrichedParentOutput := parentOutput
-	itemsArray := p.reconstructItemsFromTransposedData(parentOutput)
-	if len(itemsArray) > 0 {
-		// Create enriched copy with $items added
-		enrichedParentOutput = make(map[string]interface{})
-		for k, v := range parentOutput {
-			enrichedParentOutput[k] = v
-		}
-		enrichedParentOutput[RootArrayKey] = itemsArray
-	}
 
 	// Create subflow processor with concurrency support for mid-flow iteration
 	subflowCfg := SubflowConfig{
@@ -345,18 +340,7 @@ func (p *EmbeddedProcessor) processSingleObject(
 		}
 	}
 
-	// Check if parentOutput already has a $items array - if so, use it directly
-	// This is the case when BuildInput created a proper nested structure
-	if existingItems, ok := enrichedParentOutput[RootArrayKey].([]interface{}); ok && len(existingItems) > 0 {
-		// The parentOutput already has a properly structured $items array
-		// Use it directly as the stage object's output
-		itemsKey := unit.NodeId + "-/" + RootArrayKey
-		output[itemsKey] = existingItems
-		return output, nil
-	}
-
-	// No existing $items: parent is a single object. Emit it as flattened keys (object shape),
-	// not as a one-element array under $items, so downstream consumers see one object (e.g. HL7 parse result).
+	// Parent is a single object. Emit it as flattened keys (object shape).
 	flat := FlattenMap(enrichedParentOutput, unit.NodeId, "")
 	FilterRootKeys(flat)
 	for k, v := range flat {

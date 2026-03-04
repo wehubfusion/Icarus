@@ -10,14 +10,22 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/message"
 )
 
-// hasFlatKeyData checks if any SourceResult contains raw flat keys
+// hasFlatKeyData merges RawFlatKeys from all SourceResults into a single map.
+// This ensures flat-key extraction works in multi-blob scenarios where different
+// sources contribute different flat keys.
 func hasFlatKeyData(sourceResults map[string]*SourceResult) map[string]interface{} {
+	var merged map[string]interface{}
 	for _, result := range sourceResults {
 		if len(result.RawFlatKeys) > 0 {
-			return result.RawFlatKeys
+			if merged == nil {
+				merged = make(map[string]interface{}, len(result.RawFlatKeys))
+			}
+			for k, v := range result.RawFlatKeys {
+				merged[k] = v
+			}
 		}
 	}
-	return nil
+	return merged
 }
 
 // keyInfo holds information about a flat key match
@@ -38,9 +46,6 @@ func extractFromFlatKeys(
 ) interface{} {
 	prefix := sourceNodeID + "-/"
 
-	// Normalize source endpoint: //field -> /$items//field for root-array access
-	normalizedEndpoint := runtime.NormalizeRootArrayEndpoint(sourceEndpoint)
-
 	// Handle empty source endpoint - extract entire node output
 	if sourceEndpoint == "" || sourceEndpoint == "/" {
 		// Look for root key "nodeId-/" which contains the full output
@@ -51,14 +56,40 @@ func extractFromFlatKeys(
 		// Fall through to check for other patterns
 	}
 
-	// Root-is-array: //name means resolve from nodeId-/$items and extract path from each element
-	// Now handled via normalizedEndpoint which converts //name to /$items//name
-	if strings.HasPrefix(normalizedEndpoint, "/"+runtime.RootArrayKey+"//") {
-		arrayKey := sourceNodeID + "-/" + runtime.RootArrayKey
-		if arr, ok := flatKeys[arrayKey].([]interface{}); ok {
-			// Extract the field path after /$items//
-			fieldPath := strings.TrimPrefix(normalizedEndpoint, "/"+runtime.RootArrayKey+"//")
-			return extractFromNestedStructure(arr, "", "//"+fieldPath)
+	// Root-is-array: //field notation means root-level array access — no longer supported
+	trimmedEndpoint := strings.TrimPrefix(sourceEndpoint, "/")
+	if strings.HasPrefix(trimmedEndpoint, "/") {
+		return nil
+	}
+
+	normalizedEndpoint := sourceEndpoint
+
+	// Handle collection traversal (/path//field): look up parent path, extract field from each element
+	if strings.Contains(normalizedEndpoint, "//") {
+		parts := strings.SplitN(normalizedEndpoint, "//", 2)
+		if len(parts) == 2 {
+			collectionPath := strings.Trim(parts[0], "/")
+			fieldPath := strings.Trim(parts[1], "/")
+			if collectionPath != "" && fieldPath != "" {
+				collectionKey := prefix + collectionPath
+				if collectionData, exists := flatKeys[collectionKey]; exists {
+					if arr, ok := collectionData.([]interface{}); ok {
+						result := make([]interface{}, len(arr))
+						for i, item := range arr {
+							if m, ok := item.(map[string]interface{}); ok {
+								// If fieldPath has nested // (e.g. "assignments//title"),
+								// use collection traversal instead of simple navigation
+								if strings.Contains(fieldPath, "//") {
+									result[i] = extractWithCollectionTraversal(m, fieldPath)
+								} else {
+									result[i] = navigateMap(m, fieldPath)
+								}
+							}
+						}
+						return result
+					}
+				}
+			}
 		}
 	}
 
@@ -115,12 +146,27 @@ func extractFromFlatKeys(
 			return nil
 		}
 
-		// Place values at their correct indices
+		// Place values at their correct indices.
+		// When multiple matches share the same first index (nested paths),
+		// build a map from remaining indices instead of overwriting.
 		result := make([]interface{}, maxIdx+1)
 		for _, match := range matches {
 			if len(match.indices) > 0 {
 				idx := match.indices[0]
-				result[idx] = match.value
+				if result[idx] == nil {
+					result[idx] = match.value
+				} else {
+					// Conflict: same first index — merge into map if possible
+					if existingMap, ok := result[idx].(map[string]interface{}); ok {
+						if newMap, ok := match.value.(map[string]interface{}); ok {
+							for k, v := range newMap {
+								existingMap[k] = v
+							}
+						}
+						// If new value is not a map, keep existing (first write wins)
+					}
+					// If existing is not a map, keep existing (first write wins)
+				}
 			}
 		}
 		return result
@@ -385,93 +431,17 @@ func buildStructureFromFlatKeys(matches []keyInfo, destParts []string) interface
 	return result
 }
 
-// setNestedValueWithIndices sets a value in nested structure using destination path and indices
-func setNestedValueWithIndices(
-	root map[string]interface{},
-	destParts []string,
-	indices []int,
-	value interface{},
-) {
-	current := root
-	indicesIdx := 0
-
-	for i := 0; i < len(destParts); i++ {
-		part := destParts[i]
-
-		if part == "" {
-			// Array boundary marker - skip
-			continue
-		}
-
-		// Check if next part is empty (array boundary)
-		isArray := (i+1 < len(destParts) && destParts[i+1] == "")
-
-		if isArray {
-			// This field should be an array
-			if _, exists := current[part]; !exists {
-				current[part] = make([]interface{}, 0)
-			}
-
-			arr, ok := current[part].([]interface{})
-			if !ok {
-				arr = make([]interface{}, 0)
-				current[part] = arr
-			}
-
-			// Get target index from indices array
-			if indicesIdx >= len(indices) {
-				return
-			}
-			targetIdx := indices[indicesIdx]
-			indicesIdx++
-
-			// Ensure array is large enough
-			for len(arr) <= targetIdx {
-				arr = append(arr, make(map[string]interface{}))
-			}
-			current[part] = arr
-
-			// Move into array item
-			if arr[targetIdx] == nil {
-				arr[targetIdx] = make(map[string]interface{})
-			}
-			itemMap, ok := arr[targetIdx].(map[string]interface{})
-			if !ok {
-				itemMap = make(map[string]interface{})
-				arr[targetIdx] = itemMap
-			}
-			current = itemMap
-
-			// Skip the empty string marker
-			i++
-		} else {
-			// Regular object field
-			if i == len(destParts)-1 {
-				// Last part - set value
-				current[part] = value
-				return
-			} else {
-				// Intermediate object
-				if _, exists := current[part]; !exists {
-					current[part] = make(map[string]interface{})
-				}
-				nextMap, ok := current[part].(map[string]interface{})
-				if !ok {
-					nextMap = make(map[string]interface{})
-					current[part] = nextMap
-				}
-				current = nextMap
-			}
-		}
-	}
-}
-
-// unwrapSingleFieldObject extracts scalar values from single-key wrapper objects
-// {"name": "ALEX"} -> "ALEX"
-// {"isHigher18": true} -> true
-// {"chapters": [{"chapter": 1}, {"chapter": 2}]} -> [1, 2] (recursive)
+// unwrapSingleFieldObject extracts values from single-key wrapper objects.
+// Embedded processors wrap their output in single-key maps like {"name": "ALICE"}.
+// This function strips that wrapper to get the inner value.
+//
+// Only ONE level of unwrapping is performed to avoid destroying legitimate
+// nested structures. For example {"config": {"key": "val"}} -> {"key": "val"}
+// (one level), NOT recursively to "val".
+//
+// When called on an array, each element is individually unwrapped (one level).
 func unwrapSingleFieldObject(v interface{}) interface{} {
-	// Handle arrays - recursively unwrap each element
+	// Handle arrays - unwrap each element
 	if arr, isArr := v.([]interface{}); isArr {
 		unwrapped := make([]interface{}, len(arr))
 		for i, item := range arr {
@@ -485,9 +455,9 @@ func unwrapSingleFieldObject(v interface{}) interface{} {
 		return v
 	}
 
-	// Single-key object - extract the value and recursively unwrap
+	// Single-key object - unwrap one level only (no recursion)
 	for _, val := range m {
-		return unwrapSingleFieldObject(val)
+		return val
 	}
 	return v
 }
@@ -499,6 +469,42 @@ func getMapKeys(m map[string]interface{}) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// deepCopyValue creates a deep copy of a value to avoid aliasing
+func deepCopyValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		return deepCopyMap(val)
+	case []interface{}:
+		return deepCopyArray(val)
+	default:
+		return v
+	}
+}
+
+// deepCopyMap creates a deep copy of a map
+func deepCopyMap(m map[string]interface{}) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	result := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		result[k] = deepCopyValue(v)
+	}
+	return result
+}
+
+// deepCopyArray creates a deep copy of an array
+func deepCopyArray(arr []interface{}) []interface{} {
+	if arr == nil {
+		return nil
+	}
+	result := make([]interface{}, len(arr))
+	for i, v := range arr {
+		result[i] = deepCopyValue(v)
+	}
+	return result
 }
 
 // getSourceNodeIDs returns the node IDs from source results map
@@ -518,17 +524,7 @@ type BuildInputParams struct {
 	TriggerData   []byte
 }
 
-// Global cache for array extractions to avoid re-traversing large arrays
-var extractionCache = struct {
-	cache map[string]interface{}
-}{
-	cache: make(map[string]interface{}),
-}
-
 func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
-	// Clear extraction cache for this build
-	extractionCache.cache = make(map[string]interface{})
-
 	if len(params.FieldMappings) == 0 {
 		if len(params.TriggerData) > 0 {
 			return params.TriggerData, nil
@@ -568,9 +564,9 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 				parts := strings.SplitN(destEndpoint, "//", 2)
 				if len(parts) == 2 {
 					collectionPath := strings.Trim(parts[0], "/")
-					// Empty collectionPath means root array destination (//fieldname)
+					// Empty collectionPath means root array destination (//fieldname) — no longer supported
 					if collectionPath == "" {
-						collectionPath = runtime.RootArrayKey
+						continue // skip: root-level array paths are not supported
 					}
 					if collectionPathSources[collectionPath] == nil {
 						collectionPathSources[collectionPath] = make(map[string]*sourceInfo)
@@ -597,7 +593,7 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 		var primarySourceCollectionPath string
 		maxCount := 0
 		for sourceID, info := range sourceInfos {
-			if info.count > maxCount {
+			if info.count > maxCount || (info.count == maxCount && (primarySourceID == "" || sourceID < primarySourceID)) {
 				maxCount = info.count
 				primarySourceID = sourceID
 				primarySourceCollectionPath = info.sourceCollectionPath
@@ -637,7 +633,13 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 	}
 
 	for collectionPath, sourceArray := range collectionSources {
-		setFieldAtPath(inputData, collectionPath, sourceArray)
+		// Deep-copy the source array to avoid aliasing with source ProjectedFields
+		if arr, ok := sourceArray.([]interface{}); ok {
+			copied := deepCopyArray(arr)
+			setFieldAtPath(inputData, collectionPath, copied)
+		} else {
+			setFieldAtPath(inputData, collectionPath, sourceArray)
+		}
 	}
 
 	// Track failures for detailed error messages
@@ -788,10 +790,8 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 
 		if nodeFields, hasNode = sourceResult.ProjectedFields[key.sourceNodeID]; !hasNode {
 			if sourceResult.NodeID == key.sourceNodeID {
-				if selfFields, ok := sourceResult.ProjectedFields[key.sourceNodeID]; ok {
-					nodeFields = selfFields
-					hasNode = true
-				} else if allFields, ok := sourceResult.ProjectedFields[""]; ok {
+				// The direct lookup already failed above, so try fallbacks
+				if allFields, ok := sourceResult.ProjectedFields[""]; ok {
 					nodeFields = allFields
 					hasNode = true
 				} else if len(sourceResult.ProjectedFields) == 1 {
@@ -814,11 +814,11 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 		if sourceCollPath == "" {
 			sourceCollPath = "data"
 		}
-		
+
 		var collection interface{}
 		var collectionArray []interface{}
 		var ok bool
-		
+
 		// Try the specified path first
 		collection = navigateMap(nodeFields, sourceCollPath)
 		if collection != nil {
@@ -827,10 +827,10 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 				ok = true
 			}
 		}
-		
+
 		// Fallback to common paths if not found
 		if !ok {
-			for _, fallbackPath := range []string{"data", runtime.RootArrayKey, "result"} {
+			for _, fallbackPath := range []string{"data", "result"} {
 				if fallbackPath == sourceCollPath {
 					continue // Already tried
 				}
@@ -844,7 +844,7 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 				}
 			}
 		}
-		
+
 		if !ok {
 			continue
 		}
@@ -943,12 +943,12 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 		}
 
 		// Now set the results for each mapping and mark as processed
+		// Write to ALL destination endpoints (both // and simple) so that
+		// mixed-destination mappings don't silently lose simple destinations.
 		for _, b := range batch {
 			result := fieldResults[b.fieldPath]
 			for _, destEndpoint := range b.mapping.DestinationEndpoints {
-				if strings.Contains(destEndpoint, "//") {
-					setFieldAtPath(inputData, destEndpoint, result)
-				}
+				setFieldAtPath(inputData, destEndpoint, result)
 			}
 			batchProcessedMappings[mappingKey{
 				sourceNodeID:   b.mapping.SourceNodeID,
@@ -971,7 +971,7 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 		}
 
 		// Try flat-key extraction first if available
-		if flatKeyData != nil {
+		if flatKeyData != nil && len(mapping.DestinationEndpoints) > 0 {
 			result := extractFromFlatKeys(
 				flatKeyData,
 				mapping.SourceNodeID,
@@ -1020,6 +1020,7 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 		var hasIterationContext bool
 		var arrayLength int
 		var arrayPath string
+		normalizedSourceEndpoint := mapping.SourceEndpoint
 
 		if sourceResult.ProjectedFields != nil {
 			var nodeFields map[string]interface{}
@@ -1057,21 +1058,26 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 					}
 				}
 
-				// Normalize source endpoint: //field -> /$items//field for root-array access
-				normalizedSourceEndpoint := runtime.NormalizeRootArrayEndpoint(mapping.SourceEndpoint)
+				// Detect //field notation (root-array access) — no longer supported
+				{
+					trimmed := strings.TrimPrefix(mapping.SourceEndpoint, "/")
+					if strings.HasPrefix(trimmed, "/") {
+						// This is //field notation — root-level arrays are no longer supported
+						// Let extraction proceed; the $items error guard below will catch it
+						// if the data actually contains root-array content
+					}
+				}
+
+				var usedFallbackExtraction bool
 
 				if sourceData == nil {
 					sourceData = extractFromPath(nodeFields, normalizedSourceEndpoint)
 
 					// Fallback: If sourceData is nil and nodeFields has $items (root array output),
-					// return the $items array for paths like /data that expect the full payload
+					// return error — root-level arrays are no longer supported
 					if sourceData == nil {
-						if itemsData, hasItems := nodeFields[runtime.RootArrayKey]; hasItems {
-							// For simple paths like /data or /, return the $items array
-							normalizedPath := strings.Trim(normalizedSourceEndpoint, "/")
-							if normalizedPath == "data" || normalizedPath == "" {
-								sourceData = itemsData
-							}
+						if _, hasItems := nodeFields[runtime.RootArrayKey]; hasItems {
+							return nil, fmt.Errorf("root-level array data ($items) is not supported: root of input data must be an object, source node %s", mapping.SourceNodeID)
 						}
 					}
 
@@ -1089,6 +1095,7 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 									if _, hasField := firstItem[sourcePath]; hasField {
 										traversalPath := "/data//" + sourcePath
 										sourceData = extractFromPath(nodeFields, traversalPath)
+										usedFallbackExtraction = true
 									}
 								}
 							}
@@ -1101,21 +1108,18 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 										if _, hasField := firstItem[sourcePath]; hasField {
 											traversalPath := "/result//" + sourcePath
 											sourceData = extractFromPath(nodeFields, traversalPath)
+											usedFallbackExtraction = true
 										}
 									}
 								}
 							}
 
-							// Try $items array as well
+							// Try $items array as well — root-level arrays are no longer supported,
+							// so return error if found
 							if sourceData == nil {
 								itemsArray := extractFromPath(nodeFields, "/"+runtime.RootArrayKey)
-								if arr, isArr := itemsArray.([]interface{}); isArr && len(arr) > 0 {
-									if firstItem, ok := arr[0].(map[string]interface{}); ok {
-										if _, hasField := firstItem[sourcePath]; hasField {
-											traversalPath := "/" + runtime.RootArrayKey + "//" + sourcePath
-											sourceData = extractFromPath(nodeFields, traversalPath)
-										}
-									}
+								if itemsArray != nil {
+									return nil, fmt.Errorf("root-level array data ($items) is not supported: root of input data must be an object, source node %s", mapping.SourceNodeID)
 								}
 							}
 						} else if strings.Contains(normalizedSourceEndpoint, "//") {
@@ -1127,12 +1131,14 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 					// Special case: If sourceData is an array of objects where each object has
 					// a single field matching the sourcePath, extract those values.
 					// This handles /data returning [{data:0}, {data:0}] when we want [0, 0]
-					if sourceData != nil {
+					// ONLY applies when data came from a /data or /result fallback path,
+					// to avoid destroying legitimate user data.
+					if sourceData != nil && usedFallbackExtraction {
 						sourcePath := strings.Trim(normalizedSourceEndpoint, "/")
 						if arr, isArr := sourceData.([]interface{}); isArr && len(arr) > 0 {
 							if firstItem, ok := arr[0].(map[string]interface{}); ok {
 								// Check if items have a field matching the path we looked for
-								if val, hasField := firstItem[sourcePath]; hasField {
+								if _, hasField := firstItem[sourcePath]; hasField {
 									// Extract the nested field from each item
 									extracted := make([]interface{}, len(arr))
 									allExtracted := true
@@ -1149,9 +1155,7 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 											extracted[i] = item
 										}
 									}
-									// Only use extracted if we successfully got all values
-									// and the extracted values are different (not the same objects)
-									if allExtracted && val != arr[0] {
+									if allExtracted {
 										sourceData = extracted
 									}
 								}
@@ -1187,11 +1191,10 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 			continue
 		}
 
-		// Unwrap arrays of single-field objects to arrays of scalar values
-		// This handles embedded processor outputs like [{"name": "ALEX"}] -> ["ALEX"]
-		// Now also handles recursive unwrapping: [{"chapters": [{"chapter": 1}]}] -> [[1]]
+		// Unwrap arrays of single-field objects to arrays of scalar values.
+		// This handles embedded processor outputs like [{"name": "ALEX"}] -> ["ALEX"].
+		// Only one level of unwrapping is performed to avoid destroying nested structures.
 		if arr, isArr := sourceData.([]interface{}); isArr && len(arr) > 0 {
-			// Always try unwrapping - the unwrapSingleFieldObject function handles arrays recursively
 			sourceData = unwrapSingleFieldObject(arr)
 		}
 
@@ -1218,11 +1221,13 @@ func buildInputFromMappings(params BuildInputParams) ([]byte, error) {
 						inputData[k] = v
 					}
 				} else if sourceArray, ok := sourceData.([]interface{}); ok {
-					// Root array: place under $items key
-					inputData[runtime.RootArrayKey] = sourceArray
+					// Root-level array destination is no longer supported
+					_ = sourceArray
+					return nil, fmt.Errorf("root-level array data is not supported as destination: root of input data must be an object")
 				}
 			} else {
-				setFieldAtPath(inputData, destEndpoint, sourceData)
+				// Deep copy to prevent aliasing with source ProjectedFields
+				setFieldAtPath(inputData, destEndpoint, deepCopyValue(sourceData))
 			}
 		}
 	}
@@ -1307,16 +1312,18 @@ func setFieldAtPath(data map[string]interface{}, path string, value interface{})
 		return
 	}
 
-	// Root-is-array: //name → $items//name so collectionPath is $items
+	// Root-is-array notation (//field) is no longer supported
 	// Check BEFORE trimming prefix to correctly detect double-slash
 	if strings.HasPrefix(path, "//") {
-		path = runtime.RootArrayKey + path
-	} else {
-		path = strings.TrimPrefix(path, "/")
-		// Also check after trimming one slash (e.g., "///foo" → "//foo" after trim)
-		if strings.HasPrefix(path, "//") {
-			path = runtime.RootArrayKey + path
-		}
+		// Skip silently — root-level array paths are not supported
+		return
+	}
+
+	path = strings.TrimPrefix(path, "/")
+	// Also check after trimming one slash (e.g., "///foo" → "//foo" after trim)
+	if strings.HasPrefix(path, "//") {
+		// Skip silently — root-level array paths are not supported
+		return
 	}
 
 	if path == "" {
@@ -1371,22 +1378,9 @@ func setFieldAtPathWithCollectionTraversal(data map[string]interface{}, path str
 		return
 	}
 
-	// Root-is-array: ensure data[$items] exists when path is $items//...
+	// Root-is-array: $items collection path is no longer supported
 	if collectionPath == runtime.RootArrayKey {
-		if _, exists := data[runtime.RootArrayKey]; !exists {
-			if valueArray, ok := value.([]interface{}); ok && len(valueArray) > 0 {
-				items := make([]interface{}, len(valueArray))
-				for i := range valueArray {
-					items[i] = make(map[string]interface{})
-				}
-				data[runtime.RootArrayKey] = items
-			} else {
-				data[runtime.RootArrayKey] = []interface{}{make(map[string]interface{})}
-			}
-		}
-		if collection, ok := data[runtime.RootArrayKey].([]interface{}); ok && len(collection) > 0 {
-			setFieldInEachItem(collection, fieldPath, value)
-		}
+		// Root-level array paths are not supported — skip silently
 		return
 	}
 
@@ -1413,8 +1407,8 @@ func setFieldAtPathWithCollectionTraversal(data map[string]interface{}, path str
 					return
 				}
 			} else {
-				// Intermediate path doesn't exist
-				return
+				// Intermediate path doesn't exist - create it
+				current[part] = make(map[string]interface{})
 			}
 		}
 
@@ -1523,7 +1517,7 @@ func setFieldInEachItem(collection []interface{}, fieldPath string, value interf
 			}
 			for i := 0; i < minLen; i++ {
 				if itemMap, ok := collection[i].(map[string]interface{}); ok {
-					// Unwrap single-field objects before setting
+					// Unwrap single-field objects before setting — one level only
 					unwrappedValue := unwrapSingleFieldObject(valueArray[i])
 					setFieldAtPath(itemMap, fieldPath, unwrappedValue)
 					collection[i] = itemMap
@@ -1532,7 +1526,7 @@ func setFieldInEachItem(collection []interface{}, fieldPath string, value interf
 		} else {
 			for i, item := range collection {
 				if itemMap, ok := item.(map[string]interface{}); ok {
-					// Unwrap single-field objects before setting
+					// Unwrap single-field objects before setting — one level only
 					unwrappedValue := unwrapSingleFieldObject(valueArray[i])
 					setFieldAtPath(itemMap, fieldPath, unwrappedValue)
 					collection[i] = itemMap
@@ -1686,13 +1680,4 @@ func navigateMap(data map[string]interface{}, path string) interface{} {
 	}
 
 	return current
-}
-
-// truncateForDebug returns a truncated string representation of a value for logging
-func truncateForDebug(v interface{}) string {
-	s := fmt.Sprintf("%v", v)
-	if len(s) > 100 {
-		return s[:100] + "..."
-	}
-	return s
 }

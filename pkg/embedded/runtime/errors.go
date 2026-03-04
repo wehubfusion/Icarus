@@ -36,6 +36,9 @@ var (
 
 	// ErrInvalidFieldMapping is returned when a field mapping is invalid.
 	ErrInvalidFieldMapping = errors.New("invalid field mapping")
+
+	// ErrRootArrayNotSupported is returned when input data has a root-level array instead of an object.
+	ErrRootArrayNotSupported = errors.New("root of input data must be an object, not an array")
 )
 
 // ProcessingError wraps an error with additional context.
@@ -139,6 +142,11 @@ func IsPermanentError(err error) bool {
 
 	// Invalid input is permanent
 	if errors.Is(err, ErrInvalidInput) {
+		return true
+	}
+
+	// Root array input is permanent
+	if errors.Is(err, ErrRootArrayNotSupported) {
 		return true
 	}
 
