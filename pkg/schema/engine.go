@@ -3,6 +3,7 @@ package schema
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // Engine orchestrates schema-based data processing
@@ -10,15 +11,28 @@ type Engine struct {
 	parser      *Parser
 	validator   *Validator
 	transformer *Transformer
+
+	registry *ProcessorRegistry
+	cache    SchemaCache // nil = no caching; set via WithCache
 }
 
-// NewEngine creates a new schema engine
+// NewEngine creates a new schema engine with JSON and CSV processors registered.
 func NewEngine() *Engine {
-	return &Engine{
+	e := &Engine{
 		parser:      NewParser(),
 		validator:   NewValidator(),
 		transformer: NewTransformer(),
+		registry:    NewProcessorRegistry(),
 	}
+	e.registry.Register(NewJSONSchemaProcessor(e.parser, e.validator, e.transformer))
+	e.registry.Register(NewCSVSchemaProcessor(e.parser, e.validator, e.transformer))
+	return e
+}
+
+// WithCache attaches a cache to the engine. Returns the engine for chaining.
+func (e *Engine) WithCache(c SchemaCache) *Engine {
+	e.cache = c
+	return e
 }
 
 // GetTransformer returns the transformer instance (for advanced use cases)
@@ -36,6 +50,44 @@ func (e *Engine) GetParser() *Parser {
 	return e.parser
 }
 
+// Process is the unified entry point for schema-based processing.
+// schemaID is used as a cache key when e.cache is set; pass "" to skip caching.
+// format selects the processor (JSON, CSV, or HL7 when registered).
+func (e *Engine) Process(
+	inputData []byte,
+	schemaID string,
+	schemaDef []byte,
+	format SchemaFormat,
+	opts ProcessOptions,
+) (*ProcessResult, error) {
+	if format == "" {
+		format = FormatJSON
+	}
+	proc, err := e.registry.Get(string(format))
+	if err != nil {
+		return nil, err
+	}
+
+	var compiled CompiledSchema
+	if e.cache != nil && schemaID != "" {
+		hash := contentHash(schemaDef)
+		if cached, ok := e.cache.Get(schemaID, hash); ok {
+			compiled = cached
+		}
+	}
+	if compiled == nil {
+		compiled, err = proc.ParseSchema(schemaDef)
+		if err != nil {
+			return nil, err
+		}
+		if e.cache != nil && schemaID != "" {
+			e.cache.Set(schemaID, compiled.ContentHash(), compiled, 5*time.Minute)
+		}
+	}
+
+	return proc.Process(inputData, compiled, opts)
+}
+
 // ProcessWithSchema is the main entry point for schema-based data processing
 // It coordinates parsing, transformation, and validation of data against a schema
 func (e *Engine) ProcessWithSchema(
@@ -43,59 +95,7 @@ func (e *Engine) ProcessWithSchema(
 	schemaDefinition []byte,
 	options ProcessOptions,
 ) (*ProcessResult, error) {
-	// Step 1: Parse schema definition
-	schema, err := e.parser.Parse(schemaDefinition)
-	if err != nil {
-		return nil, fmt.Errorf("schema parse error: %w", err)
-	}
-
-	// Step 2: Parse input data
-	var data interface{}
-	if err := json.Unmarshal(inputData, &data); err != nil {
-		return nil, fmt.Errorf("invalid input JSON: %w", err)
-	}
-
-	// Step 3: Apply defaults (if enabled)
-	if options.ApplyDefaults {
-		data, err = e.transformer.ApplyDefaults(data, schema)
-		if err != nil {
-			return nil, fmt.Errorf("failed to apply defaults: %w", err)
-		}
-	}
-
-	// Step 4: Structure data (if enabled)
-	if options.StructureData {
-		data, err = e.transformer.StructureData(data, schema)
-		if err != nil {
-			return nil, fmt.Errorf("failed to structure data: %w", err)
-		}
-	}
-
-	// Step 5: Validate data against schema
-	validationResult := e.validator.ValidateWithOptions(data, schema, options.CollectAllErrors)
-
-	// Step 6: Check if validation failed in strict mode
-	if !validationResult.Valid && options.StrictValidation {
-		// Marshal data anyway for partial results
-		outputData, _ := json.Marshal(data)
-		return &ProcessResult{
-			Valid:  false,
-			Data:   outputData,
-			Errors: validationResult.Errors,
-		}, fmt.Errorf("%s", validationResult.ErrorMessage())
-	}
-
-	// Step 7: Marshal output data
-	outputData, err := json.Marshal(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal output: %w", err)
-	}
-
-	return &ProcessResult{
-		Valid:  validationResult.Valid,
-		Data:   outputData,
-		Errors: validationResult.Errors,
-	}, nil
+	return e.Process(inputData, "", schemaDefinition, FormatJSON, options)
 }
 
 // ProcessCSVWithSchema processes a JSON array of row objects against a CSV schema
@@ -105,58 +105,7 @@ func (e *Engine) ProcessCSVWithSchema(
 	schemaDefinition []byte,
 	options ProcessOptions,
 ) (*ProcessResult, error) {
-	// Step 1: Parse CSV schema definition
-	csvSchema, err := e.parser.ParseCSV(schemaDefinition)
-	if err != nil {
-		return nil, fmt.Errorf("csv schema parse error: %w", err)
-	}
-
-	// Step 2: Parse input data (array of objects)
-	var rows []map[string]interface{}
-	if err := json.Unmarshal(inputData, &rows); err != nil {
-		return nil, fmt.Errorf("invalid input JSON (expected array of objects): %w", err)
-	}
-
-	// Step 3: Apply defaults (if enabled)
-	if options.ApplyDefaults {
-		rows, err = e.transformer.ApplyCSVDefaults(rows, csvSchema)
-		if err != nil {
-			return nil, fmt.Errorf("failed to apply csv defaults: %w", err)
-		}
-	}
-
-	// Step 4: Structure data (if enabled) to drop unknown fields
-	if options.StructureData {
-		rows, err = e.transformer.StructureCSVRows(rows, csvSchema)
-		if err != nil {
-			return nil, fmt.Errorf("failed to structure csv rows: %w", err)
-		}
-	}
-
-	// Step 5: Validate rows
-	validationResult := e.validator.ValidateCSVRowsWithOptions(rows, csvSchema, options.CollectAllErrors)
-
-	// Step 6: Strict mode handling
-	if !validationResult.Valid && options.StrictValidation {
-		outputData, _ := json.Marshal(rows)
-		return &ProcessResult{
-			Valid:  false,
-			Data:   outputData,
-			Errors: validationResult.Errors,
-		}, fmt.Errorf("%s", validationResult.ErrorMessage())
-	}
-
-	// Step 7: Marshal output
-	outputData, err := json.Marshal(rows)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal output: %w", err)
-	}
-
-	return &ProcessResult{
-		Valid:  validationResult.Valid,
-		Data:   outputData,
-		Errors: validationResult.Errors,
-	}, nil
+	return e.Process(inputData, "", schemaDefinition, FormatCSV, options)
 }
 
 // ValidateCSVOnly validates rows against a CSV schema without transformation

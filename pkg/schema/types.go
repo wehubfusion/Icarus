@@ -44,6 +44,16 @@ type Property struct {
 	Items       *Property            `json:"items,omitempty"`     // For ARRAY type
 }
 
+// SchemaFormat identifies the schema definition format (JSON, CSV, HL7).
+// Distinct from SchemaType which is the type of a field within a schema.
+type SchemaFormat string
+
+const (
+	FormatJSON SchemaFormat = "JSON"
+	FormatCSV  SchemaFormat = "CSV"
+	FormatHL7  SchemaFormat = "HL7" // registered when HL7 processor is built (Phase 1)
+)
+
 // SchemaType represents the data type of a field
 type SchemaType string
 
