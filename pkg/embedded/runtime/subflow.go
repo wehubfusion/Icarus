@@ -119,11 +119,16 @@ func groupNodesByDepth(configs []EmbeddedNodeConfig) [][]int {
 	return groups
 }
 
-// hasDownstreamPluginErrorListener returns true if any embedded node has an event mapping
+// hasDownstreamPluginErrorListener returns true if any embedded node consumes output
 // from sourceNodeId's pluginError section (so error output should be stored and flow continued).
 func (sp *SubflowProcessor) hasDownstreamPluginErrorListener(sourceNodeId string) bool {
 	for _, cfg := range sp.nodeConfigs {
 		for _, m := range cfg.GetEventMappings() {
+			if m.SourceNodeId == sourceNodeId && m.SourceSectionId == SectionPluginError {
+				return true
+			}
+		}
+		for _, m := range cfg.GetFieldMappings() {
 			if m.SourceNodeId == sourceNodeId && m.SourceSectionId == SectionPluginError {
 				return true
 			}
