@@ -1446,6 +1446,27 @@ When executed in Elysium, the `schema_id` is automatically enriched with the ful
 
 For detailed documentation, see `pkg/embedded/processors/jsonops/README.md`.
 
+### Error Processor (`plugin-error`)
+
+The Error processor is a control-flow node that intentionally emits an error instead of a success payload.
+
+**Configuration and inputs:**
+
+- **label**: Display name for the node (from the Apollo node schema).
+- **default_error_message**: Fallback error message used when no runtime message is provided.
+- **message**: Optional input field populated via field mappings at runtime; when present and non-empty, it takes precedence over `default_error_message`.
+
+**Behavior:**
+
+- The node always returns an error (no success data payload).
+- When a downstream node listens to this node's `pluginError` section, the runtime exposes an error-only output:
+  - `pluginError/error` = `true`
+  - `pluginError/errorDescription` = resolved error message.
+- A **listener** is any mapping from this node's `pluginError` section, either:
+  - an **event mapping** (e.g. `/error` as an `EVENT` trigger), or
+  - a **field mapping** (e.g. `/errorDescription` as a `FIELD` into a handler node).
+- If at least one such mapping exists, the embedded runtime treats the error as **handled** and does not fail-fast; if no mappings from `pluginError` exist, the error bubbles up and causes the embedded unit / workflow run to fail, making this node useful for hard-stop guards as well as structured error flows.
+
 ## String Processing Utilities
 
 The SDK includes comprehensive string processing utilities for workflow orchestration and data manipulation:
