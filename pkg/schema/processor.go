@@ -1,10 +1,5 @@
 package schema
 
-import (
-	"crypto/sha256"
-	"encoding/hex"
-)
-
 // SchemaProcessor is the extension point for all schema formats.
 // JSON, CSV, and HL7 each implement this interface; Engine routes by format.
 type SchemaProcessor interface {
@@ -25,11 +20,4 @@ type SchemaProcessor interface {
 // Each processor defines its own concrete type behind this interface.
 type CompiledSchema interface {
 	SchemaType() string
-	ContentHash() string // hex SHA-256 of definition bytes; used as cache key
-}
-
-// contentHash returns the SHA-256 hash of b as a hex string.
-func contentHash(b []byte) string {
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
 }

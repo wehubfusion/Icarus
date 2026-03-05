@@ -28,7 +28,7 @@ func (p *JSONSchemaProcessor) ParseSchema(definition []byte) (CompiledSchema, er
 	if err != nil {
 		return nil, fmt.Errorf("schema parse error: %w", err)
 	}
-	return &compiledJSONSchema{schema: schema, hash: contentHash(definition)}, nil
+	return &compiledJSONSchema{schema: schema}, nil
 }
 
 // Process runs the full JSON pipeline: parse input, apply defaults, structure, validate, marshal output.
@@ -89,11 +89,9 @@ func (p *JSONSchemaProcessor) Process(inputData []byte, cs CompiledSchema, optio
 	}, nil
 }
 
-// compiledJSONSchema holds a parsed JSON schema and its content hash.
+// compiledJSONSchema holds a parsed JSON schema.
 type compiledJSONSchema struct {
 	schema *Schema
-	hash   string
 }
 
-func (c *compiledJSONSchema) SchemaType() string  { return string(FormatJSON) }
-func (c *compiledJSONSchema) ContentHash() string { return c.hash }
+func (c *compiledJSONSchema) SchemaType() string { return string(FormatJSON) }

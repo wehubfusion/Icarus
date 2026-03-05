@@ -28,7 +28,7 @@ func (p *CSVSchemaProcessor) ParseSchema(definition []byte) (CompiledSchema, err
 	if err != nil {
 		return nil, fmt.Errorf("csv schema parse error: %w", err)
 	}
-	return &compiledCSVSchema{schema: csvSchema, hash: contentHash(definition)}, nil
+	return &compiledCSVSchema{schema: csvSchema}, nil
 }
 
 // Process runs the full CSV pipeline: parse input rows, apply defaults, structure, validate, marshal output.
@@ -89,11 +89,9 @@ func (p *CSVSchemaProcessor) Process(inputData []byte, cs CompiledSchema, option
 	}, nil
 }
 
-// compiledCSVSchema holds a parsed CSV schema and its content hash.
+// compiledCSVSchema holds a parsed CSV schema.
 type compiledCSVSchema struct {
 	schema *CSVSchema
-	hash   string
 }
 
-func (c *compiledCSVSchema) SchemaType() string  { return string(FormatCSV) }
-func (c *compiledCSVSchema) ContentHash() string { return c.hash }
+func (c *compiledCSVSchema) SchemaType() string { return string(FormatCSV) }

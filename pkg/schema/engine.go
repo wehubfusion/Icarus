@@ -3,7 +3,6 @@ package schema
 import (
 	"encoding/json"
 	"fmt"
-	"time"
 )
 
 // Engine orchestrates schema-based data processing
@@ -13,7 +12,6 @@ type Engine struct {
 	transformer *Transformer
 
 	registry *ProcessorRegistry
-	cache    SchemaCache // nil = no caching; set via WithCache
 }
 
 // NewEngine creates a new schema engine with JSON and CSV processors registered.
@@ -26,12 +24,6 @@ func NewEngine() *Engine {
 	}
 	e.registry.Register(NewJSONSchemaProcessor(e.parser, e.validator, e.transformer))
 	e.registry.Register(NewCSVSchemaProcessor(e.parser, e.validator, e.transformer))
-	return e
-}
-
-// WithCache attaches a cache to the engine. Returns the engine for chaining.
-func (e *Engine) WithCache(c SchemaCache) *Engine {
-	e.cache = c
 	return e
 }
 
@@ -51,8 +43,6 @@ func (e *Engine) GetParser() *Parser {
 }
 
 // Process is the unified entry point for schema-based processing.
-// schemaID is used as a cache key when e.cache is set; pass "" to skip caching.
-// format selects the processor (JSON, CSV, or HL7 when registered).
 func (e *Engine) Process(
 	inputData []byte,
 	schemaID string,
@@ -68,21 +58,9 @@ func (e *Engine) Process(
 		return nil, err
 	}
 
-	var compiled CompiledSchema
-	if e.cache != nil && schemaID != "" {
-		hash := contentHash(schemaDef)
-		if cached, ok := e.cache.Get(schemaID, hash); ok {
-			compiled = cached
-		}
-	}
-	if compiled == nil {
-		compiled, err = proc.ParseSchema(schemaDef)
-		if err != nil {
-			return nil, err
-		}
-		if e.cache != nil && schemaID != "" {
-			e.cache.Set(schemaID, compiled.ContentHash(), compiled, 5*time.Minute)
-		}
+	compiled, err := proc.ParseSchema(schemaDef)
+	if err != nil {
+		return nil, err
 	}
 
 	return proc.Process(inputData, compiled, opts)
