@@ -1,6 +1,4 @@
-// Package hl7 provides HL7 v2.x message parsing and validation for the Icarus schema engine.
-// Validation is definition-driven (no version or message-type hardcoding).
-// Aligns with HAPI HL7 (https://hapifhir.github.io/hapi-hl7v2/) validation behavior.
+// Package hl7 provides HL7 v2.x message parsing and schema-based validation.
 package hl7
 
 import (
@@ -72,8 +70,7 @@ type HL7FieldDef struct {
 	Components []HL7ComponentDef `json:"components"`
 }
 
-// HL7ComponentDef represents a component. Rpt at component level is not used in validation (HL7 spec).
-// When unmarshaling from Morpheus JSON, "rpt" if present is ignored.
+// HL7ComponentDef represents a component (rpt at component level is not used per HL7 spec).
 type HL7ComponentDef struct {
 	Position      string               `json:"position"`
 	Name          string               `json:"name,omitempty"`
@@ -84,7 +81,7 @@ type HL7ComponentDef struct {
 	SubComponents []HL7SubcomponentDef `json:"subComponents,omitempty"`
 }
 
-// HL7SubcomponentDef represents a subcomponent. Rpt at subcomponent level is not used (HL7 spec).
+// HL7SubcomponentDef represents a subcomponent.
 type HL7SubcomponentDef struct {
 	Position string  `json:"position"`
 	Name     string  `json:"name,omitempty"`
@@ -94,10 +91,6 @@ type HL7SubcomponentDef struct {
 	TableID  *string `json:"tableId,omitempty"`
 }
 
-// checkDuplicateSegmentNames returns an error if any two sibling segment defs
-// (at the same level in a group or top-level) share the same name.
-// Duplicate names cause the matcher to silently double-consume or falsely report
-// missing required segments, so they must be rejected at schema load time.
 func checkDuplicateSegmentNames(segs []*HL7SegmentDef, path string) error {
 	seen := make(map[string]int, len(segs))
 	for i, s := range segs {
@@ -113,7 +106,6 @@ func checkDuplicateSegmentNames(segs []*HL7SegmentDef, path string) error {
 	return nil
 }
 
-// checkDuplicateTopLevelNames checks the top-level []HL7SegmentDef slice (non-pointer variant).
 func checkDuplicateTopLevelNames(segs []HL7SegmentDef, path string) error {
 	seen := make(map[string]int, len(segs))
 	for i, s := range segs {

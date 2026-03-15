@@ -28,9 +28,7 @@ func (p *HL7SchemaProcessor) ParseSchema(definition []byte) (contracts.CompiledS
 	return &CompiledHL7Schema{Schema: compiled}, nil
 }
 
-// Process implements contracts.SchemaProcessor.
-// Note: ProcessResult.Data always contains the original raw HL7 input bytes unchanged.
-// HL7 processing is validation-only; no transformation or structuring is applied.
+// Process implements contracts.SchemaProcessor. Validation only; Data is the original input.
 func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.CompiledSchema, opts contracts.ProcessOptions) (*contracts.ProcessResult, error) {
 	c, ok := compiled.(*CompiledHL7Schema)
 	if !ok {
@@ -38,9 +36,6 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 	}
 	msg, err := ParseMessage(inputData)
 	if err != nil {
-		// Map specific parse errors to distinct error codes so callers can
-		// distinguish "message was empty" (HL7_EMPTY_MESSAGE) from "message
-		// does not start with a valid MSH segment" (HL7_INVALID_MSH). (BUG-22)
 		code := "HL7_INVALID_MSH"
 		if err == ErrEmptyMessage {
 			code = "HL7_EMPTY_MESSAGE"
@@ -53,10 +48,6 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 	}
 	match := MatchMessage(msg, c)
 	var allErrs []contracts.ValidationError
-	// When CollectAllErrors is false, stop at the very first error across ALL phases
-	// (structural, type/version, and field-level). Previously, structural errors from
-	// MatchMessage were always appended in full before CollectAllErrors was consulted,
-	// meaning two missing required segments produced two errors even with CollectAllErrors=false.
 	for _, e := range match.Errors {
 		allErrs = append(allErrs, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code})
 		if !opts.CollectAllErrors {

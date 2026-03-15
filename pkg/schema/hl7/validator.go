@@ -8,20 +8,15 @@ import (
 	"unicode/utf8"
 )
 
-// Pre-compiled regexes for HL7 primitive datatype validation (per HL7 v2.5.1).
 var (
-	// DT: YYYY[MM[DD]] — structural match; calendar range validated separately.
-	reDT = regexp.MustCompile(`^\d{4}(\d{2}(\d{2})?)?$`)
-	// TM: HH[MM[SS[.s]]][+/-ZZZZ] — structural match; range validated separately.
-	reTM = regexp.MustCompile(`^\d{2}(\d{2}(\d{2}(\.\d{1,4})?)?)?([+-]\d{4})?$`)
-	// DTM/TS: YYYY[MM[DD[HH[MM[SS[.s]]]]]][+/-ZZZZ] — structural match; range validated separately.
+	reDT  = regexp.MustCompile(`^\d{4}(\d{2}(\d{2})?)?$`)
+	reTM  = regexp.MustCompile(`^\d{2}(\d{2}(\d{2}(\.\d{1,4})?)?)?([+-]\d{4})?$`)
 	reDTM = regexp.MustCompile(`^\d{4}(\d{2}(\d{2}(\d{2}(\d{2}(\d{2}(\.\d{1,4})?)?)?)?)?)?([+-]\d{4})?$`)
-	reNM  = regexp.MustCompile(`^[-+]?\d*\.?\d+$`) // NM: numeric per HL7 §2.A.46 — no leading/trailing whitespace
-	reSI  = regexp.MustCompile(`^\d+$`)            // SI: Sequence ID per HL7 §2.A.71 — non-negative integer, no sign/whitespace
+	reNM  = regexp.MustCompile(`^[-+]?\d*\.?\d+$`)
+	reSI  = regexp.MustCompile(`^\d+$`)
 )
 
-// ValidateMessageTypeAndVersion checks MSH-9 and MSH-12 against schema messageType and version when set.
-// Returns 0–2 errors (HL7_MESSAGE_TYPE_MISMATCH, HL7_VERSION_MISMATCH) when schema has non-empty values and message differs.
+// ValidateMessageTypeAndVersion checks MSH-9 and MSH-12 against schema messageType and version.
 func ValidateMessageTypeAndVersion(msg *Message, schema *HL7Schema) []ValidationError {
 	var errs []ValidationError
 	if schema == nil {
@@ -30,7 +25,6 @@ func ValidateMessageTypeAndVersion(msg *Message, schema *HL7Schema) []Validation
 	if schema.MessageType != "" {
 		want := strings.TrimSpace(schema.MessageType)
 		got := strings.TrimSpace(msg.Get("MSH-9"))
-		// MSH-9 is sent as MSG.1^MSG.2^MSG.3 (e.g. "ADT^A01^ADT_A01"); schema messageType is typically "ADT_A01"
 		normalized := got
 		if idx := strings.Index(got, "^"); idx >= 0 {
 			part1 := strings.TrimSpace(got[:idx])
@@ -59,9 +53,7 @@ func ValidateMessageTypeAndVersion(msg *Message, schema *HL7Schema) []Validation
 	return errs
 }
 
-// ValidateMatchResult runs field-level validation on matched segments and returns all errors.
-// When allowExtraFields is true, HL7_EXTRA_FIELD and HL7_EXTRA_COMPONENT are not reported.
-// When collectAll is false, validation stops at the very first error (one error returned).
+// ValidateMatchResult runs field-level validation on matched segments.
 func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool, allowExtraFields bool) []ValidationError {
 	var errs []ValidationError
 	for _, m := range match.Matched {
@@ -78,7 +70,6 @@ func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool, allow
 				}
 			}
 		}
-		// Strict: message segment has more fields than schema defines (skip if allowExtraFields)
 		if !allowExtraFields {
 			maxFieldNum := 0
 			for _, fdef := range m.SchemaDef.Fields {
@@ -102,8 +93,6 @@ func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool, allow
 	return errs
 }
 
-// validateField validates one field definition against the segment.
-// When allowExtraFields is true, HL7_EXTRA_COMPONENT is not reported.
 func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message, allowExtraFields bool) []ValidationError {
 	var errs []ValidationError
 	fieldNum := parseFieldNumberFromPosition(fdef.Position)
@@ -120,8 +109,6 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 		}
 		return errs
 	}
-	// X: field must be absent or empty across ALL repetitions.
-	// Using f.String() (rep[0] only) would miss data in rep[1+].
 	if strings.ToUpper(strings.TrimSpace(fdef.Usage)) == UsageNotUsed {
 		for _, rep := range f.Repetitions {
 			if rep.String() != "" {
@@ -132,11 +119,6 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 			}
 		}
 	}
-	// R: must be present and non-empty.
-	// RE (Required But May Be Empty): value may be empty — no HL7_REQUIRED when empty.
-	// For composite fields, f.String() returns e.g. "^^^" when all components are empty.
-	// We strip all component/subcomponent delimiters before the emptiness check so that
-	// a field containing only separators is treated as effectively empty. (BUG-21)
 	if strings.ToUpper(strings.TrimSpace(fdef.Usage)) == UsageRequired {
 		stripped := strings.TrimLeft(f.String(), "^&~")
 		if stripped == "" {
@@ -145,18 +127,13 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 			})
 		}
 	}
-	// Repetition count vs rpt
 	maxRep := parseRptMax(fdef.Rpt)
 	if maxRep > 0 && len(f.Repetitions) > maxRep {
 		errs = append(errs, ValidationError{
 			Path: path, Message: fmt.Sprintf("field has %d repetitions, max allowed is %s", len(f.Repetitions), fdef.Rpt), Code: "HL7_REPETITION_VIOLATION",
 		})
 	}
-	// Length (0 = unconstrained); HL7 length is in characters, not bytes.
-	// MSH-2 (encoding characters) is exempt from length checks: its valid length is either
-	// 4 (v2.1–2.6) or 5 (v2.7+ with truncation char), determined by the message, not
-	// the schema.  Applying a schema-level length constraint against MSH-2 produces false
-	// positives when v2.7+ messages are validated against a v2.5 schema. (BUG-24)
+	// MSH-2 encoding length is message-defined (4 or 5 chars); skip schema length check.
 	isMSH2 := segName == "MSH" && fieldNum == 2
 	if fdef.Length > 0 && !isMSH2 {
 		for ri, rep := range f.Repetitions {
@@ -172,10 +149,8 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 			}
 		}
 	}
-	// TODO: tableId — no terminology service for now; skip table/value-set validation
-	// When a terminology service is available, validate field value against tableId here.
+	// tableId/value-set validation requires an external terminology service and is not implemented.
 
-	// Datatype validation (including VARIES resolved via VariesResolver; pass current segment so e.g. OBX-5 uses OBX-2 from same segment)
 	effectiveType := fdef.DataType
 	if strings.ToUpper(fdef.DataType) == "VARIES" {
 		effectiveType = ResolveVariesDataType(segName, strconv.Itoa(fieldNum), seg, msg)
@@ -189,13 +164,11 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 			repPath = fmt.Sprintf("%s(%d)", path, ri+1)
 		}
 		if len(fdef.Components) == 0 {
-			// Primitive or single value
 			val := rep.String()
 			if err := validatePrimitive(effectiveType, val, repPath, fdef.Length); err != nil {
 				errs = append(errs, *err)
 			}
 		} else {
-			// Composite: validate each component
 			for ci := range fdef.Components {
 				cdef := &fdef.Components[ci]
 				compNum := parseComponentNumberFromPosition(cdef.Position)
@@ -212,16 +185,11 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 				}
 				continue
 			}
-			// X: component must be absent or empty (not used). (BUG-27)
 			if strings.ToUpper(strings.TrimSpace(cdef.Usage)) == UsageNotUsed && c.String() != "" {
 				errs = append(errs, ValidationError{
 					Path: cPath, Message: "component must not be present or must be empty (X)", Code: "HL7_NOT_USED",
 				})
 			}
-			// R component present but empty.
-			// c.String() for a component whose wire value is "&&" (all subcomponent separators)
-			// returns "&&" ≠ "", so a bare TrimSpace check misses it. Strip leading
-			// subcomponent separators before the emptiness test — same pattern as BUG-21. (BUG-26)
 			if strings.ToUpper(strings.TrimSpace(cdef.Usage)) == UsageRequired {
 				if strings.TrimLeft(c.String(), "&") == "" {
 					errs = append(errs, ValidationError{
@@ -255,13 +223,11 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 						}
 						continue
 					}
-				// X: subcomponent must be absent or empty (not used). (BUG-27)
 				if strings.ToUpper(strings.TrimSpace(sdef.Usage)) == UsageNotUsed && sc.Value != "" {
 					errs = append(errs, ValidationError{
 						Path: sPath, Message: "subcomponent must not be present or must be empty (X)", Code: "HL7_NOT_USED",
 					})
 				}
-				// R subcomponent present but empty
 				if strings.ToUpper(strings.TrimSpace(sdef.Usage)) == UsageRequired && sc.Value == "" {
 					errs = append(errs, ValidationError{
 						Path: sPath, Message: "required subcomponent must be non-empty", Code: "HL7_REQUIRED",
@@ -278,7 +244,6 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 					}
 				}
 			}
-			// Strict: message has more components than schema defines (by max schema position, not count); skip if allowExtraFields
 			if !allowExtraFields {
 				maxCompNum := 0
 				for _, cdef := range fdef.Components {
@@ -301,7 +266,6 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 
 func parseFieldNumberFromPosition(position string) int {
 	position = strings.TrimSpace(position)
-	// "PID-3" or "PID.3" or "MSH-9"
 	for _, sep := range []string{"-", "."} {
 		if i := strings.LastIndex(position, sep); i >= 0 && i+1 < len(position) {
 			n, _ := strconv.Atoi(strings.TrimSpace(position[i+1:]))
@@ -313,7 +277,6 @@ func parseFieldNumberFromPosition(position string) int {
 }
 
 func parseComponentNumberFromPosition(position string) int {
-	// "CX.1" -> 1, "HD.1" -> 1
 	i := strings.LastIndex(position, ".")
 	if i >= 0 && i+1 < len(position) {
 		n, _ := strconv.Atoi(strings.TrimSpace(position[i+1:]))
@@ -325,8 +288,6 @@ func parseComponentNumberFromPosition(position string) int {
 
 func validatePrimitive(dataType, value, path string, _ int) *ValidationError {
 	dt := strings.ToUpper(strings.TrimSpace(dataType))
-	// HL7 §2.5.3.4: two consecutive double-quotes (`""`) denote explicit null (delete/erase semantics).
-	// Treat them as an empty value — no further datatype validation applies.
 	if value == "" || value == `""` {
 		return nil
 	}
@@ -341,16 +302,16 @@ func validatePrimitive(dataType, value, path string, _ int) *ValidationError {
 		if !reSI.MatchString(value) {
 			return &ValidationError{Path: path, Message: "value must be integer", Code: "HL7_DATATYPE"}
 		}
-	case "SN": // Structured Numeric: [comparator] num [/ num2]; accept non-empty (full format would need parser)
+	case "SN":
 		return nil
-	case "DT": // date YYYY, YYYYMM, or YYYYMMDD per HL7 §2.A.21
+	case "DT":
 		if !reDT.MatchString(value) {
 			return &ValidationError{Path: path, Message: "value must be date (YYYY[MM[DD]])", Code: "HL7_DATATYPE"}
 		}
 		if err := validateDTCalendarRange(value, path); err != nil {
 			return err
 		}
-	case "TM": // time HH[MM[SS[.s]]][+/-ZZZZ] per HL7 §2.A.75
+	case "TM":
 		if !reTM.MatchString(value) {
 			return &ValidationError{Path: path, Message: "value must be time (HH[MM[SS]])", Code: "HL7_DATATYPE"}
 		}
@@ -360,7 +321,7 @@ func validatePrimitive(dataType, value, path string, _ int) *ValidationError {
 		if err := validateTZOffset(value, path); err != nil {
 			return err
 		}
-	case "DTM", "TS": // DTM/TS: full timestamp YYYY[MM[DD[HH[MM[SS[.s]]]]]][+/-ZZZZ]
+	case "DTM", "TS":
 		if !reDTM.MatchString(value) {
 			return &ValidationError{Path: path, Message: "value must be timestamp (DTM/TS format)", Code: "HL7_DATATYPE"}
 		}
@@ -370,16 +331,13 @@ func validatePrimitive(dataType, value, path string, _ int) *ValidationError {
 		if err := validateTZOffset(value, path); err != nil {
 			return err
 		}
-	case "ID", "IS": // coded values; table validation requires external terminology service
+	case "ID", "IS":
 		return nil
 	default:
-		// unknown type: accept
 	}
 	return nil
 }
 
-// validateDTCalendarRange checks that YYYY[MM[DD]] has valid month (01-12) and day (01-31) ranges.
-// Does not validate day-in-month correctness (e.g. Feb 30) as that requires leap-year logic.
 func validateDTCalendarRange(value, path string) *ValidationError {
 	if len(value) >= 6 {
 		mm, _ := strconv.Atoi(value[4:6])
@@ -396,8 +354,6 @@ func validateDTCalendarRange(value, path string) *ValidationError {
 	return nil
 }
 
-// validateTMRange checks that HH[MM[SS...]][±ZZZZ] has valid hour (00-23), minute (00-59), second (00-59) ranges.
-// Strip timezone offset before parsing.
 func validateTMRange(value, path string) *ValidationError {
 	digits := stripTZOffset(value)
 	if len(digits) >= 2 {
@@ -413,7 +369,6 @@ func validateTMRange(value, path string) *ValidationError {
 		}
 	}
 	if len(digits) >= 6 {
-		// Extract SS (before any fractional seconds)
 		ssPart := digits[4:6]
 		ss, _ := strconv.Atoi(ssPart)
 		if ss > 59 {
@@ -423,10 +378,8 @@ func validateTMRange(value, path string) *ValidationError {
 	return nil
 }
 
-// validateDTMCalendarRange checks calendar ranges for a DTM/TS value.
 func validateDTMCalendarRange(value, path string) *ValidationError {
 	digits := stripTZOffset(value)
-	// Date part: YYYY[MM[DD]]
 	if len(digits) >= 6 {
 		mm, _ := strconv.Atoi(digits[4:6])
 		if mm < 1 || mm > 12 {
@@ -439,7 +392,6 @@ func validateDTMCalendarRange(value, path string) *ValidationError {
 			return &ValidationError{Path: path, Message: fmt.Sprintf("invalid day %02d in timestamp", dd), Code: "HL7_DATATYPE"}
 		}
 	}
-	// Time part: HH[MM[SS[.s]]]
 	if len(digits) >= 10 {
 		hh, _ := strconv.Atoi(digits[8:10])
 		if hh > 23 {
@@ -461,29 +413,22 @@ func validateDTMCalendarRange(value, path string) *ValidationError {
 	return nil
 }
 
-// stripTZOffset removes a trailing [+-]DDDD timezone offset and fractional seconds from a DTM/TM value,
-// returning only the digit prefix for range checking.
 func stripTZOffset(value string) string {
 	s := value
-	// Remove trailing timezone: last [+-]DDDD
 	for _, sign := range []byte{'+', '-'} {
 		if idx := strings.LastIndexByte(s, sign); idx > 0 {
 			s = s[:idx]
 			break
 		}
 	}
-	// Remove fractional seconds: everything from the first '.'
 	if idx := strings.IndexByte(s, '.'); idx >= 0 {
 		s = s[:idx]
 	}
 	return s
 }
 
-// validateTZOffset checks that a trailing [+-]HHMM timezone offset in a TM/DTM value has
-// valid hours (00-14) and minutes (00-59). Per ISO 8601, valid offsets range from -1400 to +1400.
 func validateTZOffset(value, path string) *ValidationError {
 	var tzIdx int = -1
-	// Find the last + or - that is the timezone sign (must be after at least 2 digit chars)
 	for i := len(value) - 5; i >= 1; i-- {
 		if value[i] == '+' || value[i] == '-' {
 			tzIdx = i
@@ -491,16 +436,16 @@ func validateTZOffset(value, path string) *ValidationError {
 		}
 	}
 	if tzIdx < 0 {
-		return nil // no timezone offset present
+		return nil
 	}
 	tz := value[tzIdx+1:]
 	if len(tz) != 4 {
-		return nil // structural regex already guards 4-digit format
+		return nil
 	}
 	tzH, err1 := strconv.Atoi(tz[0:2])
 	tzM, err2 := strconv.Atoi(tz[2:4])
 	if err1 != nil || err2 != nil {
-		return nil // non-numeric: structural regex should have caught this
+		return nil
 	}
 	if tzH > 14 || (tzH == 14 && tzM > 0) {
 		return &ValidationError{

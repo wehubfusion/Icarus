@@ -13,26 +13,17 @@ var (
 	ErrInvalidDelimiters = errors.New("hl7: invalid or missing delimiters in MSH segment")
 )
 
-// UTF-8 BOM is the 3-byte sequence 0xEF, 0xBB, 0xBF.
 var bomUTF8 = []byte{0xEF, 0xBB, 0xBF}
 
-// Tokenize normalizes the raw message (BOM strip, line endings to \r), extracts delimiters from MSH,
-// and returns delimiters plus segment strings. Call ParseMessageWithDelimiters with the result to get a Message.
 func Tokenize(raw []byte) (Delimiters, []string, error) {
 	s := string(raw)
 	s = strings.ReplaceAll(s, "\r\n", "\r")
 	s = strings.ReplaceAll(s, "\n", "\r")
-	// Strip BOM first (before trimming leading whitespace).
 	if len(s) >= 3 && s[0] == bomUTF8[0] && s[1] == bomUTF8[1] && s[2] == bomUTF8[2] {
 		s = s[3:]
 	}
-	// Only strip leading and trailing CR/whitespace from the overall message.
-	// Using TrimLeft so trailing spaces in the last field of the last segment are not lost.
 	s = strings.TrimLeft(s, " \t\r\n")
-	// Trim trailing CR/whitespace-only lines (e.g. a trailing \r at end of file) but not field data.
-	// Walk from the end removing pure whitespace/CR until we hit non-whitespace.
 	for len(s) > 0 && (s[len(s)-1] == '\r' || s[len(s)-1] == '\n' || s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-		// Only trim if it's CR/LF; spaces at end belong to the last field — stop at first non-CR.
 		if s[len(s)-1] == '\r' || s[len(s)-1] == '\n' {
 			s = s[:len(s)-1]
 		} else {
@@ -52,8 +43,6 @@ func Tokenize(raw []byte) (Delimiters, []string, error) {
 	segStrs := strings.Split(s, "\r")
 	var out []string
 	for _, seg := range segStrs {
-		// Only strip leading whitespace artefacts (e.g. stray whitespace before segment name).
-		// Do NOT trim trailing spaces — they are meaningful in HL7 field values.
 		seg = strings.TrimLeft(seg, " \t")
 		if seg != "" {
 			out = append(out, seg)
@@ -101,9 +90,7 @@ func parseDelimiters(data string) (Delimiters, error) {
 	if len(data) >= 9 && data[8] != d.Field {
 		d.Truncation = data[8]
 	}
-	// HL7 §2.5.1 requires all delimiter characters to be distinct from one another.
-	// Colliding delimiters (e.g. Component == Field) cause silent misparses that are
-	// very hard to diagnose downstream. Reject them here. (BUG-25)
+	// All delimiter characters must be distinct per HL7 §2.5.1.
 	chars := []struct {
 		name  string
 		value byte
@@ -310,16 +297,10 @@ func decodeEscapeSequence(seq string, d Delimiters) (string, bool) {
 	return "", false
 }
 
-// decodeHexSequence decodes a \Xhhhh\ HL7 escape sequence.
-// Per HL7 §2.7.1, \Xhhhh...\ encodes Unicode code points in hex.
-// If the hex string is 4+ digits (e.g. "0041" for U+0041 'A'), it is parsed as a single
-// Unicode code point and encoded as UTF-8. For short (1-2 digit) hex, it decodes as a byte.
 func decodeHexSequence(hexStr string) string {
-	// Try as a single Unicode code point first (covers \X0041\, \X00E9\, \X1F600\, etc.)
 	if val, err := strconv.ParseInt(hexStr, 16, 32); err == nil {
 		return string(rune(val))
 	}
-	// Fallback: decode as pairs of hex bytes (legacy behaviour for malformed sequences)
 	var result strings.Builder
 	for i := 0; i+1 < len(hexStr); i += 2 {
 		if val, err := strconv.ParseInt(hexStr[i:i+2], 16, 32); err == nil {
