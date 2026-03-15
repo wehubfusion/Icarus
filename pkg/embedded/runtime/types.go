@@ -165,6 +165,8 @@ type ExecutionUnit struct {
 	RunId string `json:"runId,omitempty"`
 	// ClientId is the tenant/client identifier for this execution unit
 	ClientId string `json:"clientId,omitempty"`
+	// ProjectId is the project identifier for observation and multi-tenant isolation
+	ProjectId string `json:"projectId,omitempty"`
 	// Label is the human-readable name of the parent node
 	Label string `json:"label"`
 	// Type is the node type (e.g., "plugin")
@@ -209,6 +211,7 @@ type EmbeddedNodeStartInfo struct {
 	WorkflowID     string
 	RunID          string
 	ClientID       string
+	ProjectID      string
 	ParentNodeID   string
 	EmbeddedNodeID string
 }
@@ -220,6 +223,7 @@ type ParentNodeEndInfo struct {
 	WorkflowID   string
 	RunID        string
 	ClientID     string
+	ProjectID    string
 	ParentNodeID string
 	// Label is the human-readable node label from the execution plan (for observation events).
 	Label string

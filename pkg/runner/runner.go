@@ -455,11 +455,13 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 	defer processSpan.End()
 
 	// Best-effort node.started observation for the parent node.
-	// Uses Argus Event Level 3 semantics (client_id, workflow_id, run_id, node_id).
+	// Uses Argus Event Level 3 semantics (client_id, workflow_id, run_id, node_id, project_id).
 	if r.observer != nil {
 		clientID := ""
+		projectID := ""
 		if msg.Metadata != nil {
 			clientID = msg.Metadata["client_id"]
+			projectID = msg.Metadata["project_id"]
 		}
 
 		nodeID := ""
@@ -496,6 +498,7 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 				WorkflowID: workflowID,
 				RunID:      runID,
 				ClientID:   clientID,
+				ProjectID:  projectID,
 				NodeID:     nodeID,
 				StartedAt:  time.Now().UnixMilli(),
 				Input:      inputPayload,
