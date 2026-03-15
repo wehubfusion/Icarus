@@ -16,11 +16,40 @@ var (
 	reSI  = regexp.MustCompile(`^\s*[-+]?\d+\s*$`)                                                                               // SI: integer
 )
 
+// ValidateMessageTypeAndVersion checks MSH-9 and MSH-12 against schema messageType and version when set.
+// Returns 0–2 errors (HL7_MESSAGE_TYPE_MISMATCH, HL7_VERSION_MISMATCH) when schema has non-empty values and message differs.
+func ValidateMessageTypeAndVersion(msg *Message, schema *HL7Schema) []ValidationError {
+	var errs []ValidationError
+	if schema == nil {
+		return errs
+	}
+	if schema.MessageType != "" {
+		want := strings.TrimSpace(schema.MessageType)
+		got := strings.TrimSpace(msg.Get("MSH-9"))
+		if !strings.EqualFold(want, got) {
+			errs = append(errs, ValidationError{
+				Path: "MSH-9", Message: fmt.Sprintf("message type must be %q, got %q", want, got), Code: "HL7_MESSAGE_TYPE_MISMATCH",
+			})
+		}
+	}
+	if schema.Version != "" {
+		want := strings.TrimSpace(schema.Version)
+		got := strings.TrimSpace(msg.Get("MSH-12"))
+		if want != got {
+			errs = append(errs, ValidationError{
+				Path: "MSH-12", Message: fmt.Sprintf("version must be %q, got %q", want, got), Code: "HL7_VERSION_MISMATCH",
+			})
+		}
+	}
+	return errs
+}
+
 // ValidateMatchResult runs field-level validation on matched segments and returns all errors.
+// When allowExtraFields is true, HL7_EXTRA_FIELD and HL7_EXTRA_COMPONENT are not reported.
 // Validation is schema-driven: "required component missing" (HL7_REQUIRED) is reported when the
 // schema marks that component as R (or RE) and the message has no value at that 1-based component
 // index (e.g. message has "ORU^R01" with two components, schema defines MSG.1–MSG.3 with MSG.3 R).
-func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool) []ValidationError {
+func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool, allowExtraFields bool) []ValidationError {
 	var errs []ValidationError
 	for _, m := range match.Matched {
 		if m.Segment == nil || m.SchemaDef == nil {
@@ -28,28 +57,30 @@ func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool) []Val
 		}
 		for fi := range m.SchemaDef.Fields {
 			fdef := &m.SchemaDef.Fields[fi]
-			fieldErrs := validateField(m.Segment, fdef, m.Segment.Name, msg)
+			fieldErrs := validateField(m.Segment, fdef, m.Segment.Name, msg, allowExtraFields)
 			errs = append(errs, fieldErrs...)
 			if !collectAll && len(errs) > 0 {
 				return errs
 			}
 		}
-		// Strict: message segment has more fields than schema defines
-		maxFieldNum := 0
-		for _, fdef := range m.SchemaDef.Fields {
-			n := parseFieldNumberFromPosition(fdef.Position)
-			if n > maxFieldNum {
-				maxFieldNum = n
+		// Strict: message segment has more fields than schema defines (skip if allowExtraFields)
+		if !allowExtraFields {
+			maxFieldNum := 0
+			for _, fdef := range m.SchemaDef.Fields {
+				n := parseFieldNumberFromPosition(fdef.Position)
+				if n > maxFieldNum {
+					maxFieldNum = n
+				}
 			}
-		}
-		for fn := maxFieldNum + 1; fn <= len(m.Segment.Fields); fn++ {
-			errs = append(errs, ValidationError{
-				Path: fmt.Sprintf("%s-%d", m.Segment.Name, fn),
-				Message: "segment has more fields than schema allows",
-				Code:    "HL7_EXTRA_FIELD",
-			})
-			if !collectAll && len(errs) > 0 {
-				return errs
+			for fn := maxFieldNum + 1; fn <= len(m.Segment.Fields); fn++ {
+				errs = append(errs, ValidationError{
+					Path: fmt.Sprintf("%s-%d", m.Segment.Name, fn),
+					Message: "segment has more fields than schema allows",
+					Code:    "HL7_EXTRA_FIELD",
+				})
+				if !collectAll && len(errs) > 0 {
+					return errs
+				}
 			}
 		}
 	}
@@ -57,7 +88,8 @@ func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool) []Val
 }
 
 // validateField validates one field definition against the segment.
-func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message) []ValidationError {
+// When allowExtraFields is true, HL7_EXTRA_COMPONENT is not reported.
+func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message, allowExtraFields bool) []ValidationError {
 	var errs []ValidationError
 	fieldNum := parseFieldNumberFromPosition(fdef.Position)
 	if fieldNum <= 0 {
@@ -184,10 +216,16 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 					}
 				}
 			}
-			// Strict: message has more components than schema defines
-			if len(rep.Components) > len(fdef.Components) {
-				for cIdx := len(fdef.Components); cIdx < len(rep.Components); cIdx++ {
-					compNum := cIdx + 1
+			// Strict: message has more components than schema defines (by max schema position, not count); skip if allowExtraFields
+			if !allowExtraFields {
+				maxCompNum := 0
+				for _, cdef := range fdef.Components {
+					n := parseComponentNumberFromPosition(cdef.Position)
+					if n > maxCompNum {
+						maxCompNum = n
+					}
+				}
+				for compNum := maxCompNum + 1; compNum <= len(rep.Components); compNum++ {
 					cPath := fmt.Sprintf("%s.%d", repPath, compNum)
 					errs = append(errs, ValidationError{
 						Path: cPath, Message: "field has more components than schema allows", Code: "HL7_EXTRA_COMPONENT",

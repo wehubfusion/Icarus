@@ -128,11 +128,13 @@ func (r *ValidationResult) ErrorMessage() string {
 
 // ProcessOptions controls schema processing behavior.
 // For the HL7 processor, ApplyDefaults and StructureData are ignored (HL7 validation only, no transformation).
+// For HL7, AllowExtraFields when true skips reporting HL7_EXTRA_FIELD and HL7_EXTRA_COMPONENT.
 type ProcessOptions struct {
 	ApplyDefaults    bool // Apply default values from schema
 	StructureData    bool // Remove fields not in schema
 	StrictValidation bool // Fail on validation errors
 	CollectAllErrors bool // When false (default), stop after first validation error; when true, collect all errors
+	AllowExtraFields bool // When true (HL7), do not report extra fields or components beyond schema
 }
 
 // ProcessResult contains the result of schema processing

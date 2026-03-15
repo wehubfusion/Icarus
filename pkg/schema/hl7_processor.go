@@ -56,7 +56,10 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled CompiledSchema, 
 	for _, e := range match.Errors {
 		allErrs = append(allErrs, ValidationError{Path: e.Path, Message: e.Message, Code: e.Code})
 	}
-	fieldErrs := hl7.ValidateMatchResult(match, msg, opts.CollectAllErrors)
+	for _, e := range hl7.ValidateMessageTypeAndVersion(msg, c.inner.Schema) {
+		allErrs = append(allErrs, ValidationError{Path: e.Path, Message: e.Message, Code: e.Code})
+	}
+	fieldErrs := hl7.ValidateMatchResult(match, msg, opts.CollectAllErrors, opts.AllowExtraFields)
 	for _, e := range fieldErrs {
 		allErrs = append(allErrs, ValidationError{Path: e.Path, Message: e.Message, Code: e.Code})
 	}
