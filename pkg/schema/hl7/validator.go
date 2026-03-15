@@ -7,6 +7,15 @@ import (
 	"strings"
 )
 
+// Pre-compiled regexes for HL7 primitive datatype validation (per HL7 v2.5.1).
+var (
+	reDT  = regexp.MustCompile(`^\d{4}(\d{2}(\d{2})?)?$`)                                                                       // DT: YYYY, YYYYMM, or YYYYMMDD
+	reTM  = regexp.MustCompile(`^\d{2}(\d{2}(\d{2}(\.\d{1,4})?)?)?([+-]\d{4})?$`)                                               // TM: HH[MM[SS[.s]]][+/-ZZZZ]
+	reDTM = regexp.MustCompile(`^\d{4}(\d{2}(\d{2}(\d{2}(\d{2}(\d{2}(\.\d{1,4})?)?)?)?)?)?([+-]\d{4})?$`)                         // DTM/TS: full timestamp
+	reNM  = regexp.MustCompile(`^\s*[-+]?\d*\.?\d+\s*$`)                                                                         // NM: numeric
+	reSI  = regexp.MustCompile(`^\s*[-+]?\d+\s*$`)                                                                               // SI: integer
+)
+
 // ValidateMatchResult runs field-level validation on matched segments and returns all errors.
 // Validation is schema-driven: "required component missing" (HL7_REQUIRED) is reported when the
 // schema marks that component as R (or RE) and the message has no value at that 1-based component
@@ -70,7 +79,7 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 			Path: path, Message: "field must not be present or must be empty (X)", Code: "HL7_NOT_USED",
 		})
 	}
-	// R: must be present and non-empty
+	// R: must be present and non-empty. RE (Required But May Be Empty): must be present, value may be empty — so we only report HL7_REQUIRED for R when value is empty.
 	if strings.ToUpper(strings.TrimSpace(fdef.Usage)) == UsageRequired && f.String() == "" {
 		errs = append(errs, ValidationError{
 			Path: path, Message: "required field must be non-empty", Code: "HL7_REQUIRED",
@@ -101,10 +110,10 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 	// TODO: tableId — no terminology service for now; skip table/value-set validation
 	// When a terminology service is available, validate field value against tableId here.
 
-	// Datatype validation (including VARIES resolved via VariesResolver)
+	// Datatype validation (including VARIES resolved via VariesResolver; pass current segment so e.g. OBX-5 uses OBX-2 from same segment)
 	effectiveType := fdef.DataType
 	if strings.ToUpper(fdef.DataType) == "VARIES" {
-		effectiveType = ResolveVariesDataType(segName, strconv.Itoa(fieldNum), msg)
+		effectiveType = ResolveVariesDataType(segName, strconv.Itoa(fieldNum), seg, msg)
 		if effectiveType == "" {
 			effectiveType = "ST" // fallback to string
 		}
@@ -222,19 +231,29 @@ func validatePrimitive(dataType, value, path string, _ int) *ValidationError {
 	switch dt {
 	case "ST", "TX", "FT", "": // string types
 		return nil
-	case "NM", "SI", "SN": // numeric
-		if !regexp.MustCompile(`^\s*[-+]?\d*\.?\d+\s*$`).MatchString(value) {
+	case "NM":
+		if !reNM.MatchString(value) {
 			return &ValidationError{Path: path, Message: "value must be numeric", Code: "HL7_DATATYPE"}
 		}
-	case "DT": // date YYYYMMDD
-		if !regexp.MustCompile(`^\d{8}$`).MatchString(value) {
-			return &ValidationError{Path: path, Message: "value must be date (YYYYMMDD)", Code: "HL7_DATATYPE"}
+	case "SI":
+		if !reSI.MatchString(value) {
+			return &ValidationError{Path: path, Message: "value must be integer", Code: "HL7_DATATYPE"}
 		}
-	case "TM": // time HHMM[SS[.S[S[S[S]]]]]
-		if !regexp.MustCompile(`^\d{2,6}(\.\d{1,4})?$`).MatchString(value) {
-			return &ValidationError{Path: path, Message: "value must be time (HHMM[SS])", Code: "HL7_DATATYPE"}
+	case "SN": // Structured Numeric: [comparator] num [/ num2]; accept non-empty (full format would need parser)
+		return nil
+	case "DT": // date YYYY, YYYYMM, or YYYYMMDD per HL7 §2.A.21
+		if !reDT.MatchString(value) {
+			return &ValidationError{Path: path, Message: "value must be date (YYYY[MM[DD]])", Code: "HL7_DATATYPE"}
 		}
-	case "ID": // coded value
+	case "TM": // time HH[MM[SS[.s]]][+/-ZZZZ] per HL7 §2.A.75
+		if !reTM.MatchString(value) {
+			return &ValidationError{Path: path, Message: "value must be time (HH[MM[SS]])", Code: "HL7_DATATYPE"}
+		}
+	case "DTM", "TS": // DTM/TS: full timestamp YYYY[MM[DD[HH[MM[SS[.s]]]]]][+/-ZZZZ]
+		if !reDTM.MatchString(value) {
+			return &ValidationError{Path: path, Message: "value must be timestamp (DTM/TS format)", Code: "HL7_DATATYPE"}
+		}
+	case "ID", "IS": // coded values; table validation requires external terminology service
 		return nil
 	default:
 		// unknown type: accept
