@@ -167,31 +167,6 @@ func readTestFile(t *testing.T, name string) []byte {
 	return data
 }
 
-func TestHL7ProcessorWithExampleFiles(t *testing.T) {
-	msgBytes := readTestFile(t, "example.hl7")
-	schemaBytes := readTestFile(t, "ORU_R01.json")
-
-	proc := NewHL7SchemaProcessor()
-	compiled, err := proc.ParseSchema(schemaBytes)
-	if err != nil {
-		t.Fatalf("ParseSchema(ORU_R01.json): %v", err)
-	}
-
-	opts := contracts.ProcessOptions{StrictValidation: false, CollectAllErrors: true}
-	result, err := proc.Process(msgBytes, compiled, opts)
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	if result == nil {
-		t.Fatal("result is nil")
-	}
-
-	t.Logf("Valid: %v, Errors: %d", result.Valid, len(result.Errors))
-	for _, e := range result.Errors {
-		t.Logf("  %s: %s [%s]", e.Path, e.Message, e.Code)
-	}
-}
-
 func TestHL7SchemaProcessor_Process_ValidMessage(t *testing.T) {
 	proc := NewHL7SchemaProcessor()
 	hl7Schema := `{

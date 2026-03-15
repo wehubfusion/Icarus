@@ -38,7 +38,7 @@ var (
 		UsageRequired: true, UsageRequiredEmpty: true, UsageOptional: true,
 		UsageConditional: true, UsageBackward: true, UsageNotUsed: true, UsageWithdrawn: true,
 	}
-	rptRegex = regexp.MustCompile(`^$|^1$|^\*$|^[1-9][0-9]*$`)
+	rptRegex = regexp.MustCompile(`^$|^1$|^\*$|^[1-9][0-9]*$|^(?i:unbounded)$`)
 )
 
 // HL7Schema represents a custom HL7 schema definition (Morpheus-compatible JSON).
@@ -94,6 +94,38 @@ type HL7SubcomponentDef struct {
 	TableID  *string `json:"tableId,omitempty"`
 }
 
+// checkDuplicateSegmentNames returns an error if any two sibling segment defs
+// (at the same level in a group or top-level) share the same name.
+// Duplicate names cause the matcher to silently double-consume or falsely report
+// missing required segments, so they must be rejected at schema load time.
+func checkDuplicateSegmentNames(segs []*HL7SegmentDef, path string) error {
+	seen := make(map[string]int, len(segs))
+	for i, s := range segs {
+		if s == nil {
+			continue
+		}
+		name := strings.TrimSpace(s.Name)
+		if prev, dup := seen[name]; dup {
+			return fmt.Errorf("%s: duplicate segment name %q at indices [%d] and [%d]", path, name, prev, i)
+		}
+		seen[name] = i
+	}
+	return nil
+}
+
+// checkDuplicateTopLevelNames checks the top-level []HL7SegmentDef slice (non-pointer variant).
+func checkDuplicateTopLevelNames(segs []HL7SegmentDef, path string) error {
+	seen := make(map[string]int, len(segs))
+	for i, s := range segs {
+		name := strings.TrimSpace(s.Name)
+		if prev, dup := seen[name]; dup {
+			return fmt.Errorf("%s: duplicate segment name %q at indices [%d] and [%d]", path, name, prev, i)
+		}
+		seen[name] = i
+	}
+	return nil
+}
+
 // Validate validates the HL7 schema definition (structural only).
 func (h *HL7Schema) Validate() error {
 	if h.Segments == nil {
@@ -101,6 +133,9 @@ func (h *HL7Schema) Validate() error {
 	}
 	if len(h.Segments) == 0 {
 		return fmt.Errorf("HL7 definition 'segments' must contain at least one segment")
+	}
+	if err := checkDuplicateTopLevelNames(h.Segments, "segments"); err != nil {
+		return err
 	}
 	for i := range h.Segments {
 		if err := h.validateSegment(&h.Segments[i], 0, fmt.Sprintf("segments[%d]", i)); err != nil {
@@ -127,6 +162,9 @@ func (h *HL7Schema) validateSegment(seg *HL7SegmentDef, depth int, path string) 
 		if len(seg.Segments) == 0 {
 			return fmt.Errorf("%s: group segment must have non-empty 'segments'", path)
 		}
+		if err := checkDuplicateSegmentNames(seg.Segments, path+".segments"); err != nil {
+			return err
+		}
 		for i, sub := range seg.Segments {
 			if sub == nil {
 				return fmt.Errorf("%s.segments[%d]: segment cannot be null", path, i)
@@ -146,8 +184,12 @@ func (h *HL7Schema) validateSegment(seg *HL7SegmentDef, depth int, path string) 
 }
 
 func (h *HL7Schema) validateField(f *HL7FieldDef, path string) error {
-	if strings.TrimSpace(f.Position) == "" {
+	pos := strings.TrimSpace(f.Position)
+	if pos == "" {
 		return fmt.Errorf("%s: field 'position' is required and cannot be empty", path)
+	}
+	if parseFieldNumberFromPosition(pos) <= 0 {
+		return fmt.Errorf("%s: field 'position' %q does not resolve to a positive field number (expected format: 'SEG.N' or 'SEG-N')", path, f.Position)
 	}
 	if u := strings.TrimSpace(f.Usage); u != "" && !validUsage[strings.ToUpper(u)] {
 		return fmt.Errorf("%s.usage: must be one of R, RE, O, C, B, X, W (got %q)", path, f.Usage)
@@ -164,8 +206,12 @@ func (h *HL7Schema) validateField(f *HL7FieldDef, path string) error {
 }
 
 func (h *HL7Schema) validateComponent(c *HL7ComponentDef, path string) error {
-	if strings.TrimSpace(c.Position) == "" {
+	pos := strings.TrimSpace(c.Position)
+	if pos == "" {
 		return fmt.Errorf("%s: component 'position' is required and cannot be empty", path)
+	}
+	if parseComponentNumberFromPosition(pos) <= 0 {
+		return fmt.Errorf("%s: component 'position' %q does not resolve to a positive component number (expected format: 'TYPE.N')", path, c.Position)
 	}
 	if u := strings.TrimSpace(c.Usage); u != "" && !validUsage[strings.ToUpper(u)] {
 		return fmt.Errorf("%s.usage: must be one of R, RE, O, C, B, X, W (got %q)", path, c.Usage)
@@ -179,8 +225,12 @@ func (h *HL7Schema) validateComponent(c *HL7ComponentDef, path string) error {
 }
 
 func (h *HL7Schema) validateSubcomponent(s *HL7SubcomponentDef, path string) error {
-	if strings.TrimSpace(s.Position) == "" {
+	pos := strings.TrimSpace(s.Position)
+	if pos == "" {
 		return fmt.Errorf("%s: subcomponent 'position' is required and cannot be empty", path)
+	}
+	if parseComponentNumberFromPosition(pos) <= 0 {
+		return fmt.Errorf("%s: subcomponent 'position' %q does not resolve to a positive number (expected format: 'TYPE.N')", path, s.Position)
 	}
 	if u := strings.TrimSpace(s.Usage); u != "" && !validUsage[strings.ToUpper(u)] {
 		return fmt.Errorf("%s.usage: must be one of R, RE, O, C, B, X, W (got %q)", path, s.Usage)

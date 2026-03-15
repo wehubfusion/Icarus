@@ -52,7 +52,10 @@ type Component struct {
 	Subcomponents []Subcomponent
 }
 
-// String returns the component value (first subcomponent or joined).
+// String returns the component value (first subcomponent, or all subcomponents joined with the
+// default subcomponent separator '&'). Note: uses the default delimiter set. If the message uses
+// a non-standard subcomponent separator, the re-encoded value will differ from the wire bytes.
+// Callers that need the original delimiter-aware value should access Subcomponents directly.
 func (c Component) String() string {
 	if len(c.Subcomponents) == 0 {
 		return ""
@@ -80,7 +83,8 @@ type Repetition struct {
 	Components []Component
 }
 
-// String returns the repetition value.
+// String returns the repetition value with components joined by the default component separator '^'.
+// Non-standard component separators (rare in practice) will produce a differently encoded string.
 func (r Repetition) String() string {
 	if len(r.Components) == 0 {
 		return ""

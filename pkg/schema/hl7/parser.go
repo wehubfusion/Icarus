@@ -22,9 +22,22 @@ func Tokenize(raw []byte) (Delimiters, []string, error) {
 	s := string(raw)
 	s = strings.ReplaceAll(s, "\r\n", "\r")
 	s = strings.ReplaceAll(s, "\n", "\r")
-	s = strings.TrimSpace(s)
+	// Strip BOM first (before trimming leading whitespace).
 	if len(s) >= 3 && s[0] == bomUTF8[0] && s[1] == bomUTF8[1] && s[2] == bomUTF8[2] {
 		s = s[3:]
+	}
+	// Only strip leading and trailing CR/whitespace from the overall message.
+	// Using TrimLeft so trailing spaces in the last field of the last segment are not lost.
+	s = strings.TrimLeft(s, " \t\r\n")
+	// Trim trailing CR/whitespace-only lines (e.g. a trailing \r at end of file) but not field data.
+	// Walk from the end removing pure whitespace/CR until we hit non-whitespace.
+	for len(s) > 0 && (s[len(s)-1] == '\r' || s[len(s)-1] == '\n' || s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
+		// Only trim if it's CR/LF; spaces at end belong to the last field — stop at first non-CR.
+		if s[len(s)-1] == '\r' || s[len(s)-1] == '\n' {
+			s = s[:len(s)-1]
+		} else {
+			break
+		}
 	}
 	if len(s) == 0 {
 		return Delimiters{}, nil, ErrEmptyMessage
@@ -39,7 +52,9 @@ func Tokenize(raw []byte) (Delimiters, []string, error) {
 	segStrs := strings.Split(s, "\r")
 	var out []string
 	for _, seg := range segStrs {
-		seg = strings.TrimSpace(seg)
+		// Only strip leading whitespace artefacts (e.g. stray whitespace before segment name).
+		// Do NOT trim trailing spaces — they are meaningful in HL7 field values.
+		seg = strings.TrimLeft(seg, " \t")
 		if seg != "" {
 			out = append(out, seg)
 		}
@@ -85,6 +100,32 @@ func parseDelimiters(data string) (Delimiters, error) {
 	}
 	if len(data) >= 9 && data[8] != d.Field {
 		d.Truncation = data[8]
+	}
+	// HL7 §2.5.1 requires all delimiter characters to be distinct from one another.
+	// Colliding delimiters (e.g. Component == Field) cause silent misparses that are
+	// very hard to diagnose downstream. Reject them here. (BUG-25)
+	chars := []struct {
+		name  string
+		value byte
+	}{
+		{"field", d.Field},
+		{"component", d.Component},
+		{"repetition", d.Repetition},
+		{"escape", d.Escape},
+		{"subcomponent", d.Subcomponent},
+	}
+	if d.Truncation != 0 {
+		chars = append(chars, struct {
+			name  string
+			value byte
+		}{"truncation", d.Truncation})
+	}
+	seen := make(map[byte]string, len(chars))
+	for _, c := range chars {
+		if prev, dup := seen[c.value]; dup {
+			return Delimiters{}, fmt.Errorf("hl7: delimiter %q (0x%02X) used for both %s and %s", c.value, c.value, prev, c.name)
+		}
+		seen[c.value] = c.name
 	}
 	return d, nil
 }
@@ -269,16 +310,20 @@ func decodeEscapeSequence(seq string, d Delimiters) (string, bool) {
 	return "", false
 }
 
-func decodeHexSequence(hex string) string {
-	var result strings.Builder
-	for i := 0; i+1 < len(hex); i += 2 {
-		if val, err := strconv.ParseInt(hex[i:i+2], 16, 32); err == nil {
-			result.WriteByte(byte(val))
-		}
+// decodeHexSequence decodes a \Xhhhh\ HL7 escape sequence.
+// Per HL7 §2.7.1, \Xhhhh...\ encodes Unicode code points in hex.
+// If the hex string is 4+ digits (e.g. "0041" for U+0041 'A'), it is parsed as a single
+// Unicode code point and encoded as UTF-8. For short (1-2 digit) hex, it decodes as a byte.
+func decodeHexSequence(hexStr string) string {
+	// Try as a single Unicode code point first (covers \X0041\, \X00E9\, \X1F600\, etc.)
+	if val, err := strconv.ParseInt(hexStr, 16, 32); err == nil {
+		return string(rune(val))
 	}
-	if len(hex)%2 != 0 && result.Len() == 0 {
-		if val, err := strconv.ParseInt(hex, 16, 32); err == nil {
-			return string(rune(val))
+	// Fallback: decode as pairs of hex bytes (legacy behaviour for malformed sequences)
+	var result strings.Builder
+	for i := 0; i+1 < len(hexStr); i += 2 {
+		if val, err := strconv.ParseInt(hexStr[i:i+2], 16, 32); err == nil {
+			result.WriteByte(byte(val))
 		}
 	}
 	return result.String()

@@ -48,15 +48,24 @@ func MatchMessage(msg *Message, compiled *CompiledHL7Schema) MatchResult {
 	}
 	msgIdx, errs := matchSegments(msg, 0, compiled.Schema.Segments, &result)
 	if msgIdx < len(msg.Segments) {
-		// Report unexpected segments only for non-Z-segments (Z-segments are allowed as local extensions)
+		// Report unexpected segments only for non-Z-segments (Z-segments are allowed as local extensions).
+		// Track per-name occurrence so the path is "NK1[2]" (2nd NK1) not "NK1-3" (misleading field ref).
+		occurrences := make(map[string]int)
 		for i := msgIdx; i < len(msg.Segments); i++ {
-			if !isZSegment(msg.Segments[i].Name) {
-				result.Errors = append(result.Errors, ValidationError{
-					Path:    fmt.Sprintf("%s-%d", msg.Segments[i].Name, i+1),
-					Message: "unexpected segment; not in schema order",
-					Code:    "HL7_UNEXPECTED_SEGMENT",
-				})
+			name := msg.Segments[i].Name
+			if isZSegment(name) {
+				continue
 			}
+			occurrences[name]++
+			path := name
+			if occurrences[name] > 1 {
+				path = fmt.Sprintf("%s[%d]", name, occurrences[name])
+			}
+			result.Errors = append(result.Errors, ValidationError{
+				Path:    path,
+				Message: "unexpected segment; not in schema order",
+				Code:    "HL7_UNEXPECTED_SEGMENT",
+			})
 		}
 	}
 	result.Errors = append(result.Errors, errs...)
@@ -76,17 +85,17 @@ func matchSegments(msg *Message, msgIdx int, schemaSegs []HL7SegmentDef, result 
 			nested := derefSegmentDefs(def.Segments)
 			for rep < maxRep {
 				nextIdx, groupErrs := matchSegments(msg, msgIdx, nested, result)
-				if nextIdx == msgIdx && len(groupErrs) > 0 {
-					// could not consume one full group
-					if isRequired(def.Usage) && rep == 0 {
-						errs = append(errs, ValidationError{
-							Path:    "segments." + def.Name,
-							Message: "required group missing or incomplete",
-							Code:    "HL7_MISSING_REQUIRED",
-						})
-					}
+				// Stop when no progress was made (no segments consumed) — whether or not
+				// there were errors. Without this, an all-optional group that never matches
+				// would loop forever because no error is generated to trigger the break.
+				if nextIdx == msgIdx {
 					break
 				}
+				// Propagate errors from within the group (e.g. required segments that were
+				// absent after the group partially matched). Previously _ = groupErrs silently
+				// discarded them, meaning a required segment inside a partially-matched group
+				// would never be reported as missing. (BUG-20)
+				errs = append(errs, groupErrs...)
 				msgIdx = nextIdx
 				rep++
 				if rep < maxRep && nextIdx >= len(msg.Segments) {
@@ -124,13 +133,32 @@ func matchSegments(msg *Message, msgIdx int, schemaSegs []HL7SegmentDef, result 
 				Code:    "HL7_MISSING_REQUIRED",
 			})
 		}
+		// Consume excess repetitions beyond maxRep and report them precisely as
+		// HL7_REPETITION_VIOLATION rather than leaving them to be reported as the
+		// misleading HL7_UNEXPECTED_SEGMENT by the caller. (BUG-23)
+		excess := 0
+		for msgIdx < len(msg.Segments) && msg.Segments[msgIdx].Name == def.Name {
+			excess++
+			msgIdx++
+		}
+		if excess > 0 {
+			errs = append(errs, ValidationError{
+				Path:    def.Name,
+				Message: fmt.Sprintf("segment %s appears %d time(s), max allowed is %d", def.Name, consumed+excess, maxRep),
+				Code:    "HL7_REPETITION_VIOLATION",
+			})
+		}
 	}
 	return msgIdx, errs
 }
 
+// isRequired returns true when an absent element (field, component, subcomponent, or segment)
+// should be reported as a validation error.
+// Only R (Required) is strictly required to be present; RE (Required But May Be Empty) MAY be
+// absent — per HL7 2.5 conformance §B.8, RE means "required if known" and absence is allowed.
 func isRequired(usage string) bool {
 	u := strings.ToUpper(strings.TrimSpace(usage))
-	return u == UsageRequired || u == UsageRequiredEmpty
+	return u == UsageRequired
 }
 
 func parseRptMax(rpt string) int {
@@ -138,17 +166,15 @@ func parseRptMax(rpt string) int {
 	if rpt == "" || rpt == "0" {
 		return 0
 	}
-	if rpt == "1" {
-		return 1
-	}
-	if rpt == "*" {
+	if rpt == "*" || strings.EqualFold(rpt, "unbounded") {
 		return 1 << 30
 	}
-	n, _ := strconv.Atoi(rpt)
-	if n > 0 {
-		return n
+	n, err := strconv.Atoi(rpt)
+	if err != nil || n <= 0 {
+		// unrecognised or non-positive: treat as unlimited (fail-open) rather than silently capping at 1
+		return 1 << 30
 	}
-	return 1
+	return n
 }
 
 func segmentRep(usage, rpt string) (min, max int) {

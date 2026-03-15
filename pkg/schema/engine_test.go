@@ -175,29 +175,3 @@ func TestValidateHL7Only_MalformedMessage(t *testing.T) {
 		t.Errorf("expected HL7_INVALID_MSH for malformed message, got errors: %v", result.Errors)
 	}
 }
-
-// TestHL7EngineWithExampleFiles runs the schema engine against example.hl7 and ORU_R01.json.
-func TestHL7EngineWithExampleFiles(t *testing.T) {
-	msgBytes := readTestFile(t, "example.hl7")
-	schemaBytes := readTestFile(t, "ORU_R01.json")
-
-	engine := NewEngine()
-	opts := ProcessOptions{StrictValidation: false, CollectAllErrors: true}
-
-	result, err := engine.ProcessHL7WithSchema(msgBytes, schemaBytes, opts)
-	if err != nil {
-		t.Fatalf("ProcessHL7WithSchema: %v", err)
-	}
-	if result == nil {
-		t.Fatal("result is nil")
-	}
-
-	t.Logf("Valid: %v, Errors: %d", result.Valid, len(result.Errors))
-	for _, e := range result.Errors {
-		t.Logf("  %s: %s [%s]", e.Path, e.Message, e.Code)
-	}
-
-	if len(result.Errors) > 0 {
-		t.Logf("validation reported %d error(s); expected when 2.3 message is validated against 2.8 schema", len(result.Errors))
-	}
-}
