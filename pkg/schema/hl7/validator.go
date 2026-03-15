@@ -286,6 +286,9 @@ func parseComponentNumberFromPosition(position string) int {
 	return n
 }
 
+// validatePrimitive validates HL7 primitive/simple data types used at field or component level.
+// HL7 v2.x primitives (per Ch 2.A): ST, TX, FT, NM, SI, SN, DT, TM, DTM/TS, ID, IS, MO, GTS, NR.
+// Composite types (e.g. CE, CX, HD) are validated via their components; only leaf types reach here.
 func validatePrimitive(dataType, value, path string, _ int) *ValidationError {
 	dt := strings.ToUpper(strings.TrimSpace(dataType))
 	if value == "" || value == `""` {
@@ -333,7 +336,27 @@ func validatePrimitive(dataType, value, path string, _ int) *ValidationError {
 		}
 	case "ID", "IS":
 		return nil
+	case "MO":
+		// MO = Quantity (NM) ^ Denomination (ID). Quantity required when present; denomination optional.
+		parts := strings.SplitN(value, "^", 2)
+		qty := strings.TrimSpace(parts[0])
+		if qty != "" && !reNM.MatchString(qty) {
+			return &ValidationError{Path: path, Message: "MO quantity must be numeric", Code: "HL7_DATATYPE"}
+		}
+	case "GTS":
+		// General Timing Specification: follows ST formatting rules (HL7 2.A.32).
+		return nil
+	case "NR":
+		// Numeric range: Low (NM) ^ High (NM); either component may be null for unbounded.
+		parts := strings.SplitN(value, "^", 2)
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" && !reNM.MatchString(p) {
+				return &ValidationError{Path: path, Message: "NR low/high value must be numeric", Code: "HL7_DATATYPE"}
+			}
+		}
 	default:
+		// Unrecognized or composite-used-as-leaf: accept to avoid breaking schemas with extended types.
 	}
 	return nil
 }
