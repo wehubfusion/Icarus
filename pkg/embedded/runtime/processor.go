@@ -190,6 +190,7 @@ func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 			WorkflowID:       unit.WorkflowId,
 			RunID:            unit.RunId,
 			ClientID:         unit.ClientId,
+			ProjectID:        unit.ProjectId,
 			ParentNodeID:     unit.NodeId,
 			Label:            unit.Label,
 			HasEmbeddedNodes: true,
@@ -216,6 +217,7 @@ func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 				WorkflowID:     unit.WorkflowId,
 				RunID:          unit.RunId,
 				ClientID:       unit.ClientId,
+				ProjectID:      unit.ProjectId,
 				ParentNodeID:   unit.NodeId,
 				EmbeddedNodeID: embeddedNode.NodeId,
 			}
