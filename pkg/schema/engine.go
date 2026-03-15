@@ -87,12 +87,24 @@ func (e *Engine) ProcessCSVWithSchema(
 }
 
 // ProcessHL7WithSchema validates raw HL7 v2.x message bytes against an HL7 schema definition.
+// ProcessOptions.ApplyDefaults and StructureData are ignored for HL7 (validation only).
 func (e *Engine) ProcessHL7WithSchema(
 	inputData []byte,
 	schemaDefinition []byte,
 	options ProcessOptions,
 ) (*ProcessResult, error) {
 	return e.Process(inputData, schemaDefinition, FormatHL7, options)
+}
+
+// ValidateHL7Only validates raw HL7 v2.x message bytes against an HL7 schema definition.
+// It returns ValidationResult (Valid, Errors) and does not return the message bytes.
+// For HL7, ApplyDefaults and StructureData are not used; validation is always schema-only.
+func (e *Engine) ValidateHL7Only(inputData []byte, schemaDefinition []byte) (*ValidationResult, error) {
+	result, err := e.Process(inputData, schemaDefinition, FormatHL7, ProcessOptions{CollectAllErrors: true})
+	if err != nil {
+		return nil, err
+	}
+	return &ValidationResult{Valid: result.Valid, Errors: result.Errors}, nil
 }
 
 // ValidateCSVOnly validates rows against a CSV schema without transformation

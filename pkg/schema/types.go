@@ -126,7 +126,8 @@ func (r *ValidationResult) ErrorMessage() string {
 	return msg
 }
 
-// ProcessOptions controls schema processing behavior
+// ProcessOptions controls schema processing behavior.
+// For the HL7 processor, ApplyDefaults and StructureData are ignored (HL7 validation only, no transformation).
 type ProcessOptions struct {
 	ApplyDefaults    bool // Apply default values from schema
 	StructureData    bool // Remove fields not in schema
