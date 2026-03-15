@@ -1,8 +1,44 @@
 package schema
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+// findRepoRoot returns the Icarus module root (directory containing go.mod).
+func findRepoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// readTestFile reads a file from the Icarus repo root. Skips the test if the file is not found.
+func readTestFile(t *testing.T, name string) []byte {
+	t.Helper()
+	root := findRepoRoot(t)
+	if root == "" {
+		t.Skip("could not find repo root (go.mod)")
+	}
+	path := filepath.Join(root, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("test file %q not found: %v", path, err)
+	}
+	return data
+}
 
 const (
 	// Schema with MSH fields 1-12 and PID-3 so a typical ADT message validates without HL7_EXTRA_FIELD.
@@ -137,5 +173,31 @@ func TestValidateHL7Only_MalformedMessage(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected HL7_INVALID_MSH for malformed message, got errors: %v", result.Errors)
+	}
+}
+
+// TestHL7EngineWithExampleFiles runs the schema engine against example.hl7 and ORU_R01.json.
+func TestHL7EngineWithExampleFiles(t *testing.T) {
+	msgBytes := readTestFile(t, "example.hl7")
+	schemaBytes := readTestFile(t, "ORU_R01.json")
+
+	engine := NewEngine()
+	opts := ProcessOptions{StrictValidation: false, CollectAllErrors: true}
+
+	result, err := engine.ProcessHL7WithSchema(msgBytes, schemaBytes, opts)
+	if err != nil {
+		t.Fatalf("ProcessHL7WithSchema: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result is nil")
+	}
+
+	t.Logf("Valid: %v, Errors: %d", result.Valid, len(result.Errors))
+	for _, e := range result.Errors {
+		t.Logf("  %s: %s [%s]", e.Path, e.Message, e.Code)
+	}
+
+	if len(result.Errors) > 0 {
+		t.Logf("validation reported %d error(s); expected when 2.3 message is validated against 2.8 schema", len(result.Errors))
 	}
 }

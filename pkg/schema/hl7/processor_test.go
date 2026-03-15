@@ -2,7 +2,11 @@ package hl7
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/wehubfusion/Icarus/pkg/schema/contracts"
 )
 
 func TestParseHL7Schema_Valid(t *testing.T) {
@@ -128,5 +132,193 @@ func TestValidateMatchResult_RequiredField(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected HL7_REQUIRED for PID-3, got: %v", errs)
+	}
+}
+
+func findRepoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+func readTestFile(t *testing.T, name string) []byte {
+	t.Helper()
+	root := findRepoRoot(t)
+	if root == "" {
+		t.Skip("could not find repo root (go.mod)")
+	}
+	path := filepath.Join(root, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("test file %q not found: %v", path, err)
+	}
+	return data
+}
+
+func TestHL7ProcessorWithExampleFiles(t *testing.T) {
+	msgBytes := readTestFile(t, "example.hl7")
+	schemaBytes := readTestFile(t, "ORU_R01.json")
+
+	proc := NewHL7SchemaProcessor()
+	compiled, err := proc.ParseSchema(schemaBytes)
+	if err != nil {
+		t.Fatalf("ParseSchema(ORU_R01.json): %v", err)
+	}
+
+	opts := contracts.ProcessOptions{StrictValidation: false, CollectAllErrors: true}
+	result, err := proc.Process(msgBytes, compiled, opts)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result is nil")
+	}
+
+	t.Logf("Valid: %v, Errors: %d", result.Valid, len(result.Errors))
+	for _, e := range result.Errors {
+		t.Logf("  %s: %s [%s]", e.Path, e.Message, e.Code)
+	}
+}
+
+func TestHL7SchemaProcessor_Process_ValidMessage(t *testing.T) {
+	proc := NewHL7SchemaProcessor()
+	hl7Schema := `{
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": [
+				{"position": "MSH-9", "dataType": "ST", "usage": "R"}
+			]},
+			{"name": "PID", "usage": "R", "rpt": "1", "fields": [
+				{"position": "PID-3", "dataType": "CX", "usage": "R"}
+			]}
+		]
+	}`
+	compiled, err := proc.ParseSchema([]byte(hl7Schema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5\rPID|||12345^^^NHS^NH||DOE^JOHN"
+	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{StrictValidation: true, CollectAllErrors: true, AllowExtraFields: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Errorf("expected valid result, got errors: %v", result.Errors)
+	}
+}
+
+func TestHL7StrictValidation_ExtraComponent(t *testing.T) {
+	proc := NewHL7SchemaProcessor()
+	hl7Schema := `{
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": [
+				{"position": "MSH.9", "dataType": "MSG", "usage": "R", "rpt": "1", "components": [
+					{"position": "MSG.1", "usage": "R"},
+					{"position": "MSG.2", "usage": "R"},
+					{"position": "MSG.3", "usage": "R"}
+				]}
+			]}
+		]
+	}`
+	compiled, err := proc.ParseSchema([]byte(hl7Schema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ORU^R01^ORU^R01|MSG001|P|2.5"
+	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{StrictValidation: false, CollectAllErrors: true})
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	var hasExtraComp bool
+	for _, e := range result.Errors {
+		if e.Code == "HL7_EXTRA_COMPONENT" {
+			hasExtraComp = true
+			if e.Path != "MSH-9.4" {
+				t.Errorf("expected path MSH-9.4 for extra component, got %q", e.Path)
+			}
+			break
+		}
+	}
+	if !hasExtraComp {
+		t.Errorf("expected HL7_EXTRA_COMPONENT when message has 4 components and schema defines 3: %v", result.Errors)
+	}
+}
+
+func TestHL7StrictValidation_ExtraField(t *testing.T) {
+	proc := NewHL7SchemaProcessor()
+	hl7Schema := `{
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": [
+				{"position": "MSH.1", "dataType": "ST", "usage": "R"},
+				{"position": "MSH.2", "dataType": "ST", "usage": "R"},
+				{"position": "MSH.3", "dataType": "ST", "usage": "O"},
+				{"position": "MSH.4", "dataType": "ST", "usage": "O"},
+				{"position": "MSH.5", "dataType": "ST", "usage": "O"},
+				{"position": "MSH.6", "dataType": "ST", "usage": "O"},
+				{"position": "MSH.7", "dataType": "ST", "usage": "O"},
+				{"position": "MSH.8", "dataType": "ST", "usage": "O"},
+				{"position": "MSH.9", "dataType": "ST", "usage": "R"}
+			]}
+		]
+	}`
+	compiled, err := proc.ParseSchema([]byte(hl7Schema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ORU^R01|MSG001|P|2.5|EXTRA"
+	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{StrictValidation: false, CollectAllErrors: true})
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	var hasExtraField bool
+	for _, e := range result.Errors {
+		if e.Code == "HL7_EXTRA_FIELD" {
+			hasExtraField = true
+			break
+		}
+	}
+	if !hasExtraField {
+		t.Errorf("expected HL7_EXTRA_FIELD when segment has more fields than schema: %v", result.Errors)
+	}
+}
+
+func TestHL7SchemaProcessor_Process_InvalidMSH(t *testing.T) {
+	proc := NewHL7SchemaProcessor()
+	hl7Schema := `{"segments": [{"name": "MSH", "usage": "R", "rpt": "1", "fields": []}]}`
+	compiled, _ := proc.ParseSchema([]byte(hl7Schema))
+	result, err := proc.Process([]byte("PID|||123"), compiled, contracts.ProcessOptions{CollectAllErrors: true})
+	if err != nil {
+		t.Fatalf("process should return result: %v", err)
+	}
+	if result.Valid {
+		t.Fatal("expected invalid result")
+	}
+	var hasCode bool
+	for _, e := range result.Errors {
+		if e.Code == "HL7_INVALID_MSH" {
+			hasCode = true
+			break
+		}
+	}
+	if !hasCode {
+		t.Errorf("expected HL7_INVALID_MSH: %v", result.Errors)
+	}
+}
+
+func TestHL7SchemaProcessor_Type(t *testing.T) {
+	proc := NewHL7SchemaProcessor()
+	if proc.Type() != string(contracts.FormatHL7) {
+		t.Errorf("Type() = %q, want %q", proc.Type(), contracts.FormatHL7)
 	}
 }

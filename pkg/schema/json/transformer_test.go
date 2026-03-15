@@ -1,7 +1,7 @@
-package schema
+package json
 
 import (
-	"encoding/json"
+	stdjson "encoding/json"
 	"testing"
 )
 
@@ -118,7 +118,7 @@ func TestApplyDefaults_NoDefault_FieldNotAdded(t *testing.T) {
 		Type: TypeObject,
 		Properties: map[string]*Property{
 			"withDefault":    {Type: TypeString, Default: "yes"},
-			"withoutDefault": {Type: TypeString}, // Default is nil
+			"withoutDefault": {Type: TypeString},
 		},
 	}
 	data := map[string]interface{}{}
@@ -181,7 +181,7 @@ func TestApplyDefaults_MissingNestedObject_WithNestedDefaults_CreatesObjectWithD
 			},
 		},
 	}
-	data := map[string]interface{}{} // config key missing
+	data := map[string]interface{}{}
 
 	out, err := tr.ApplyDefaults(data, schema)
 	if err != nil {
@@ -322,7 +322,6 @@ func TestApplyDefaults_UUID_MissingField_GeneratesUUID(t *testing.T) {
 	if !ok || id == "" {
 		t.Errorf("id: got %v, want non-empty string UUID", obj["id"])
 	}
-	// Basic UUID format check (8-4-4-4-12 hex)
 	if len(id) != 36 {
 		t.Errorf("id length: got %d, want 36", len(id))
 	}
@@ -352,57 +351,7 @@ func TestApplyDefaults_UUID_WithPrefixAndPostfix(t *testing.T) {
 	}
 }
 
-func TestApplyCSVDefaults_AppliesColumnDefaults(t *testing.T) {
-	tr := NewTransformer()
-	csvSchema := &CSVSchema{
-		ColumnHeaders: map[string]*CSVColumn{
-			"name":  {Type: TypeString, Default: "N/A"},
-			"score": {Type: TypeNumber, Default: 0.0},
-		},
-	}
-	rows := []map[string]interface{}{
-		{"name": "alice"},
-		{},
-	}
-
-	out, err := tr.ApplyCSVDefaults(rows, csvSchema)
-	if err != nil {
-		t.Fatalf("ApplyCSVDefaults: %v", err)
-	}
-	if len(out) != 2 {
-		t.Fatalf("rows: got %d, want 2", len(out))
-	}
-	// Row 0: name provided, score should get default
-	if out[0]["name"] != "alice" {
-		t.Errorf("row0.name: got %v, want \"alice\"", out[0]["name"])
-	}
-	if out[0]["score"].(float64) != 0 {
-		t.Errorf("row0.score: got %v, want 0", out[0]["score"])
-	}
-	// Row 1: both get defaults
-	if out[1]["name"] != "N/A" {
-		t.Errorf("row1.name: got %v, want \"N/A\"", out[1]["name"])
-	}
-	if out[1]["score"].(float64) != 0 {
-		t.Errorf("row1.score: got %v, want 0", out[1]["score"])
-	}
-}
-
-func TestApplyCSVDefaults_NilSchema_ReturnsRowsUnchanged(t *testing.T) {
-	tr := NewTransformer()
-	rows := []map[string]interface{}{{"a": "b"}}
-
-	out, err := tr.ApplyCSVDefaults(rows, nil)
-	if err != nil {
-		t.Fatalf("ApplyCSVDefaults: %v", err)
-	}
-	if len(out) != 1 || out[0]["a"] != "b" {
-		t.Errorf("rows unchanged: got %v", out)
-	}
-}
-
 func TestApplyDefaults_DefaultFromJSONNumber(t *testing.T) {
-	// JSON unmarshaling often gives numbers as float64
 	tr := NewTransformer()
 	schema := &Schema{
 		Type: TypeObject,
@@ -505,25 +454,20 @@ func TestApplyDefaults_ArraySchemaWithItemsDefault_ItemDefaultsApplied(t *testin
 	}
 	arr := out.([]interface{})
 
-	// First item: id provided, name should get default
 	item0 := arr[0].(map[string]interface{})
 	if item0["id"].(float64) != 1 || item0["name"] != "unnamed" {
 		t.Errorf("item0: got id=%v name=%v", item0["id"], item0["name"])
 	}
-	// Second item: name provided, id should get default
 	item1 := arr[1].(map[string]interface{})
 	if item1["id"].(float64) != 0 || item1["name"] != "only-name" {
 		t.Errorf("item1: got id=%v name=%v", item1["id"], item1["name"])
 	}
-	// Third item: both defaults
 	item2 := arr[2].(map[string]interface{})
 	if item2["id"].(float64) != 0 || item2["name"] != "unnamed" {
 		t.Errorf("item2: got id=%v name=%v", item2["id"], item2["name"])
 	}
 }
 
-// TestApplyDefaults_JSONRoundTrip ensures defaults applied to map[string]interface{}
-// (e.g. from json.Unmarshal) behave correctly when asserted back.
 func TestApplyDefaults_JSONRoundTrip(t *testing.T) {
 	tr := NewTransformer()
 	schema := &Schema{
@@ -533,7 +477,7 @@ func TestApplyDefaults_JSONRoundTrip(t *testing.T) {
 		},
 	}
 	var data map[string]interface{}
-	_ = json.Unmarshal([]byte("{}"), &data)
+	_ = stdjson.Unmarshal([]byte("{}"), &data)
 
 	out, err := tr.ApplyDefaults(data, schema)
 	if err != nil {
@@ -545,8 +489,6 @@ func TestApplyDefaults_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-// TestApplyDefaults_FromJSON_NestedObject verifies defaults work when data is
-// unmarshaled from JSON with nested objects (same types as json.Unmarshal produces).
 func TestApplyDefaults_FromJSON_NestedObject(t *testing.T) {
 	tr := NewTransformer()
 	schema := &Schema{
@@ -555,17 +497,16 @@ func TestApplyDefaults_FromJSON_NestedObject(t *testing.T) {
 			"user": {
 				Type: TypeObject,
 				Properties: map[string]*Property{
-					"name":  {Type: TypeString, Default: "guest"},
-					"role":  {Type: TypeString, Default: "viewer"},
-					"meta":  {Type: TypeObject, Properties: map[string]*Property{"env": {Type: TypeString, Default: "prod"}}},
+					"name": {Type: TypeString, Default: "guest"},
+					"role": {Type: TypeString, Default: "viewer"},
+					"meta": {Type: TypeObject, Properties: map[string]*Property{"env": {Type: TypeString, Default: "prod"}}},
 				},
 			},
 		},
 	}
-	// Real JSON: nested object with one field set, others missing
 	jsonStr := `{"user": {"name": "alice"}}`
 	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+	if err := stdjson.Unmarshal([]byte(jsonStr), &data); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -593,8 +534,6 @@ func TestApplyDefaults_FromJSON_NestedObject(t *testing.T) {
 	}
 }
 
-// TestApplyDefaults_FromJSON_ArrayOfObjects verifies defaults work when data is
-// unmarshaled from JSON with an array of objects.
 func TestApplyDefaults_FromJSON_ArrayOfObjects(t *testing.T) {
 	tr := NewTransformer()
 	schema := &Schema{
@@ -614,7 +553,7 @@ func TestApplyDefaults_FromJSON_ArrayOfObjects(t *testing.T) {
 	}
 	jsonStr := `{"items": [{"id": 1}, {}, {"name": "custom"}]}`
 	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+	if err := stdjson.Unmarshal([]byte(jsonStr), &data); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -630,25 +569,20 @@ func TestApplyDefaults_FromJSON_ArrayOfObjects(t *testing.T) {
 	if len(items) != 3 {
 		t.Fatalf("len(items): got %d, want 3", len(items))
 	}
-	// First: id from JSON (float64), name gets default
 	item0 := items[0].(map[string]interface{})
 	if item0["id"].(float64) != 1 || item0["name"] != "item" {
 		t.Errorf("items[0]: got id=%v name=%v", item0["id"], item0["name"])
 	}
-	// Second: both defaults
 	item1 := items[1].(map[string]interface{})
 	if item1["id"].(float64) != 0 || item1["name"] != "item" {
 		t.Errorf("items[1]: got id=%v name=%v", item1["id"], item1["name"])
 	}
-	// Third: name from JSON, id gets default
 	item2 := items[2].(map[string]interface{})
 	if item2["id"].(float64) != 0 || item2["name"] != "custom" {
 		t.Errorf("items[2]: got id=%v name=%v", item2["id"], item2["name"])
 	}
 }
 
-// TestApplyDefaults_FromJSON_RootArray verifies defaults when root is an array
-// unmarshaled from JSON.
 func TestApplyDefaults_FromJSON_RootArray(t *testing.T) {
 	tr := NewTransformer()
 	schema := &Schema{
@@ -662,7 +596,7 @@ func TestApplyDefaults_FromJSON_RootArray(t *testing.T) {
 	}
 	jsonStr := `[{"value": "a"}, {}]`
 	var data []interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+	if err := stdjson.Unmarshal([]byte(jsonStr), &data); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -682,8 +616,6 @@ func TestApplyDefaults_FromJSON_RootArray(t *testing.T) {
 	}
 }
 
-// TestApplyDefaults_FromJSON_NullNestedObject creates object and applies nested
-// defaults when JSON has explicit null for an object field.
 func TestApplyDefaults_FromJSON_NullNestedObject(t *testing.T) {
 	tr := NewTransformer()
 	schema := &Schema{
@@ -699,7 +631,7 @@ func TestApplyDefaults_FromJSON_NullNestedObject(t *testing.T) {
 	}
 	jsonStr := `{"config": null}`
 	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+	if err := stdjson.Unmarshal([]byte(jsonStr), &data); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -710,15 +642,13 @@ func TestApplyDefaults_FromJSON_NullNestedObject(t *testing.T) {
 	obj := out.(map[string]interface{})
 	config, ok := obj["config"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("config: got %T (null is treated as missing object, so we build {} with defaults)", obj["config"])
+		t.Fatalf("config: got %T", obj["config"])
 	}
 	if config["level"] != "info" {
 		t.Errorf("config.level: got %v, want \"info\"", config["level"])
 	}
 }
 
-// TestApplyDefaults_FromJSON_ExplicitNullPrimitive documents current behavior:
-// when a key exists in JSON with value null, the default is NOT applied (key exists).
 func TestApplyDefaults_FromJSON_ExplicitNullPrimitive(t *testing.T) {
 	tr := NewTransformer()
 	schema := &Schema{
@@ -729,7 +659,7 @@ func TestApplyDefaults_FromJSON_ExplicitNullPrimitive(t *testing.T) {
 	}
 	jsonStr := `{"name": null}`
 	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+	if err := stdjson.Unmarshal([]byte(jsonStr), &data); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -738,7 +668,6 @@ func TestApplyDefaults_FromJSON_ExplicitNullPrimitive(t *testing.T) {
 		t.Fatalf("ApplyDefaults: %v", err)
 	}
 	obj := out.(map[string]interface{})
-	// Current behavior: key "name" exists, so we do not apply default; value stays nil.
 	if obj["name"] != nil {
 		t.Errorf("name: current behavior is to not override explicit null; got %v", obj["name"])
 	}
