@@ -18,13 +18,14 @@ func NewTransformer() *Transformer {
 // Only applies to fields that are missing (doesn't override existing values)
 func (t *Transformer) ApplyDefaults(data interface{}, schema *Schema) (interface{}, error) {
 	// Validate root data type matches schema type
-	if schema.Type == TypeArray {
+	switch schema.Type {
+	case TypeArray:
 		if data == nil {
 			data = []interface{}{}
 		} else if _, ok := data.([]interface{}); !ok {
 			return nil, fmt.Errorf("schema type is ARRAY but data is %T, expected []interface{}", data)
 		}
-	} else if schema.Type == TypeObject {
+	case TypeObject:
 		if data == nil {
 			data = make(map[string]interface{})
 		} else if _, ok := data.(map[string]interface{}); !ok {
@@ -132,13 +133,14 @@ func (t *Transformer) applyDefaultsToValue(data interface{}, prop *Property) (in
 // Creates missing structures from schema and removes fields not defined in schema
 func (t *Transformer) StructureData(data interface{}, schema *Schema) (interface{}, error) {
 	// Validate root data type matches schema type
-	if schema.Type == TypeArray {
+	switch schema.Type {
+	case TypeArray:
 		if data == nil {
 			data = []interface{}{}
 		} else if _, ok := data.([]interface{}); !ok {
 			return nil, fmt.Errorf("schema type is ARRAY but data is %T, expected []interface{}", data)
 		}
-	} else if schema.Type == TypeObject {
+	case TypeObject:
 		if data == nil {
 			data = make(map[string]interface{})
 		} else if _, ok := data.(map[string]interface{}); !ok {

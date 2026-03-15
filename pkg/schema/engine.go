@@ -24,6 +24,7 @@ func NewEngine() *Engine {
 	}
 	e.registry.Register(NewJSONSchemaProcessor(e.parser, e.validator, e.transformer))
 	e.registry.Register(NewCSVSchemaProcessor(e.parser, e.validator, e.transformer))
+	e.registry.Register(NewHL7SchemaProcessor())
 	return e
 }
 
@@ -45,7 +46,6 @@ func (e *Engine) GetParser() *Parser {
 // Process is the unified entry point for schema-based processing.
 func (e *Engine) Process(
 	inputData []byte,
-	schemaID string,
 	schemaDef []byte,
 	format SchemaFormat,
 	opts ProcessOptions,
@@ -73,7 +73,7 @@ func (e *Engine) ProcessWithSchema(
 	schemaDefinition []byte,
 	options ProcessOptions,
 ) (*ProcessResult, error) {
-	return e.Process(inputData, "", schemaDefinition, FormatJSON, options)
+	return e.Process(inputData, schemaDefinition, FormatJSON, options)
 }
 
 // ProcessCSVWithSchema processes a JSON array of row objects against a CSV schema
@@ -83,7 +83,16 @@ func (e *Engine) ProcessCSVWithSchema(
 	schemaDefinition []byte,
 	options ProcessOptions,
 ) (*ProcessResult, error) {
-	return e.Process(inputData, "", schemaDefinition, FormatCSV, options)
+	return e.Process(inputData, schemaDefinition, FormatCSV, options)
+}
+
+// ProcessHL7WithSchema validates raw HL7 v2.x message bytes against an HL7 schema definition.
+func (e *Engine) ProcessHL7WithSchema(
+	inputData []byte,
+	schemaDefinition []byte,
+	options ProcessOptions,
+) (*ProcessResult, error) {
+	return e.Process(inputData, schemaDefinition, FormatHL7, options)
 }
 
 // ValidateCSVOnly validates rows against a CSV schema without transformation

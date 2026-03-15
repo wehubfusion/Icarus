@@ -2212,3 +2212,105 @@ func TestProcessWithSchema_UUIDValidationWrongPrefix(t *testing.T) {
 		t.Fatal("Expected invalid result")
 	}
 }
+
+func TestProcessHL7WithSchema_ValidMessage(t *testing.T) {
+	hl7Schema := `{
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": [
+				{"position": "MSH-9", "dataType": "ST", "usage": "R"}
+			]},
+			{"name": "PID", "usage": "R", "rpt": "1", "fields": [
+				{"position": "PID-3", "dataType": "CX", "usage": "R"}
+			]}
+		]
+	}`
+	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5\rPID|||12345^^^NHS^NH||DOE^JOHN"
+	engine := schema.NewEngine()
+	result, err := engine.ProcessHL7WithSchema(
+		[]byte(msg),
+		[]byte(hl7Schema),
+		schema.ProcessOptions{StrictValidation: true, CollectAllErrors: true},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Errorf("expected valid result, got errors: %v", result.Errors)
+	}
+}
+
+func TestProcessHL7WithSchema_InvalidMSH(t *testing.T) {
+	hl7Schema := `{"segments": [{"name": "MSH", "usage": "R", "rpt": "1", "fields": []}]}`
+	engine := schema.NewEngine()
+	result, err := engine.ProcessHL7WithSchema(
+		[]byte("PID|||123"),
+		[]byte(hl7Schema),
+		schema.ProcessOptions{CollectAllErrors: true},
+	)
+	if err != nil {
+		t.Fatalf("process should return result and nil error for parse failure: %v", err)
+	}
+	if result.Valid {
+		t.Fatal("expected invalid result for non-MSH message")
+	}
+	var hasCode bool
+	for _, e := range result.Errors {
+		if e.Code == "HL7_INVALID_MSH" {
+			hasCode = true
+			break
+		}
+	}
+	if !hasCode {
+		t.Errorf("expected HL7_INVALID_MSH in errors: %v", result.Errors)
+	}
+}
+
+func TestProcessHL7WithSchema_MissingRequiredSegment(t *testing.T) {
+	hl7Schema := `{
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": []},
+			{"name": "PID", "usage": "R", "rpt": "1", "fields": []}
+		]
+	}`
+	msg := "MSH|^~\\&|A|B|C|D|20250101120000||ADT^A01|1|P|2.5"
+	engine := schema.NewEngine()
+	result, err := engine.ProcessHL7WithSchema(
+		[]byte(msg),
+		[]byte(hl7Schema),
+		schema.ProcessOptions{CollectAllErrors: true},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Valid {
+		t.Fatal("expected invalid result when PID required but missing")
+	}
+	var found bool
+	for _, e := range result.Errors {
+		if e.Code == "HL7_MISSING_REQUIRED" && e.Path == "PID" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected HL7_MISSING_REQUIRED for PID: %v", result.Errors)
+	}
+}
+
+func TestEngine_ProcessWithFormatHL7(t *testing.T) {
+	hl7Schema := `{"segments": [{"name": "MSH", "usage": "R", "rpt": "1", "fields": []}]}`
+	msg := "MSH|^~\\&|A|B|C|D|20250101120000||ADT^A01|1|P|2.5"
+	engine := schema.NewEngine()
+	result, err := engine.Process(
+		[]byte(msg),
+		[]byte(hl7Schema),
+		schema.FormatHL7,
+		schema.ProcessOptions{CollectAllErrors: true},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Errorf("expected valid: %v", result.Errors)
+	}
+}
