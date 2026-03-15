@@ -19,6 +19,12 @@ import (
 type BlobStorageClient interface {
 	UploadResult(ctx context.Context, blobPath string, data []byte, metadata map[string]string) (string, error)
 	DownloadResult(ctx context.Context, blobURL string) ([]byte, error)
+	// DownloadFromURL downloads a blob from any URL within the same storage account
+	// using the shared-key credentials. Unlike DownloadResult, the container name is
+	// derived from the URL, not from the configured container. This is the correct method
+	// to use when downloading blobs produced by other services (e.g. Elysium) that share
+	// the same storage account but write to a different container.
+	DownloadFromURL(ctx context.Context, blobURL string) ([]byte, error)
 }
 
 // AzureBlobClient implements BlobStorageClient for Azure Blob Storage using shared keys
@@ -128,6 +134,42 @@ func (a *AzureBlobClient) DownloadResult(ctx context.Context, reference string) 
 
 	containerClient := a.client.ServiceClient().NewContainerClient(a.containerName)
 	blobClient := containerClient.NewBlobClient(blobPath)
+
+	resp, err := blobClient.DownloadStream(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download blob: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read blob data: %w", err)
+	}
+
+	return data, nil
+}
+
+// DownloadFromURL downloads a blob identified by its full URL using the shared-key
+// credential. It creates a blob-level client directly from the URL so it works with
+// any container in the same storage account, not just the configured container.
+func (a *AzureBlobClient) DownloadFromURL(ctx context.Context, blobURL string) ([]byte, error) {
+	if blobURL == "" {
+		return nil, fmt.Errorf("blob URL is required")
+	}
+
+	var clientOpts *blob.ClientOptions
+	if strings.HasPrefix(strings.ToLower(a.serviceURL), "http://") {
+		clientOpts = &blob.ClientOptions{
+			ClientOptions: azcore.ClientOptions{
+				InsecureAllowCredentialWithHTTP: true,
+			},
+		}
+	}
+
+	blobClient, err := blob.NewClientWithSharedKeyCredential(blobURL, a.credential, clientOpts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create blob client for URL: %w", err)
+	}
 
 	resp, err := blobClient.DownloadStream(ctx, nil)
 	if err != nil {
