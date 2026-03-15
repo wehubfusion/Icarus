@@ -3,30 +3,40 @@ package schema
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/wehubfusion/Icarus/pkg/schema/csv"
+	"github.com/wehubfusion/Icarus/pkg/schema/hl7"
+	schemajson "github.com/wehubfusion/Icarus/pkg/schema/json"
 )
 
 // Engine orchestrates schema-based data processing
 type Engine struct {
-	parser      *Parser
-	validator   *Validator
+	parser      *schemajson.Parser
+	validator   *schemajson.Validator
 	transformer *Transformer
 
 	registry *ProcessorRegistry
 }
 
-// NewEngine creates a new schema engine with JSON and CSV processors registered.
+// NewEngine creates a new schema engine with JSON, CSV, and HL7 processors registered.
 func NewEngine() *Engine {
+	parser := schemajson.NewParser()
+	validator := schemajson.NewValidator()
+	jsonTransformer := schemajson.NewTransformer()
 	e := &Engine{
-		parser:      NewParser(),
-		validator:   NewValidator(),
-		transformer: NewTransformer(),
+		parser:      parser,
+		validator:   validator,
+		transformer: &Transformer{j: jsonTransformer},
 		registry:    NewProcessorRegistry(),
 	}
-	e.registry.Register(NewJSONSchemaProcessor(e.parser, e.validator, e.transformer))
-	e.registry.Register(NewCSVSchemaProcessor(e.parser, e.validator, e.transformer))
-	e.registry.Register(NewHL7SchemaProcessor())
+	e.registry.Register(schemajson.NewJSONSchemaProcessor(parser, validator, jsonTransformer))
+	e.registry.Register(csv.NewCSVSchemaProcessor(csv.NewParser()))
+	e.registry.Register(hl7.NewHL7SchemaProcessor())
 	return e
 }
+
+// NewHL7SchemaProcessor returns a new HL7 schema processor (re-exported for backward compatibility).
+var NewHL7SchemaProcessor = hl7.NewHL7SchemaProcessor
 
 // GetTransformer returns the transformer instance (for advanced use cases)
 func (e *Engine) GetTransformer() *Transformer {
@@ -67,7 +77,6 @@ func (e *Engine) Process(
 }
 
 // ProcessWithSchema is the main entry point for schema-based data processing
-// It coordinates parsing, transformation, and validation of data against a schema
 func (e *Engine) ProcessWithSchema(
 	inputData []byte,
 	schemaDefinition []byte,
@@ -77,7 +86,6 @@ func (e *Engine) ProcessWithSchema(
 }
 
 // ProcessCSVWithSchema processes a JSON array of row objects against a CSV schema
-// Expected inputData: JSON array of objects, one object per CSV row
 func (e *Engine) ProcessCSVWithSchema(
 	inputData []byte,
 	schemaDefinition []byte,
@@ -87,7 +95,6 @@ func (e *Engine) ProcessCSVWithSchema(
 }
 
 // ProcessHL7WithSchema validates raw HL7 v2.x message bytes against an HL7 schema definition.
-// ProcessOptions.ApplyDefaults and StructureData are ignored for HL7 (validation only).
 func (e *Engine) ProcessHL7WithSchema(
 	inputData []byte,
 	schemaDefinition []byte,
@@ -97,8 +104,6 @@ func (e *Engine) ProcessHL7WithSchema(
 }
 
 // ValidateHL7Only validates raw HL7 v2.x message bytes against an HL7 schema definition.
-// It returns ValidationResult (Valid, Errors) and does not return the message bytes.
-// For HL7, ApplyDefaults and StructureData are not used; validation is always schema-only.
 func (e *Engine) ValidateHL7Only(inputData []byte, schemaDefinition []byte) (*ValidationResult, error) {
 	result, err := e.Process(inputData, schemaDefinition, FormatHL7, ProcessOptions{CollectAllErrors: true})
 	if err != nil {
@@ -107,65 +112,45 @@ func (e *Engine) ValidateHL7Only(inputData []byte, schemaDefinition []byte) (*Va
 	return &ValidationResult{Valid: result.Valid, Errors: result.Errors}, nil
 }
 
-// ValidateCSVOnly validates rows against a CSV schema without transformation
+// ValidateCSVOnly validates rows against a CSV schema without transformation (delegates through Process).
 func (e *Engine) ValidateCSVOnly(inputData []byte, schemaDefinition []byte) (*ValidationResult, error) {
-	csvSchema, err := e.parser.ParseCSV(schemaDefinition)
+	result, err := e.Process(inputData, schemaDefinition, FormatCSV, ProcessOptions{CollectAllErrors: true})
 	if err != nil {
-		return nil, fmt.Errorf("csv schema parse error: %w", err)
+		return nil, err
 	}
-
-	var rows []map[string]interface{}
-	if err := json.Unmarshal(inputData, &rows); err != nil {
-		return nil, fmt.Errorf("invalid input JSON (expected array of objects): %w", err)
-	}
-
-	return e.validator.ValidateCSVRows(rows, csvSchema), nil
+	return &ValidationResult{Valid: result.Valid, Errors: result.Errors}, nil
 }
 
-// ValidateOnly validates data against schema without transformation
+// ValidateOnly validates data against schema without transformation (delegates through Process).
 func (e *Engine) ValidateOnly(inputData []byte, schemaDefinition []byte) (*ValidationResult, error) {
-	// Parse schema
-	schema, err := e.parser.Parse(schemaDefinition)
+	result, err := e.Process(inputData, schemaDefinition, FormatJSON, ProcessOptions{CollectAllErrors: true})
 	if err != nil {
-		return nil, fmt.Errorf("schema parse error: %w", err)
+		return nil, err
 	}
-
-	// Parse data
-	var data interface{}
-	if err := json.Unmarshal(inputData, &data); err != nil {
-		return nil, fmt.Errorf("invalid input JSON: %w", err)
-	}
-
-	// Validate only
-	return e.validator.Validate(data, schema), nil
+	return &ValidationResult{Valid: result.Valid, Errors: result.Errors}, nil
 }
 
 // TransformOnly applies defaults and structuring without validation
 func (e *Engine) TransformOnly(inputData []byte, schemaDefinition []byte) ([]byte, error) {
-	// Parse schema
 	schema, err := e.parser.Parse(schemaDefinition)
 	if err != nil {
 		return nil, fmt.Errorf("schema parse error: %w", err)
 	}
 
-	// Parse data
 	var data interface{}
 	if err := json.Unmarshal(inputData, &data); err != nil {
 		return nil, fmt.Errorf("invalid input JSON: %w", err)
 	}
 
-	// Apply defaults
 	data, err = e.transformer.ApplyDefaults(data, schema)
 	if err != nil {
 		return nil, fmt.Errorf("failed to apply defaults: %w", err)
 	}
 
-	// Structure data
 	data, err = e.transformer.StructureData(data, schema)
 	if err != nil {
 		return nil, fmt.Errorf("failed to structure data: %w", err)
 	}
 
-	// Marshal output
 	return json.Marshal(data)
 }

@@ -15,6 +15,11 @@ type CompiledHL7Schema struct {
 	Schema *HL7Schema
 }
 
+// SchemaType returns the format identifier for the schema engine registry.
+func (c *CompiledHL7Schema) SchemaType() string {
+	return "HL7"
+}
+
 const maxHL7RecursionDepth = 20
 
 // HL7 usage values for schema definition (segment, field, component).

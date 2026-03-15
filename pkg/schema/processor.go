@@ -1,23 +1,9 @@
 package schema
 
-// SchemaProcessor is the extension point for all schema formats.
-// JSON, CSV, and HL7 each implement this interface; Engine routes by format.
-type SchemaProcessor interface {
-	// Type identifies this processor so the registry can route to it (e.g. "JSON", "CSV", "HL7").
-	Type() string
+import "github.com/wehubfusion/Icarus/pkg/schema/contracts"
 
-	// ParseSchema validates and compiles the raw definition bytes into an
-	// opaque compiled representation. Called once per (schemaID, definition).
-	ParseSchema(definition []byte) (CompiledSchema, error)
+// SchemaProcessor is the extension point for all schema formats (re-exported from contracts).
+type SchemaProcessor = contracts.SchemaProcessor
 
-	// Process is the full pipeline: parse input, apply defaults, validate, return structured result.
-	// inputData is raw bytes in the format this processor expects
-	// (JSON for JSON/CSV, UTF-8 HL7 pipe-encoding for HL7).
-	Process(inputData []byte, schema CompiledSchema, opts ProcessOptions) (*ProcessResult, error)
-}
-
-// CompiledSchema is the opaque result of ParseSchema.
-// Each processor defines its own concrete type behind this interface.
-type CompiledSchema interface {
-	SchemaType() string
-}
+// CompiledSchema is the opaque result of ParseSchema (re-exported from contracts).
+type CompiledSchema = contracts.CompiledSchema

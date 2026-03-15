@@ -1,193 +1,73 @@
 package schema
 
 import (
-	"encoding/json"
-	"fmt"
-	"strings"
+	"github.com/wehubfusion/Icarus/pkg/schema/contracts"
+	"github.com/wehubfusion/Icarus/pkg/schema/csv"
+	"github.com/wehubfusion/Icarus/pkg/schema/json"
 )
 
-// Schema represents a complete schema definition
-type Schema struct {
-	Type        SchemaType           `json:"type"`
-	Properties  map[string]*Property `json:"properties,omitempty"`
-	Items       *Property            `json:"items,omitempty"`
-	Description string               `json:"description,omitempty"`
-}
+// Re-exports from json sub-package for backward compatibility.
+type (
+	Schema          = json.Schema
+	Property        = json.Property
+	SchemaType      = json.SchemaType
+	ValidationRules = json.ValidationRules
+	Parser          = json.Parser
+	Validator       = json.Validator
+)
 
-// CSVSchema represents a typed CSV schema definition
-type CSVSchema struct {
-	Name          string                `json:"name,omitempty"`
-	Delimiter     string                `json:"delimiter,omitempty"`
-	ColumnHeaders map[string]*CSVColumn `json:"columnHeaders"`
-	ColumnOrder   []string              `json:"-"` // preserves declared column order
-}
+// Constructor re-exports so callers can use schema.NewParser(), etc.
+var (
+	NewParser    = json.NewParser
+	NewValidator = json.NewValidator
+)
 
-// CSVColumn describes a single CSV column
-type CSVColumn struct {
-	Type        SchemaType       `json:"type"`
-	Required    bool             `json:"required,omitempty"`
-	Default     interface{}      `json:"default,omitempty"`
-	Description string           `json:"description,omitempty"`
-	Validation  *ValidationRules `json:"validation,omitempty"`
-}
+// Re-exports from csv sub-package for backward compatibility.
+type (
+	CSVSchema = csv.CSVSchema
+	CSVColumn = csv.CSVColumn
+)
 
-// Property represents a field property in a schema
-type Property struct {
-	Type        SchemaType           `json:"type"`
-	Required    bool                 `json:"required,omitempty"`
-	Default     interface{}          `json:"default,omitempty"`
-	Prefix      string               `json:"prefix,omitempty"`  // Optional prefix for UUID type (e.g. "urn:uuid:")
-	Postfix     string               `json:"postfix,omitempty"` // Optional postfix for UUID type
-	Description string               `json:"description,omitempty"`
-	Validation  *ValidationRules     `json:"validation,omitempty"`
-	Properties  map[string]*Property `json:"properties,omitempty"` // For OBJECT type
-	Items       *Property            `json:"items,omitempty"`     // For ARRAY type
-}
+// Schema type constants (re-exported from json).
+const (
+	TypeString   = json.TypeString
+	TypeNumber   = json.TypeNumber
+	TypeBoolean  = json.TypeBoolean
+	TypeObject   = json.TypeObject
+	TypeArray    = json.TypeArray
+	TypeDate     = json.TypeDate
+	TypeDateTime = json.TypeDateTime
+	TypeByte     = json.TypeByte
+	TypeAny      = json.TypeAny
+	TypeUUID     = json.TypeUUID
+)
 
-// SchemaFormat identifies the schema definition format (JSON, CSV, HL7).
-// Distinct from SchemaType which is the type of a field within a schema.
-type SchemaFormat string
+// Re-exports from contracts for backward compatibility.
+type (
+	SchemaFormat     = contracts.SchemaFormat
+	ValidationError  = contracts.ValidationError
+	ValidationResult = contracts.ValidationResult
+	ProcessOptions   = contracts.ProcessOptions
+	ProcessResult    = contracts.ProcessResult
+)
 
 const (
-	FormatJSON SchemaFormat = "JSON"
-	FormatCSV  SchemaFormat = "CSV"
-	FormatHL7  SchemaFormat = "HL7" // registered when HL7 processor is built (Phase 1)
+	FormatJSON = contracts.FormatJSON
+	FormatCSV  = contracts.FormatCSV
+	FormatHL7  = contracts.FormatHL7
 )
 
-// SchemaType represents the data type of a field
-type SchemaType string
-
-// Supported schema types
-const (
-	TypeString   SchemaType = "STRING"
-	TypeNumber   SchemaType = "NUMBER"
-	TypeBoolean  SchemaType = "BOOLEAN"
-	TypeObject   SchemaType = "OBJECT"
-	TypeArray    SchemaType = "ARRAY"
-	TypeDate     SchemaType = "DATE"
-	TypeDateTime SchemaType = "DATETIME"
-	TypeByte     SchemaType = "BYTE"
-	TypeAny      SchemaType = "ANY"
-	TypeUUID     SchemaType = "UUID"
-)
-
-// ValidationRules contains validation rules for a field
-type ValidationRules struct {
-	// String validations
-	MinLength *int     `json:"minLength,omitempty"`
-	MaxLength *int     `json:"maxLength,omitempty"`
-	Pattern   string   `json:"pattern,omitempty"`
-	Format    string   `json:"format,omitempty"`
-	Enum      []string `json:"enum,omitempty"`
-
-	// Number validations
-	Minimum *float64 `json:"minimum,omitempty"`
-	Maximum *float64 `json:"maximum,omitempty"`
-
-	// Array validations
-	MinItems    *int `json:"minItems,omitempty"`
-	MaxItems    *int `json:"maxItems,omitempty"`
-	UniqueItems bool `json:"uniqueItems,omitempty"`
-}
-
-// ValidationError represents a single validation error
-type ValidationError struct {
-	Path    string `json:"path"`
-	Message string `json:"message"`
-	Code    string `json:"code"`
-}
-
-// ValidationResult holds the result of validation
-type ValidationResult struct {
-	Valid  bool              `json:"valid"`
-	Errors []ValidationError `json:"errors,omitempty"`
-}
-
-// ErrorMessage returns a single well-formatted error string for the validation result.
-// Empty if valid or no errors. Single error: "schema validation failed: <path>: <message>".
-// Multiple: "schema validation failed with N errors: ..." (first 10 joined by "; ", then "... and M more" if N > 10).
-func (r *ValidationResult) ErrorMessage() string {
-	if r == nil || r.Valid || len(r.Errors) == 0 {
-		return ""
-	}
-	n := len(r.Errors)
-	if n == 1 {
-		return fmt.Sprintf("schema validation failed: %s: %s", r.Errors[0].Path, r.Errors[0].Message)
-	}
-	const maxShow = 10
-	parts := make([]string, 0, maxShow+1)
-	for i := 0; i < n && i < maxShow; i++ {
-		parts = append(parts, fmt.Sprintf("%s: %s", r.Errors[i].Path, r.Errors[i].Message))
-	}
-	msg := fmt.Sprintf("schema validation failed with %d errors: %s", n, strings.Join(parts, "; "))
-	if n > maxShow {
-		msg += fmt.Sprintf(" ... and %d more", n-maxShow)
-	}
-	return msg
-}
-
-// ProcessOptions controls schema processing behavior.
-// For the HL7 processor, ApplyDefaults and StructureData are ignored (HL7 validation only, no transformation).
-// For HL7, AllowExtraFields when true skips reporting HL7_EXTRA_FIELD and HL7_EXTRA_COMPONENT.
-type ProcessOptions struct {
-	ApplyDefaults    bool // Apply default values from schema
-	StructureData    bool // Remove fields not in schema
-	StrictValidation bool // Fail on validation errors
-	CollectAllErrors bool // When false (default), stop after first validation error; when true, collect all errors
-	AllowExtraFields bool // When true (HL7), do not report extra fields or components beyond schema
-}
-
-// ProcessResult contains the result of schema processing
-type ProcessResult struct {
-	Valid  bool              `json:"valid"`
-	Data   []byte            `json:"data"`
-	Errors []ValidationError `json:"errors,omitempty"`
-}
-
-// IsValidType checks if a schema type is valid
+// IsValidType checks if a schema type is valid (re-exported from json).
 func IsValidType(t SchemaType) bool {
-	validTypes := map[SchemaType]bool{
-		TypeString: true, TypeNumber: true, TypeBoolean: true,
-		TypeObject: true, TypeArray: true, TypeDate: true,
-		TypeDateTime: true, TypeByte: true, TypeAny: true,
-		TypeUUID: true,
-	}
-	return validTypes[t]
+	return json.IsValidType(t)
 }
 
-// ToJSON converts a value to JSON bytes
+// ToJSON converts a value to JSON bytes (re-exported from json).
 func ToJSON(v interface{}) ([]byte, error) {
-	return json.Marshal(v)
+	return json.ToJSON(v)
 }
 
-// FromJSON parses JSON bytes into a value
+// FromJSON parses JSON bytes into a value (re-exported from json).
 func FromJSON(data []byte, v interface{}) error {
-	return json.Unmarshal(data, v)
-}
-
-// EffectiveDelimiter returns the configured delimiter or a default comma
-func (c *CSVSchema) EffectiveDelimiter() string {
-	if c == nil || c.Delimiter == "" {
-		return ","
-	}
-	return c.Delimiter
-}
-
-// ToObjectSchema converts a CSV schema into an object schema for reuse in validation/transformers
-func (c *CSVSchema) ToObjectSchema() *Schema {
-	props := make(map[string]*Property)
-	for name, col := range c.ColumnHeaders {
-		props[name] = &Property{
-			Type:        col.Type,
-			Required:    col.Required,
-			Default:     col.Default,
-			Description: col.Description,
-			Validation:  col.Validation,
-		}
-	}
-
-	return &Schema{
-		Type:       TypeObject,
-		Properties: props,
-	}
+	return json.FromJSON(data, v)
 }
