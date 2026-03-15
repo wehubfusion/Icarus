@@ -1,9 +1,6 @@
 package schema
 
 import (
-	"encoding/json"
-	"fmt"
-
 	"github.com/wehubfusion/Icarus/pkg/schema/csv"
 	"github.com/wehubfusion/Icarus/pkg/schema/hl7"
 	schemajson "github.com/wehubfusion/Icarus/pkg/schema/json"
@@ -38,19 +35,10 @@ func NewEngine() *Engine {
 // NewHL7SchemaProcessor returns a new HL7 schema processor (re-exported for backward compatibility).
 var NewHL7SchemaProcessor = hl7.NewHL7SchemaProcessor
 
-// GetTransformer returns the transformer instance (for advanced use cases)
-func (e *Engine) GetTransformer() *Transformer {
-	return e.transformer
-}
-
-// GetValidator returns the validator instance (for advanced use cases)
-func (e *Engine) GetValidator() *Validator {
-	return e.validator
-}
-
-// GetParser returns the parser instance (for advanced use cases)
-func (e *Engine) GetParser() *Parser {
-	return e.parser
+// ParseJSONSchema parses a JSON schema definition and returns the compiled schema.
+// Use this when you need to inspect schema properties (e.g. root type) before processing.
+func (e *Engine) ParseJSONSchema(schemaDefinition []byte) (*Schema, error) {
+	return e.parser.Parse(schemaDefinition)
 }
 
 // Process is the unified entry point for schema-based processing.
@@ -130,27 +118,14 @@ func (e *Engine) ValidateOnly(inputData []byte, schemaDefinition []byte) (*Valid
 	return &ValidationResult{Valid: result.Valid, Errors: result.Errors}, nil
 }
 
-// TransformOnly applies defaults and structuring without validation
+// TransformOnly applies defaults and structuring without validation.
 func (e *Engine) TransformOnly(inputData []byte, schemaDefinition []byte) ([]byte, error) {
-	schema, err := e.parser.Parse(schemaDefinition)
+	result, err := e.Process(inputData, schemaDefinition, FormatJSON, ProcessOptions{
+		ApplyDefaults: true,
+		StructureData: true,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("schema parse error: %w", err)
+		return nil, err
 	}
-
-	var data interface{}
-	if err := json.Unmarshal(inputData, &data); err != nil {
-		return nil, fmt.Errorf("invalid input JSON: %w", err)
-	}
-
-	data, err = e.transformer.ApplyDefaults(data, schema)
-	if err != nil {
-		return nil, fmt.Errorf("failed to apply defaults: %w", err)
-	}
-
-	data, err = e.transformer.StructureData(data, schema)
-	if err != nil {
-		return nil, fmt.Errorf("failed to structure data: %w", err)
-	}
-
-	return json.Marshal(data)
+	return result.Data, nil
 }

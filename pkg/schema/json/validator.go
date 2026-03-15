@@ -49,20 +49,26 @@ func (s *validationState) shouldStop() bool {
 	return !s.collectAll && len(s.errors) >= 1
 }
 
-// ValidateWithOptions validates data against a schema. When collectAllErrors is false (default),
-// validation stops after the first error. When true, all errors are collected.
-func (v *Validator) ValidateWithOptions(data interface{}, s *Schema, collectAllErrors bool) *contracts.ValidationResult {
+// ValidateWithRootPath validates data against a schema using the given root path prefix for errors.
+// When collectAllErrors is false, validation stops after the first error.
+func (v *Validator) ValidateWithRootPath(data interface{}, s *Schema, rootPath string, collectAllErrors bool) *contracts.ValidationResult {
 	state := &validationState{collectAll: collectAllErrors}
 	prop := &Property{
 		Type:       s.Type,
 		Properties: s.Properties,
 		Items:      s.Items,
 	}
-	v.validateValueIntoState(data, prop, "root", state)
+	v.validateValueIntoState(data, prop, rootPath, state)
 	return &contracts.ValidationResult{
 		Valid:  len(state.errors) == 0,
 		Errors: state.errors,
 	}
+}
+
+// ValidateWithOptions validates data against a schema. When collectAllErrors is false (default),
+// validation stops after the first error. When true, all errors are collected.
+func (v *Validator) ValidateWithOptions(data interface{}, s *Schema, collectAllErrors bool) *contracts.ValidationResult {
+	return v.ValidateWithRootPath(data, s, "root", collectAllErrors)
 }
 
 // Validate validates data against a schema (collects all errors; backward compatible).

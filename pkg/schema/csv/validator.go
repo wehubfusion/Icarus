@@ -2,7 +2,6 @@ package csv
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/wehubfusion/Icarus/pkg/schema/contracts"
 	"github.com/wehubfusion/Icarus/pkg/schema/json"
@@ -21,19 +20,9 @@ func ValidateCSVRowsWithOptions(rows []map[string]interface{}, s *CSVSchema, col
 		if !collectAllErrors && len(allErrs) > 0 {
 			break
 		}
-		res := v.ValidateWithOptions(row, objSchema, true)
 		rowPath := fmt.Sprintf("rows[%d]", i)
-		for _, e := range res.Errors {
-			p := e.Path
-			if strings.HasPrefix(p, "root.") {
-				p = rowPath + "." + strings.TrimPrefix(p, "root.")
-			} else if p == "root" {
-				p = rowPath
-			} else {
-				p = rowPath + "." + p
-			}
-			allErrs = append(allErrs, contracts.ValidationError{Path: p, Message: e.Message, Code: e.Code})
-		}
+		res := v.ValidateWithRootPath(row, objSchema, rowPath, true)
+		allErrs = append(allErrs, res.Errors...)
 	}
 	return &contracts.ValidationResult{
 		Valid:  len(allErrs) == 0,

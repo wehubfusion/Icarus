@@ -29,6 +29,8 @@ func (p *HL7SchemaProcessor) ParseSchema(definition []byte) (contracts.CompiledS
 }
 
 // Process implements contracts.SchemaProcessor.
+// Note: ProcessResult.Data always contains the original raw HL7 input bytes unchanged.
+// HL7 processing is validation-only; no transformation or structuring is applied.
 func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.CompiledSchema, opts contracts.ProcessOptions) (*contracts.ProcessResult, error) {
 	c, ok := compiled.(*CompiledHL7Schema)
 	if !ok {
