@@ -8,6 +8,15 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/schema"
 )
 
+// ptrBool returns a pointer to b (for schema *bool fields).
+func ptrBool(b bool) *bool { return &b }
+
+// ptrFloat64 returns a pointer to f (for schema *float64 length/count fields).
+func ptrFloat64(f float64) *float64 { return &f }
+
+// ptrString returns a pointer to s (for schema *string pattern/format fields).
+func ptrString(s string) *string { return &s }
+
 // TestSchemaParser tests schema parsing functionality
 func TestSchemaParser(t *testing.T) {
 	t.Run("Parse valid object schema", func(t *testing.T) {
@@ -126,7 +135,7 @@ func TestSchemaValidator(t *testing.T) {
 			Properties: map[string]*schema.Property{
 				"name": {
 					Type:     schema.TypeString,
-					Required: true,
+					Required: ptrBool(true),
 				},
 			},
 		}
@@ -154,17 +163,18 @@ func TestSchemaValidator(t *testing.T) {
 	})
 
 	t.Run("Validate string constraints", func(t *testing.T) {
-		minLen := 3
-		maxLen := 10
+		minLenF := 3.0
+		maxLenF := 10.0
+		pattern := "^[a-z]+$"
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
 				"username": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						MinLength: &minLen,
-						MaxLength: &maxLen,
-						Pattern:   "^[a-z]+$",
+						MinLength: &minLenF,
+						MaxLength: &maxLenF,
+						Pattern:   &pattern,
 					},
 				},
 			},
@@ -242,8 +252,9 @@ func TestSchemaValidator(t *testing.T) {
 	})
 
 	t.Run("Validate array constraints", func(t *testing.T) {
-		minItems := 1
-		maxItems := 5
+		minItemsF := 1.0
+		maxItemsF := 5.0
+		uniqueTrue := true
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
@@ -253,9 +264,9 @@ func TestSchemaValidator(t *testing.T) {
 						Type: schema.TypeString,
 					},
 					Validation: &schema.ValidationRules{
-						MinItems:    &minItems,
-						MaxItems:    &maxItems,
-						UniqueItems: true,
+						MinItems:    &minItemsF,
+						MaxItems:    &maxItemsF,
+						UniqueItems: &uniqueTrue,
 					},
 				},
 			},
@@ -301,19 +312,21 @@ func TestSchemaValidator(t *testing.T) {
 	})
 
 	t.Run("Validate format constraints", func(t *testing.T) {
+		formatEmail := "email"
+		formatURI := "uri"
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
 				"email": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						Format: "email",
+						Format: &formatEmail,
 					},
 				},
 				"website": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						Format: "uri",
+						Format: &formatURI,
 					},
 				},
 			},
@@ -380,7 +393,7 @@ func TestSchemaTransformer(t *testing.T) {
 			Properties: map[string]*schema.Property{
 				"name": {
 					Type:     schema.TypeString,
-					Required: true,
+					Required: ptrBool(true),
 				},
 				"country": {
 					Type:    schema.TypeString,
@@ -1022,7 +1035,7 @@ func TestSchemaFormats(t *testing.T) {
 				"email": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						Format: "email",
+						Format: ptrString("email"),
 					},
 				},
 			},
@@ -1067,7 +1080,7 @@ func TestSchemaFormats(t *testing.T) {
 				"id": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						Format: "uuid",
+						Format: ptrString("uuid"),
 					},
 				},
 			},
@@ -1110,7 +1123,7 @@ func TestSchemaFormats(t *testing.T) {
 				"birthdate": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						Format: "date",
+						Format: ptrString("date"),
 					},
 				},
 			},
@@ -1151,7 +1164,7 @@ func TestSchemaFormats(t *testing.T) {
 				"phone": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						Format: "phone",
+						Format: ptrString("phone"),
 					},
 				},
 			},
@@ -1398,7 +1411,7 @@ func TestSchemaByteType(t *testing.T) {
 			Properties: map[string]*schema.Property{
 				"result": {
 					Type:     schema.TypeByte,
-					Required: true,
+					Required: ptrBool(true),
 				},
 			},
 		}
@@ -1441,14 +1454,14 @@ func TestSchemaByteType(t *testing.T) {
 	})
 
 	t.Run("Validate BYTE minLength constraint", func(t *testing.T) {
-		minLen := 10
+		minLenF := 10.0
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
 				"result": {
 					Type: schema.TypeByte,
 					Validation: &schema.ValidationRules{
-						MinLength: &minLen,
+						MinLength: &minLenF,
 					},
 				},
 			},
@@ -1476,14 +1489,14 @@ func TestSchemaByteType(t *testing.T) {
 	})
 
 	t.Run("Validate BYTE maxLength constraint", func(t *testing.T) {
-		maxLen := 5
+		maxLenF := 5.0
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
 				"result": {
 					Type: schema.TypeByte,
 					Validation: &schema.ValidationRules{
-						MaxLength: &maxLen,
+						MaxLength: &maxLenF,
 					},
 				},
 			},
@@ -1511,16 +1524,16 @@ func TestSchemaByteType(t *testing.T) {
 	})
 
 	t.Run("Validate BYTE with both min and max length", func(t *testing.T) {
-		minLen := 5
-		maxLen := 20
+		minLenF := 5.0
+		maxLenF := 20.0
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
 				"thumbnail": {
 					Type: schema.TypeByte,
 					Validation: &schema.ValidationRules{
-						MinLength: &minLen,
-						MaxLength: &maxLen,
+						MinLength: &minLenF,
+						MaxLength: &maxLenF,
 					},
 				},
 			},
@@ -1610,10 +1623,10 @@ func TestSchemaByteType(t *testing.T) {
 			t.Fatal("Expected validation rules")
 		}
 		if *fileProp.Validation.MinLength != 100 {
-			t.Errorf("Expected minLength 100, got: %d", *fileProp.Validation.MinLength)
+			t.Errorf("Expected minLength 100, got: %g", *fileProp.Validation.MinLength)
 		}
 		if *fileProp.Validation.MaxLength != 1048576 {
-			t.Errorf("Expected maxLength 1048576, got: %d", *fileProp.Validation.MaxLength)
+			t.Errorf("Expected maxLength 1048576, got: %g", *fileProp.Validation.MaxLength)
 		}
 	})
 
@@ -2061,8 +2074,13 @@ func TestSchemaParser_UUIDTypeWithPrefix(t *testing.T) {
 	if result.Properties["fullUrl"].Type != schema.TypeUUID {
 		t.Errorf("Expected type UUID, got: %s", result.Properties["fullUrl"].Type)
 	}
-	if result.Properties["fullUrl"].Prefix != "urn:uuid:" {
-		t.Errorf("Expected prefix urn:uuid:, got: %q", result.Properties["fullUrl"].Prefix)
+	prefix := result.Properties["fullUrl"].Prefix
+	if prefix == nil || *prefix != "urn:uuid:" {
+		got := "<nil>"
+		if prefix != nil {
+			got = *prefix
+		}
+		t.Errorf("Expected prefix urn:uuid:, got: %q", got)
 	}
 }
 
@@ -2229,7 +2247,7 @@ func TestProcessHL7WithSchema_ValidMessage(t *testing.T) {
 	result, err := engine.ProcessHL7WithSchema(
 		[]byte(msg),
 		[]byte(hl7Schema),
-		schema.ProcessOptions{StrictValidation: true, CollectAllErrors: true},
+		schema.ProcessOptions{StrictValidation: true, CollectAllErrors: true, AllowExtraFields: true},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2305,7 +2323,7 @@ func TestEngine_ProcessWithFormatHL7(t *testing.T) {
 		[]byte(msg),
 		[]byte(hl7Schema),
 		schema.FormatHL7,
-		schema.ProcessOptions{CollectAllErrors: true},
+		schema.ProcessOptions{CollectAllErrors: true, AllowExtraFields: true},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
