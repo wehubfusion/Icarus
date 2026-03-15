@@ -60,7 +60,15 @@ func (t *Transformer) applyDefaultsToValue(data interface{}, prop *Property) (in
 				obj[propName] = propDef.Default
 			} else if !exists && propDef.Type == TypeUUID {
 				generated := uuid.New().String()
-				obj[propName] = propDef.Prefix + generated + propDef.Postfix
+				prefix := ""
+				if propDef.Prefix != nil {
+					prefix = *propDef.Prefix
+				}
+				postfix := ""
+				if propDef.Postfix != nil {
+					postfix = *propDef.Postfix
+				}
+				obj[propName] = prefix + generated + postfix
 			} else if exists {
 				if propDef.Type == TypeObject && propDef.Properties != nil {
 					obj[propName], _ = t.applyDefaultsToValue(value, propDef)

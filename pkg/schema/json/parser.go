@@ -3,6 +3,7 @@ package json
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 )
 
 // Parser handles parsing of schema definitions
@@ -98,16 +99,21 @@ func (p *Parser) validateProperty(prop *Property, name string) error {
 }
 
 // ValidateValidationRulesForType ensures validation rules are appropriate for the field type.
-// Exported for use by the csv package when validating column definitions.
+// Exported for use by the csv package when validating column definitions
 func ValidateValidationRulesForType(rules *ValidationRules, fieldType SchemaType, name string) error {
 	if rules == nil {
 		return nil
 	}
+	patternSet := rules.Pattern != nil && *rules.Pattern != ""
+	formatSet := rules.Format != nil && *rules.Format != ""
+	uniqueItemsSet := rules.UniqueItems != nil && *rules.UniqueItems
+
 	// UUID type does not support validation rules
 	if fieldType == TypeUUID {
-		if rules.MinLength != nil || rules.MaxLength != nil || rules.Pattern != "" || rules.Format != "" ||
+		if rules.MinLength != nil || rules.MaxLength != nil || patternSet || formatSet ||
 			len(rules.Enum) > 0 || rules.Minimum != nil || rules.Maximum != nil ||
-			rules.MinItems != nil || rules.MaxItems != nil || rules.UniqueItems {
+			rules.MinItems != nil || rules.MaxItems != nil || uniqueItemsSet ||
+			rules.MinDate != nil || rules.MaxDate != nil {
 			return fmt.Errorf("property '%s': validation rules not supported for type UUID", name)
 		}
 	}
@@ -117,7 +123,7 @@ func ValidateValidationRulesForType(rules *ValidationRules, fieldType SchemaType
 		}
 	}
 	if fieldType != TypeString && fieldType != TypeDate && fieldType != TypeDateTime {
-		if rules.Pattern != "" || rules.Format != "" || len(rules.Enum) > 0 {
+		if patternSet || formatSet || len(rules.Enum) > 0 {
 			return fmt.Errorf("property '%s': string validation rules (pattern/format/enum) used on non-string type %s", name, fieldType)
 		}
 	}
@@ -127,8 +133,26 @@ func ValidateValidationRulesForType(rules *ValidationRules, fieldType SchemaType
 		}
 	}
 	if fieldType != TypeArray {
-		if rules.MinItems != nil || rules.MaxItems != nil || rules.UniqueItems {
+		if rules.MinItems != nil || rules.MaxItems != nil || uniqueItemsSet {
 			return fmt.Errorf("property '%s': array validation rules used on non-array type %s", name, fieldType)
+		}
+	}
+	// MinDate/MaxDate only allowed for DATE type
+	if fieldType != TypeDate && (rules.MinDate != nil || rules.MaxDate != nil) {
+		return fmt.Errorf("property '%s': minDate/maxDate validation rules only supported for type DATE", name)
+	}
+	if fieldType == TypeDate && (rules.MinDate != nil || rules.MaxDate != nil) {
+		// Validate format YYYY-MM-DD
+		dateRegex := `^\d{4}-\d{2}-\d{2}$`
+		for _, s := range []*string{rules.MinDate, rules.MaxDate} {
+			if s != nil && *s != "" {
+				if matched, _ := regexp.MatchString(dateRegex, *s); !matched {
+					return fmt.Errorf("property '%s': minDate/maxDate must be ISO 8601 date (YYYY-MM-DD)", name)
+				}
+			}
+		}
+		if rules.MinDate != nil && rules.MaxDate != nil && *rules.MinDate != "" && *rules.MaxDate != "" && *rules.MinDate > *rules.MaxDate {
+			return fmt.Errorf("property '%s': minDate must be <= maxDate", name)
 		}
 	}
 	return nil

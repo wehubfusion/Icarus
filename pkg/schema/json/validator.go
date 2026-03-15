@@ -76,9 +76,14 @@ func (v *Validator) Validate(data interface{}, s *Schema) *contracts.ValidationR
 	return v.ValidateWithOptions(data, s, true)
 }
 
+// propRequired returns true if the property is required (Morpheus-aligned: Required is *bool).
+func propRequired(prop *Property) bool {
+	return prop != nil && prop.Required != nil && *prop.Required
+}
+
 // validateValueIntoState validates a value and appends errors to state; stops when state is full (stop-on-first-error).
 func (v *Validator) validateValueIntoState(value interface{}, prop *Property, path string, state *validationState) {
-	if prop.Required && value == nil {
+	if propRequired(prop) && value == nil {
 		if state.add(contracts.ValidationError{Path: path, Message: "field is required", Code: "REQUIRED"}) {
 			return
 		}
@@ -151,6 +156,13 @@ func (v *Validator) validateValueIntoState(value interface{}, prop *Property, pa
 					return
 				}
 			}
+			if prop.Type == TypeDate {
+				for _, e := range v.validateDateRange(str, prop.Validation, path) {
+					if state.add(e) {
+						return
+					}
+				}
+			}
 		} else {
 			if state.add(contracts.ValidationError{Path: path, Message: fmt.Sprintf("expected string for date/datetime, got %T", value), Code: "TYPE_MISMATCH"}) {
 				return
@@ -195,21 +207,27 @@ func (v *Validator) validateValueIntoState(value interface{}, prop *Property, pa
 // validateArrayIntoState validates array and items, appending to state; stops when state is full.
 func (v *Validator) validateArrayIntoState(arr []interface{}, prop *Property, path string, state *validationState) {
 	if prop.Validation != nil {
-		if prop.Validation.MinItems != nil && len(arr) < *prop.Validation.MinItems {
-			if state.add(contracts.ValidationError{
-				Path: path, Message: fmt.Sprintf("array length %d is less than minimum %d", len(arr), *prop.Validation.MinItems), Code: "MIN_ITEMS",
-			}) {
-				return
+		if prop.Validation.MinItems != nil {
+			minN := int(*prop.Validation.MinItems)
+			if len(arr) < minN {
+				if state.add(contracts.ValidationError{
+					Path: path, Message: fmt.Sprintf("array length %d is less than minimum %d", len(arr), minN), Code: "MIN_ITEMS",
+				}) {
+					return
+				}
 			}
 		}
-		if prop.Validation.MaxItems != nil && len(arr) > *prop.Validation.MaxItems {
-			if state.add(contracts.ValidationError{
-				Path: path, Message: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), *prop.Validation.MaxItems), Code: "MAX_ITEMS",
-			}) {
-				return
+		if prop.Validation.MaxItems != nil {
+			maxN := int(*prop.Validation.MaxItems)
+			if len(arr) > maxN {
+				if state.add(contracts.ValidationError{
+					Path: path, Message: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), maxN), Code: "MAX_ITEMS",
+				}) {
+					return
+				}
 			}
 		}
-		if prop.Validation.UniqueItems {
+		if prop.Validation.UniqueItems != nil && *prop.Validation.UniqueItems {
 			seen := make(map[string]bool)
 			for i, item := range arr {
 				key := fmt.Sprintf("%v", item)
@@ -244,7 +262,7 @@ func (v *Validator) validateObjectIntoState(obj map[string]interface{}, prop *Pr
 		}
 		value, exists := obj[propName]
 		propPath := fmt.Sprintf("%s.%s", path, propName)
-		if !exists && propDef.Required {
+		if !exists && propRequired(propDef) {
 			if state.add(contracts.ValidationError{Path: propPath, Message: "required field missing", Code: "REQUIRED"}) {
 				return
 			}
@@ -261,7 +279,7 @@ func (v *Validator) validateValue(value interface{}, prop *Property, path string
 	var errors []contracts.ValidationError
 
 	// Check required
-	if prop.Required && value == nil {
+	if propRequired(prop) && value == nil {
 		errors = append(errors, contracts.ValidationError{
 			Path:    path,
 			Message: "field is required",
@@ -385,7 +403,15 @@ func (v *Validator) validateValue(value interface{}, prop *Property, path string
 
 // validateUUIDValue validates a string value as UUID with optional prefix/postfix from the property.
 func (v *Validator) validateUUIDValue(value string, prop *Property, path string) []contracts.ValidationError {
-	if !ValidateUUIDWithPrefixPostfix(value, prop.Prefix, prop.Postfix) {
+	prefix := ""
+	if prop.Prefix != nil {
+		prefix = *prop.Prefix
+	}
+	postfix := ""
+	if prop.Postfix != nil {
+		postfix = *prop.Postfix
+	}
+	if !ValidateUUIDWithPrefixPostfix(value, prefix, postfix) {
 		return []contracts.ValidationError{{
 			Path:    path,
 			Message: "value does not match UUID format (with optional prefix/postfix)",
@@ -395,7 +421,30 @@ func (v *Validator) validateUUIDValue(value string, prop *Property, path string)
 	return nil
 }
 
-// validateString validates string-specific rules
+// validateDateRange validates DATE value against MinDate/MaxDate (Morpheus-aligned; YYYY-MM-DD string comparison).
+func (v *Validator) validateDateRange(value string, rules *ValidationRules, path string) []contracts.ValidationError {
+	var errors []contracts.ValidationError
+	if rules == nil {
+		return errors
+	}
+	if rules.MinDate != nil && value < *rules.MinDate {
+		errors = append(errors, contracts.ValidationError{
+			Path:    path,
+			Message: fmt.Sprintf("date %s is before minimum %s", value, *rules.MinDate),
+			Code:    "MIN_DATE",
+		})
+	}
+	if rules.MaxDate != nil && value > *rules.MaxDate {
+		errors = append(errors, contracts.ValidationError{
+			Path:    path,
+			Message: fmt.Sprintf("date %s is after maximum %s", value, *rules.MaxDate),
+			Code:    "MAX_DATE",
+		})
+	}
+	return errors
+}
+
+// validateString validates string-specific rules (Morpheus-aligned: *float64 lengths, *string pattern/format).
 func (v *Validator) validateString(value string, rules *ValidationRules, path string) []contracts.ValidationError {
 	var errors []contracts.ValidationError
 
@@ -403,24 +452,30 @@ func (v *Validator) validateString(value string, rules *ValidationRules, path st
 		return errors
 	}
 
-	if rules.MinLength != nil && len(value) < *rules.MinLength {
-		errors = append(errors, contracts.ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("length %d is less than minimum %d", len(value), *rules.MinLength),
-			Code:    "MIN_LENGTH",
-		})
+	if rules.MinLength != nil {
+		minL := int(*rules.MinLength)
+		if len(value) < minL {
+			errors = append(errors, contracts.ValidationError{
+				Path:    path,
+				Message: fmt.Sprintf("length %d is less than minimum %d", len(value), minL),
+				Code:    "MIN_LENGTH",
+			})
+		}
 	}
 
-	if rules.MaxLength != nil && len(value) > *rules.MaxLength {
-		errors = append(errors, contracts.ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("length %d exceeds maximum %d", len(value), *rules.MaxLength),
-			Code:    "MAX_LENGTH",
-		})
+	if rules.MaxLength != nil {
+		maxL := int(*rules.MaxLength)
+		if len(value) > maxL {
+			errors = append(errors, contracts.ValidationError{
+				Path:    path,
+				Message: fmt.Sprintf("length %d exceeds maximum %d", len(value), maxL),
+				Code:    "MAX_LENGTH",
+			})
+		}
 	}
 
-	if rules.Pattern != "" {
-		matched, err := regexp.MatchString(rules.Pattern, value)
+	if rules.Pattern != nil && *rules.Pattern != "" {
+		matched, err := regexp.MatchString(*rules.Pattern, value)
 		if err != nil {
 			errors = append(errors, contracts.ValidationError{
 				Path:    path,
@@ -430,25 +485,26 @@ func (v *Validator) validateString(value string, rules *ValidationRules, path st
 		} else if !matched {
 			errors = append(errors, contracts.ValidationError{
 				Path:    path,
-				Message: fmt.Sprintf("value does not match pattern '%s'", rules.Pattern),
+				Message: fmt.Sprintf("value does not match pattern '%s'", *rules.Pattern),
 				Code:    "PATTERN_MISMATCH",
 			})
 		}
 	}
 
-	if rules.Format != "" {
-		if validator, exists := v.formatValidators[rules.Format]; exists {
+	if rules.Format != nil && *rules.Format != "" {
+		format := *rules.Format
+		if validator, exists := v.formatValidators[format]; exists {
 			if !validator(value) {
 				errors = append(errors, contracts.ValidationError{
 					Path:    path,
-					Message: fmt.Sprintf("value does not match format '%s'", rules.Format),
+					Message: fmt.Sprintf("value does not match format '%s'", format),
 					Code:    "FORMAT_MISMATCH",
 				})
 			}
 		} else {
 			errors = append(errors, contracts.ValidationError{
 				Path:    path,
-				Message: fmt.Sprintf("unknown format validator: %s", rules.Format),
+				Message: fmt.Sprintf("unknown format validator: %s", format),
 				Code:    "UNKNOWN_FORMAT",
 			})
 		}
@@ -524,47 +580,59 @@ func (v *Validator) validateByte(value string, rules *ValidationRules, path stri
 
 	byteLength := len(decoded)
 
-	if rules.MinLength != nil && byteLength < *rules.MinLength {
-		errors = append(errors, contracts.ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("byte length %d is less than minimum %d", byteLength, *rules.MinLength),
-			Code:    "MIN_LENGTH",
-		})
+	if rules.MinLength != nil {
+		minL := int(*rules.MinLength)
+		if byteLength < minL {
+			errors = append(errors, contracts.ValidationError{
+				Path:    path,
+				Message: fmt.Sprintf("byte length %d is less than minimum %d", byteLength, minL),
+				Code:    "MIN_LENGTH",
+			})
+		}
 	}
 
-	if rules.MaxLength != nil && byteLength > *rules.MaxLength {
-		errors = append(errors, contracts.ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("byte length %d exceeds maximum %d", byteLength, *rules.MaxLength),
-			Code:    "MAX_LENGTH",
-		})
+	if rules.MaxLength != nil {
+		maxL := int(*rules.MaxLength)
+		if byteLength > maxL {
+			errors = append(errors, contracts.ValidationError{
+				Path:    path,
+				Message: fmt.Sprintf("byte length %d exceeds maximum %d", byteLength, maxL),
+				Code:    "MAX_LENGTH",
+			})
+		}
 	}
 
 	return errors
 }
 
-// validateArray validates array-specific rules
+// validateArray validates array-specific rules (Morpheus-aligned: *float64 MinItems/MaxItems, *bool UniqueItems).
 func (v *Validator) validateArray(arr []interface{}, prop *Property, path string) []contracts.ValidationError {
 	var errors []contracts.ValidationError
 
 	if prop.Validation != nil {
-		if prop.Validation.MinItems != nil && len(arr) < *prop.Validation.MinItems {
-			errors = append(errors, contracts.ValidationError{
-				Path:    path,
-				Message: fmt.Sprintf("array length %d is less than minimum %d", len(arr), *prop.Validation.MinItems),
-				Code:    "MIN_ITEMS",
-			})
+		if prop.Validation.MinItems != nil {
+			minN := int(*prop.Validation.MinItems)
+			if len(arr) < minN {
+				errors = append(errors, contracts.ValidationError{
+					Path:    path,
+					Message: fmt.Sprintf("array length %d is less than minimum %d", len(arr), minN),
+					Code:    "MIN_ITEMS",
+				})
+			}
 		}
 
-		if prop.Validation.MaxItems != nil && len(arr) > *prop.Validation.MaxItems {
-			errors = append(errors, contracts.ValidationError{
-				Path:    path,
-				Message: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), *prop.Validation.MaxItems),
-				Code:    "MAX_ITEMS",
-			})
+		if prop.Validation.MaxItems != nil {
+			maxN := int(*prop.Validation.MaxItems)
+			if len(arr) > maxN {
+				errors = append(errors, contracts.ValidationError{
+					Path:    path,
+					Message: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), maxN),
+					Code:    "MAX_ITEMS",
+				})
+			}
 		}
 
-		if prop.Validation.UniqueItems {
+		if prop.Validation.UniqueItems != nil && *prop.Validation.UniqueItems {
 			seen := make(map[string]bool)
 			for i, item := range arr {
 				key := fmt.Sprintf("%v", item)
@@ -603,7 +671,7 @@ func (v *Validator) validateObject(obj map[string]interface{}, prop *Property, p
 		value, exists := obj[propName]
 		propPath := fmt.Sprintf("%s.%s", path, propName)
 
-		if !exists && propDef.Required {
+		if !exists && propRequired(propDef) {
 			errors = append(errors, contracts.ValidationError{
 				Path:    propPath,
 				Message: "required field missing",

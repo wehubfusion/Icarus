@@ -10,13 +10,13 @@ type Schema struct {
 	Description string               `json:"description,omitempty"`
 }
 
-// Property represents a field property in a schema
+// Property represents a field property in a schema.
 type Property struct {
 	Type        SchemaType           `json:"type"`
-	Required    bool                 `json:"required,omitempty"`
+	Required    *bool                `json:"required,omitempty"`
 	Default     interface{}          `json:"default,omitempty"`
-	Prefix      string               `json:"prefix,omitempty"`  // Optional prefix for UUID type (e.g. "urn:uuid:")
-	Postfix     string               `json:"postfix,omitempty"`  // Optional postfix for UUID type
+	Prefix      *string              `json:"prefix,omitempty"`  // Optional prefix for UUID type (e.g. "urn:uuid:")
+	Postfix     *string              `json:"postfix,omitempty"` // Optional postfix for UUID type
 	Description string               `json:"description,omitempty"`
 	Validation  *ValidationRules     `json:"validation,omitempty"`
 	Properties  map[string]*Property `json:"properties,omitempty"` // For OBJECT type
@@ -40,13 +40,13 @@ const (
 	TypeUUID     SchemaType = "UUID"
 )
 
-// ValidationRules contains validation rules for a field
+// ValidationRules contains validation rules for a field (Morpheus-aligned: *float64 for lengths/counts, *string for pattern/format, *bool for uniqueItems).
 type ValidationRules struct {
 	// String validations
-	MinLength *int     `json:"minLength,omitempty"`
-	MaxLength *int     `json:"maxLength,omitempty"`
-	Pattern   string   `json:"pattern,omitempty"`
-	Format    string   `json:"format,omitempty"`
+	MinLength *float64 `json:"minLength,omitempty"`
+	MaxLength *float64 `json:"maxLength,omitempty"`
+	Pattern   *string  `json:"pattern,omitempty"`
+	Format    *string  `json:"format,omitempty"`
 	Enum      []string `json:"enum,omitempty"`
 
 	// Number validations
@@ -54,9 +54,13 @@ type ValidationRules struct {
 	Maximum *float64 `json:"maximum,omitempty"`
 
 	// Array validations
-	MinItems    *int `json:"minItems,omitempty"`
-	MaxItems    *int `json:"maxItems,omitempty"`
-	UniqueItems bool `json:"uniqueItems,omitempty"`
+	MinItems    *float64 `json:"minItems,omitempty"`
+	MaxItems    *float64 `json:"maxItems,omitempty"`
+	UniqueItems *bool    `json:"uniqueItems,omitempty"`
+
+	// Date validations (Morpheus-aligned)
+	MinDate *string `json:"minDate,omitempty"`
+	MaxDate *string `json:"maxDate,omitempty"`
 }
 
 // IsValidType checks if a schema type is valid

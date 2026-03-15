@@ -329,10 +329,11 @@ func TestApplyDefaults_UUID_MissingField_GeneratesUUID(t *testing.T) {
 
 func TestApplyDefaults_UUID_WithPrefixAndPostfix(t *testing.T) {
 	tr := NewTransformer()
+	prefix, postfix := "urn:uuid:", ""
 	schema := &Schema{
 		Type: TypeObject,
 		Properties: map[string]*Property{
-			"urn": {Type: TypeUUID, Prefix: "urn:uuid:", Postfix: ""},
+			"urn": {Type: TypeUUID, Prefix: &prefix, Postfix: &postfix},
 		},
 	}
 	data := map[string]interface{}{}
