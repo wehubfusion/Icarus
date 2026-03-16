@@ -1587,6 +1587,49 @@ result, err := engine.ProcessCSVWithSchema(
 - Supported CSV column types: `STRING`, `NUMBER`, `DATE` (uses `format: "date"` validation).
 - Validators reuse the same format rules (`email`, `uri`, `uuid`, `date`, `datetime`), enums, lengths, and number min/max as JSON schemas.
 
+### HL7 v2.x Schema Validation
+
+The schema engine also includes a dedicated **HL7 v2.x** validator in `pkg/schema/hl7` for validating raw HL7 messages against JSON-based HL7 schemas:
+
+```go
+import "github.com/wehubfusion/Icarus/pkg/schema"
+
+engine := schema.NewEngine()
+
+// Validate an HL7 message against an HL7 schema definition
+result, err := engine.ProcessHL7WithSchema(
+    []byte(hl7Message),   // raw HL7 v2.x message bytes
+    []byte(hl7SchemaJSON),// HL7 schema definition (JSON)
+    schema.ProcessOptions{
+        CollectAllErrors: true,
+        AllowExtraFields: false,
+    },
+)
+
+if err != nil {
+    log.Fatalf("HL7 processing failed: %v", err)
+}
+if !result.Valid {
+    for _, e := range result.Errors {
+        fmt.Printf("HL7 error at %s (%s): %s\n", e.Path, e.Code, e.Message)
+    }
+}
+```
+
+Key HL7 semantics (see `pkg/schema/hl7/HL7_VALIDATION_REPORT.md` for full details):
+
+- **Usages**
+  - **R (Required)**: Element (segment/field/component/subcomponent) **must be present** and **non-empty**.
+  - **RE (Required but may be empty)**: Accepted in schemas; current engine does **not** enforce presence. If present, value may be empty.
+  - **O (Optional)**: May be present or absent; value validated only by datatype/length.
+  - **X, W (Not used / Withdrawn)**: Element may be absent or empty; **any non-empty value** yields `HL7_NOT_USED`.
+- **Datatypes**
+  - Primitive datatypes (NM, SI, DT, TM, DTM/TS, MO, NR, etc.) are validated for format/range.
+  - String-like types (ST, TX, FT, ID, IS, GTS, SN) are accepted without format checks.
+  - Composite types (CE, CX, HD, XPN, etc.) are validated structurally; only their **leaf** components/subcomponents are checked via primitive rules.
+
+For in-depth behavior (segment matching, VARIES handling, detailed error codes), refer to `pkg/schema/hl7/HL7_VALIDATION_REPORT.md`.
+
 ### Schema Types
 
 The schema package supports the following data types:
