@@ -109,11 +109,12 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 		}
 		return errs
 	}
-	if strings.ToUpper(strings.TrimSpace(fdef.Usage)) == UsageNotUsed {
+	usageField := strings.ToUpper(strings.TrimSpace(fdef.Usage))
+	if usageField == UsageNotUsed || usageField == UsageWithdrawn {
 		for _, rep := range f.Repetitions {
 			if rep.String() != "" {
 				errs = append(errs, ValidationError{
-					Path: path, Message: "field must not be present or must be empty (X)", Code: "HL7_NOT_USED",
+					Path: path, Message: "field must not be present or must be empty (X/W)", Code: "HL7_NOT_USED",
 				})
 				break // one error per field is sufficient
 			}
@@ -185,9 +186,10 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 				}
 				continue
 			}
-			if strings.ToUpper(strings.TrimSpace(cdef.Usage)) == UsageNotUsed && c.String() != "" {
+			usageComp := strings.ToUpper(strings.TrimSpace(cdef.Usage))
+			if (usageComp == UsageNotUsed || usageComp == UsageWithdrawn) && c.String() != "" {
 				errs = append(errs, ValidationError{
-					Path: cPath, Message: "component must not be present or must be empty (X)", Code: "HL7_NOT_USED",
+					Path: cPath, Message: "component must not be present or must be empty (X/W)", Code: "HL7_NOT_USED",
 				})
 			}
 			if strings.ToUpper(strings.TrimSpace(cdef.Usage)) == UsageRequired {
@@ -223,9 +225,10 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 						}
 						continue
 					}
-				if strings.ToUpper(strings.TrimSpace(sdef.Usage)) == UsageNotUsed && sc.Value != "" {
+				usageSub := strings.ToUpper(strings.TrimSpace(sdef.Usage))
+				if (usageSub == UsageNotUsed || usageSub == UsageWithdrawn) && sc.Value != "" {
 					errs = append(errs, ValidationError{
-						Path: sPath, Message: "subcomponent must not be present or must be empty (X)", Code: "HL7_NOT_USED",
+						Path: sPath, Message: "subcomponent must not be present or must be empty (X/W)", Code: "HL7_NOT_USED",
 					})
 				}
 				if strings.ToUpper(strings.TrimSpace(sdef.Usage)) == UsageRequired && sc.Value == "" {
