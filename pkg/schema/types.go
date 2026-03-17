@@ -45,6 +45,9 @@ const (
 // Re-exports from contracts for backward compatibility.
 type (
 	SchemaFormat     = contracts.SchemaFormat
+	Severity         = contracts.Severity
+	ValidationMode   = contracts.ValidationMode
+	ValidationIssue  = contracts.ValidationIssue
 	ValidationError  = contracts.ValidationError
 	ValidationResult = contracts.ValidationResult
 	ProcessOptions   = contracts.ProcessOptions
@@ -55,6 +58,18 @@ const (
 	FormatJSON = contracts.FormatJSON
 	FormatCSV  = contracts.FormatCSV
 	FormatHL7  = contracts.FormatHL7
+)
+
+const (
+	ValidationModeStrict  = contracts.ValidationModeStrict
+	ValidationModeNormal  = contracts.ValidationModeNormal
+	ValidationModeLenient = contracts.ValidationModeLenient
+)
+
+const (
+	SeverityError   = contracts.SeverityError
+	SeverityWarning = contracts.SeverityWarning
+	SeverityInfo    = contracts.SeverityInfo
 )
 
 // IsValidType checks if a schema type is valid (re-exported from json).

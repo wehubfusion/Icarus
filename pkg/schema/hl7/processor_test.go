@@ -220,14 +220,14 @@ func TestHL7StrictValidation_ExtraField(t *testing.T) {
 		t.Fatalf("Process: %v", err)
 	}
 	var hasExtraField bool
-	for _, e := range result.Errors {
+	for _, e := range result.Infos {
 		if e.Code == "HL7_EXTRA_FIELD" {
 			hasExtraField = true
 			break
 		}
 	}
 	if !hasExtraField {
-		t.Errorf("expected HL7_EXTRA_FIELD when segment has more fields than schema: %v", result.Errors)
+		t.Errorf("expected HL7_EXTRA_FIELD when segment has more fields than schema: errors=%v warnings=%v infos=%v", result.Errors, result.Warnings, result.Infos)
 	}
 }
 

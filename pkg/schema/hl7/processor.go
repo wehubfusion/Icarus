@@ -7,6 +7,90 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/schema/hl7/datatypes"
 )
 
+func effectiveMode(opts contracts.ProcessOptions) contracts.ValidationMode {
+	if opts.Mode != "" {
+		return opts.Mode
+	}
+	if opts.StrictValidation {
+		return contracts.ValidationModeStrict
+	}
+	return contracts.ValidationModeNormal
+}
+
+func resolveSeverity(code string, mode contracts.ValidationMode) contracts.Severity {
+	// Defaults are NORMAL mode, based on NIST/CDC/HL7apy patterns.
+	normal := func(code string) contracts.Severity {
+		switch code {
+		case "HL7_EMPTY_MESSAGE", "HL7_INVALID_MSH", "HL7_INVALID_SCHEMA",
+			"HL7_MISSING_REQUIRED", "HL7_MESSAGE_TYPE_MISMATCH", "HL7_REPETITION_VIOLATION",
+			"HL7_DATATYPE":
+			return contracts.SeverityError
+		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_NOT_USED", "HL7_LENGTH",
+			"HL7_UNEXPECTED_SEGMENT":
+			return contracts.SeverityWarning
+		case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
+			return contracts.SeverityInfo
+		default:
+			return contracts.SeverityError
+		}
+	}
+
+	switch mode {
+	case contracts.ValidationModeStrict:
+		switch code {
+		case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
+			return contracts.SeverityWarning
+		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_NOT_USED", "HL7_LENGTH",
+			"HL7_UNEXPECTED_SEGMENT":
+			return contracts.SeverityError
+		default:
+			return normal(code)
+		}
+	case contracts.ValidationModeLenient:
+		switch code {
+		case "HL7_MISSING_REQUIRED", "HL7_MESSAGE_TYPE_MISMATCH", "HL7_REPETITION_VIOLATION",
+			"HL7_DATATYPE", "HL7_NOT_USED":
+			return contracts.SeverityWarning
+		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_LENGTH",
+			"HL7_UNEXPECTED_SEGMENT", "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
+			return contracts.SeverityInfo
+		default:
+			return normal(code)
+		}
+	default:
+		return normal(code)
+	}
+}
+
+func bucketize(issues *[]contracts.ValidationIssue, err contracts.ValidationError, mode contracts.ValidationMode) contracts.Severity {
+	sev := err.Severity
+	if sev == "" {
+		sev = resolveSeverity(err.Code, mode)
+	}
+	e := contracts.ValidationIssue{
+		Path:     err.Path,
+		Message:  err.Message,
+		Code:     err.Code,
+		Severity: sev,
+	}
+	*issues = append(*issues, e)
+	return sev
+}
+
+func splitBuckets(all []contracts.ValidationIssue) (errs, warns, infos []contracts.ValidationIssue) {
+	for _, e := range all {
+		switch e.Severity {
+		case contracts.SeverityInfo:
+			infos = append(infos, e)
+		case contracts.SeverityWarning:
+			warns = append(warns, e)
+		default:
+			errs = append(errs, e)
+		}
+	}
+	return errs, warns, infos
+}
+
 // HL7SchemaProcessor implements SchemaProcessor for HL7 v2.x messages.
 type HL7SchemaProcessor struct{}
 
@@ -39,40 +123,57 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 	if !ok {
 		return nil, fmt.Errorf("expected *hl7.CompiledHL7Schema, got %T", compiled)
 	}
+	mode := effectiveMode(opts)
 	msg, err := ParseMessage(inputData)
 	if err != nil {
 		code := "HL7_INVALID_MSH"
 		if err == ErrEmptyMessage {
 			code = "HL7_EMPTY_MESSAGE"
 		}
-		return &contracts.ProcessResult{
+		issue := contracts.ValidationIssue{
+			Path:     "message",
+			Message:  err.Error(),
+			Code:     code,
+			Severity: resolveSeverity(code, mode),
+		}
+		result := &contracts.ProcessResult{
 			Valid:  false,
 			Data:   inputData,
-			Errors: []contracts.ValidationError{{Path: "message", Message: err.Error(), Code: code}},
-		}, nil
+			Errors: []contracts.ValidationIssue{issue},
+		}
+		if opts.StrictValidation {
+			return result, fmt.Errorf("%s", (&contracts.ValidationResult{Valid: false, Errors: result.Errors}).ErrorMessage())
+		}
+		return result, nil
 	}
 	match := MatchMessage(msg, c)
-	var allErrs []contracts.ValidationError
+	var all []contracts.ValidationIssue
 	for _, e := range match.Errors {
-		allErrs = append(allErrs, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code})
-		if !opts.CollectAllErrors {
-			return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: allErrs}, nil
+		sev := bucketize(&all, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code}, mode)
+		if !opts.CollectAllErrors && sev == contracts.SeverityError {
+			errs, warns, infos := splitBuckets(all)
+			return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
 		}
 	}
 	for _, e := range ValidateMessageTypeAndVersion(msg, c.Schema) {
-		allErrs = append(allErrs, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code})
-		if !opts.CollectAllErrors {
-			return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: allErrs}, nil
+		sev := bucketize(&all, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code}, mode)
+		if !opts.CollectAllErrors && sev == contracts.SeverityError {
+			errs, warns, infos := splitBuckets(all)
+			return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
 		}
 	}
 	fieldErrs := ValidateMatchResult(match, msg, opts.CollectAllErrors, opts.AllowExtraFields, c.Registry)
 	for _, e := range fieldErrs {
-		allErrs = append(allErrs, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code})
+		sev := bucketize(&all, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code}, mode)
+		if !opts.CollectAllErrors && sev == contracts.SeverityError {
+			break
+		}
 	}
-	valid := len(allErrs) == 0
-	result := &contracts.ProcessResult{Valid: valid, Data: inputData, Errors: allErrs}
+	errs, warns, infos := splitBuckets(all)
+	valid := len(errs) == 0
+	result := &contracts.ProcessResult{Valid: valid, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}
 	if !valid && opts.StrictValidation {
-		return result, fmt.Errorf("%s", (&contracts.ValidationResult{Valid: false, Errors: allErrs}).ErrorMessage())
+		return result, fmt.Errorf("%s", (&contracts.ValidationResult{Valid: false, Errors: errs}).ErrorMessage())
 	}
 	return result, nil
 }

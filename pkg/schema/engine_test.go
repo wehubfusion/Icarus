@@ -128,18 +128,12 @@ func TestValidateHL7Only_InvalidMessage_RequiredFieldEmpty(t *testing.T) {
 	if result == nil {
 		t.Fatal("result is nil")
 	}
-	if result.Valid {
-		t.Error("expected valid=false for message with empty required PID-3")
+	// HL7_REQUIRED (field present-but-empty) is WARNING in NORMAL mode, so Valid stays true.
+	if !result.Valid {
+		t.Errorf("expected valid=true (warning only), got false; errors=%v warnings=%v infos=%v", result.Errors, result.Warnings, result.Infos)
 	}
-	var found bool
-	for _, e := range result.Errors {
-		if e.Code == "HL7_REQUIRED" && e.Path == "PID-3" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected HL7_REQUIRED for PID-3, got errors: %v", result.Errors)
+	if !issuesHasCodeWithPath(allIssuesVR(result), "HL7_REQUIRED", "PID-3") {
+		t.Errorf("expected HL7_REQUIRED for PID-3, got issues: %v", allIssuesVR(result))
 	}
 }
 

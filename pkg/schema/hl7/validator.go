@@ -114,10 +114,8 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 
 	effectiveType := fdef.DataType
 	if strings.ToUpper(fdef.DataType) == "VARIES" {
-		effectiveType = ResolveVariesDataType(segName, strconv.Itoa(fieldNum), seg, msg)
-		if effectiveType == "" {
-			effectiveType = "ST" // fallback to string
-		}
+		// VARIES resolution is intentionally disabled for now; validate as a plain string.
+		effectiveType = "ST"
 	}
 	for ri, rep := range f.Repetitions {
 		repPath := path

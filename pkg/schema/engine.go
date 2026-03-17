@@ -97,7 +97,12 @@ func (e *Engine) ValidateHL7Only(inputData []byte, schemaDefinition []byte) (*Va
 	if err != nil {
 		return nil, err
 	}
-	return &ValidationResult{Valid: result.Valid, Errors: result.Errors}, nil
+	return &ValidationResult{
+		Valid:    result.Valid,
+		Errors:   result.Errors,
+		Warnings: result.Warnings,
+		Infos:    result.Infos,
+	}, nil
 }
 
 // ValidateCSVOnly validates rows against a CSV schema without transformation (delegates through Process).

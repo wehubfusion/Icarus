@@ -14,17 +14,40 @@ const (
 	FormatHL7  SchemaFormat = "HL7"
 )
 
-// ValidationError represents a single validation error
-type ValidationError struct {
+type Severity string
+
+const (
+	SeverityError   Severity = "ERROR"
+	SeverityWarning Severity = "WARNING"
+	SeverityInfo    Severity = "INFO"
+)
+
+type ValidationMode string
+
+const (
+	ValidationModeStrict  ValidationMode = "STRICT"
+	ValidationModeNormal  ValidationMode = "NORMAL"
+	ValidationModeLenient ValidationMode = "LENIENT"
+)
+
+// ValidationIssue represents a single validation finding (error, warning, or info).
+type ValidationIssue struct {
 	Path    string `json:"path"`
 	Message string `json:"message"`
 	Code    string `json:"code"`
+	// Severity defaults to ERROR for backward compatibility when omitted by processors.
+	Severity Severity `json:"severity,omitempty"`
 }
+
+// ValidationError is preserved for backward compatibility (all previous findings were treated as errors).
+type ValidationError = ValidationIssue
 
 // ValidationResult holds the result of validation
 type ValidationResult struct {
-	Valid  bool              `json:"valid"`
-	Errors []ValidationError `json:"errors,omitempty"`
+	Valid    bool              `json:"valid"`
+	Errors   []ValidationError `json:"errors,omitempty"`
+	Warnings []ValidationIssue `json:"warnings,omitempty"`
+	Infos    []ValidationIssue `json:"infos,omitempty"`
 }
 
 // ErrorMessage returns a single well-formatted error string for the validation result.
@@ -53,15 +76,18 @@ type ProcessOptions struct {
 	ApplyDefaults    bool
 	StructureData    bool
 	StrictValidation bool
+	Mode             ValidationMode
 	CollectAllErrors bool
 	AllowExtraFields bool
 }
 
 // ProcessResult contains the result of schema processing
 type ProcessResult struct {
-	Valid  bool              `json:"valid"`
-	Data   []byte            `json:"data"`
-	Errors []ValidationError `json:"errors,omitempty"`
+	Valid    bool              `json:"valid"`
+	Data     []byte            `json:"data"`
+	Errors   []ValidationError `json:"errors,omitempty"`
+	Warnings []ValidationIssue `json:"warnings,omitempty"`
+	Infos    []ValidationIssue `json:"infos,omitempty"`
 }
 
 // SchemaProcessor is the extension point for all schema formats.
