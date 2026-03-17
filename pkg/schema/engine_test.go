@@ -53,7 +53,7 @@ const (
 				{"position": "MSH-6", "dataType": "ST", "usage": "O"},
 				{"position": "MSH-7", "dataType": "TS", "usage": "O"},
 				{"position": "MSH-8", "dataType": "ST", "usage": "O"},
-				{"position": "MSH-9", "dataType": "MSG", "usage": "R"},
+				{"position": "MSH-9", "dataType": "ST", "usage": "R"},
 				{"position": "MSH-10", "dataType": "ST", "usage": "O"},
 				{"position": "MSH-11", "dataType": "PT", "usage": "O"},
 				{"position": "MSH-12", "dataType": "VID", "usage": "O"}

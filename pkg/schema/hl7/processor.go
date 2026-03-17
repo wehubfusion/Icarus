@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/wehubfusion/Icarus/pkg/schema/contracts"
+	"github.com/wehubfusion/Icarus/pkg/schema/hl7/datatypes"
 )
 
 // HL7SchemaProcessor implements SchemaProcessor for HL7 v2.x messages.
@@ -25,7 +26,11 @@ func (p *HL7SchemaProcessor) ParseSchema(definition []byte) (contracts.CompiledS
 	if err != nil {
 		return nil, fmt.Errorf("hl7 schema parse error: %w", err)
 	}
-	return &CompiledHL7Schema{Schema: compiled}, nil
+	reg, err := datatypes.GetRegistry()
+	if err != nil {
+		return nil, fmt.Errorf("hl7 datatype registry load error: %w", err)
+	}
+	return &CompiledHL7Schema{Schema: compiled, Registry: reg}, nil
 }
 
 // Process implements contracts.SchemaProcessor. Validation only; Data is the original input.
@@ -60,7 +65,7 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 			return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: allErrs}, nil
 		}
 	}
-	fieldErrs := ValidateMatchResult(match, msg, opts.CollectAllErrors, opts.AllowExtraFields)
+	fieldErrs := ValidateMatchResult(match, msg, opts.CollectAllErrors, opts.AllowExtraFields, c.Registry)
 	for _, e := range fieldErrs {
 		allErrs = append(allErrs, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code})
 	}

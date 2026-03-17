@@ -130,6 +130,7 @@ func (r *Registry) Lookup(version, typeID string) (*DataTypeDef, bool) {
 		return nil, false
 	}
 
+	triedFallback := false
 	for {
 		if m, ok := r.index[ver]; ok {
 			if def, ok := m[tid]; ok {
@@ -137,9 +138,12 @@ func (r *Registry) Lookup(version, typeID string) (*DataTypeDef, bool) {
 			}
 		}
 		// minor-version fallback: "2.3.1" -> "2.3"
-		if i := strings.LastIndexByte(ver, '.'); i > 0 {
-			ver = ver[:i]
-			continue
+		if !triedFallback {
+			triedFallback = true
+			if i := strings.LastIndexByte(ver, '.'); i > 0 {
+				ver = ver[:i]
+				continue
+			}
 		}
 		return nil, false
 	}

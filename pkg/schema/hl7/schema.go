@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/wehubfusion/Icarus/pkg/schema/hl7/datatypes"
 )
 
 // CompiledHL7Schema holds a validated HL7 schema for use by the processor.
 type CompiledHL7Schema struct {
-	Schema *HL7Schema
+	Schema   *HL7Schema
+	Registry *datatypes.Registry
 }
 
 // SchemaType returns the format identifier for the schema engine registry.
@@ -39,12 +42,11 @@ var (
 	rptRegex = regexp.MustCompile(`^$|^1$|^\*$|^[1-9][0-9]*$|^(?i:unbounded)$`)
 )
 
-// HL7Schema represents a custom HL7 schema definition (Morpheus-compatible JSON).
+// HL7Schema represents an HL7 message definition.
 type HL7Schema struct {
-	MessageType string          `json:"messageType"`
-	Version     string          `json:"version"`
-	Description string          `json:"description"`
-	Segments    []HL7SegmentDef `json:"segments"`
+	MessageType       string          `json:"messageType"`
+	Version           string          `json:"version,omitempty"`
+	Segments          []HL7SegmentDef `json:"segments"`
 }
 
 // HL7SegmentDef represents a segment or segment group.
@@ -54,8 +56,8 @@ type HL7SegmentDef struct {
 	Usage    string           `json:"usage"`
 	Rpt      string           `json:"rpt"`
 	IsGroup  bool             `json:"isGroup"`
-	Segments []*HL7SegmentDef `json:"segments"`
-	Fields   []HL7FieldDef    `json:"fields"`
+	Segments []*HL7SegmentDef `json:"segments,omitempty"`
+	Fields   []HL7FieldDef    `json:"fields,omitempty"`
 }
 
 // HL7FieldDef represents a field in an HL7 schema definition.
@@ -67,28 +69,6 @@ type HL7FieldDef struct {
 	Usage      string            `json:"usage"`
 	Rpt        string            `json:"rpt"`
 	TableID    *string           `json:"tableId,omitempty"`
-	Components []HL7ComponentDef `json:"components"`
-}
-
-// HL7ComponentDef represents a component (rpt at component level is not used per HL7 spec).
-type HL7ComponentDef struct {
-	Position      string               `json:"position"`
-	Name          string               `json:"name,omitempty"`
-	Length        int                  `json:"length"`
-	DataType      string               `json:"dataType"`
-	Usage         string               `json:"usage"`
-	TableID       *string              `json:"tableId,omitempty"`
-	SubComponents []HL7SubcomponentDef `json:"subComponents,omitempty"`
-}
-
-// HL7SubcomponentDef represents a subcomponent.
-type HL7SubcomponentDef struct {
-	Position string  `json:"position"`
-	Name     string  `json:"name,omitempty"`
-	Length   int     `json:"length"`
-	DataType string  `json:"dataType"`
-	Usage    string  `json:"usage"`
-	TableID  *string `json:"tableId,omitempty"`
 }
 
 func checkDuplicateSegmentNames(segs []*HL7SegmentDef, path string) error {
@@ -188,44 +168,6 @@ func (h *HL7Schema) validateField(f *HL7FieldDef, path string) error {
 	}
 	if r := strings.TrimSpace(f.Rpt); r != "" && !rptRegex.MatchString(r) {
 		return fmt.Errorf("%s.rpt: must be empty, 1, *, or a positive integer (got %q)", path, f.Rpt)
-	}
-	for i := range f.Components {
-		if err := h.validateComponent(&f.Components[i], fmt.Sprintf("%s.components[%d]", path, i)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (h *HL7Schema) validateComponent(c *HL7ComponentDef, path string) error {
-	pos := strings.TrimSpace(c.Position)
-	if pos == "" {
-		return fmt.Errorf("%s: component 'position' is required and cannot be empty", path)
-	}
-	if parseComponentNumberFromPosition(pos) <= 0 {
-		return fmt.Errorf("%s: component 'position' %q does not resolve to a positive component number (expected format: 'TYPE.N')", path, c.Position)
-	}
-	if u := strings.TrimSpace(c.Usage); u != "" && !validUsage[strings.ToUpper(u)] {
-		return fmt.Errorf("%s.usage: must be one of R, RE, O, C, B, X, W (got %q)", path, c.Usage)
-	}
-	for i := range c.SubComponents {
-		if err := h.validateSubcomponent(&c.SubComponents[i], fmt.Sprintf("%s.subComponents[%d]", path, i)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (h *HL7Schema) validateSubcomponent(s *HL7SubcomponentDef, path string) error {
-	pos := strings.TrimSpace(s.Position)
-	if pos == "" {
-		return fmt.Errorf("%s: subcomponent 'position' is required and cannot be empty", path)
-	}
-	if parseComponentNumberFromPosition(pos) <= 0 {
-		return fmt.Errorf("%s: subcomponent 'position' %q does not resolve to a positive number (expected format: 'TYPE.N')", path, s.Position)
-	}
-	if u := strings.TrimSpace(s.Usage); u != "" && !validUsage[strings.ToUpper(u)] {
-		return fmt.Errorf("%s.usage: must be one of R, RE, O, C, B, X, W (got %q)", path, s.Usage)
 	}
 	return nil
 }

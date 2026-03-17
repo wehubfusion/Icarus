@@ -122,7 +122,7 @@ func TestValidateMatchResult_RequiredField(t *testing.T) {
 	// Message with empty PID-3 (required)
 	msg, _ := ParseMessage([]byte("MSH|^~\\&|A|B|C|D|20250101120000||ADT^A01|1|P|2.5\rPID||||DOE^JOHN"))
 	match := MatchMessage(msg, compiled)
-	errs := ValidateMatchResult(match, msg, true, false)
+	errs := ValidateMatchResult(match, msg, true, false, nil)
 	var found bool
 	for _, e := range errs {
 		if e.Code == "HL7_REQUIRED" && e.Path == "PID-3" {
@@ -190,43 +190,6 @@ func TestHL7SchemaProcessor_Process_ValidMessage(t *testing.T) {
 	}
 	if !result.Valid {
 		t.Errorf("expected valid result, got errors: %v", result.Errors)
-	}
-}
-
-func TestHL7StrictValidation_ExtraComponent(t *testing.T) {
-	proc := NewHL7SchemaProcessor()
-	hl7Schema := `{
-		"segments": [
-			{"name": "MSH", "usage": "R", "rpt": "1", "fields": [
-				{"position": "MSH.9", "dataType": "MSG", "usage": "R", "rpt": "1", "components": [
-					{"position": "MSG.1", "usage": "R"},
-					{"position": "MSG.2", "usage": "R"},
-					{"position": "MSG.3", "usage": "R"}
-				]}
-			]}
-		]
-	}`
-	compiled, err := proc.ParseSchema([]byte(hl7Schema))
-	if err != nil {
-		t.Fatal(err)
-	}
-	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ORU^R01^ORU^R01|MSG001|P|2.5"
-	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{StrictValidation: false, CollectAllErrors: true})
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	var hasExtraComp bool
-	for _, e := range result.Errors {
-		if e.Code == "HL7_EXTRA_COMPONENT" {
-			hasExtraComp = true
-			if e.Path != "MSH-9.4" {
-				t.Errorf("expected path MSH-9.4 for extra component, got %q", e.Path)
-			}
-			break
-		}
-	}
-	if !hasExtraComp {
-		t.Errorf("expected HL7_EXTRA_COMPONENT when message has 4 components and schema defines 3: %v", result.Errors)
 	}
 }
 
