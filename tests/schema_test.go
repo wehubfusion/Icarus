@@ -2362,8 +2362,11 @@ func TestProcessHL7WithSchema_ModeBucketing(t *testing.T) {
 			CollectAllErrors: true,
 			Mode:             schema.ValidationModeStrict,
 		})
-		if err == nil {
-			t.Fatalf("expected non-nil err in STRICT for version mismatch")
+		if err != nil {
+			t.Fatalf("did not expect err when using Mode=STRICT (err is controlled by StrictValidation); err=%v", err)
+		}
+		if res.Valid {
+			t.Fatalf("expected valid=false in STRICT when Errors are present; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
 		}
 		var found bool
 		for _, e := range res.Errors {
@@ -2400,8 +2403,11 @@ func TestProcessHL7WithSchema_ModeBucketing(t *testing.T) {
 			CollectAllErrors: true,
 			Mode:             schema.ValidationModeStrict,
 		})
-		if err == nil {
-			t.Fatalf("expected non-nil err in STRICT for extra field")
+		if err != nil {
+			t.Fatalf("did not expect err when using Mode=STRICT (err is controlled by StrictValidation); err=%v", err)
+		}
+		if res.Valid {
+			t.Fatalf("expected valid=false in STRICT when Errors are present; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
 		}
 		var found bool
 		for _, e := range res.Errors {
