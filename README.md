@@ -59,6 +59,20 @@ if err := c.Connect(ctx); err != nil {
 defer c.Close()
 ```
 
+## Schema Engine (JSON / CSV / HL7)
+
+This repo also includes a schema engine that can parse/validate data against:
+
+- **JSON schemas** (validation + defaults + structuring)
+- **CSV schemas** (typed column schemas; input is JSON array of rows)
+- **HL7 v2.x schemas** (validation only; results include `Errors`, `Warnings`, `Infos` based on mode)
+
+See:
+
+- `pkg/schema/README.md` for the unified API
+- `pkg/schema/hl7/README.md` for HL7-specific behavior
+- `examples/schema-engine/` for a runnable example
+
 ### 2. Publish Messages
 
 ```go

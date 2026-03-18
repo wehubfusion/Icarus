@@ -7,8 +7,8 @@ The `hl7` package provides parsing and validation of HL7 v2.x messages against a
 - **Parser**: Tokenizes raw message bytes (BOM strip, line endings), extracts delimiters from MSH, and parses segments/fields/components.
 - **Schema**: JSON definition of message type, version, and segment/field/component structure (Morpheus-compatible).
 - **Matcher**: Matches parsed message segments to the schema (order, required segments, repetition).
-- **Validator**: Field- and component-level checks: usage (R/RE/O/C/X), repetitions, length, datatypes, and optional MSH-9/MSH-12.
-- **VARIES**: Resolves VARIES datatypes from context (e.g. OBX-5 from OBX-2 in the same segment).
+- **Validator**: Field- and component-level checks: usage (R/X/W), repetitions, length, datatypes, and optional MSH-9/MSH-12.
+- **VARIES**: Resolution is intentionally disabled for now; `VARIES` falls back to validating as `ST`.
 - **Processor**: Implements `contracts.SchemaProcessor`; returns validation result and original input as `Data`.
 
 ## Schema Definition Format
@@ -18,7 +18,7 @@ Schema is JSON with `messageType`, `version`, and `segments`. Segments can be gr
 ### Segment and field structure
 
 - **Segment**: `name` (e.g. MSH, PID), `usage` (R, RE, O, C, B, X, W), `rpt` (repetition, e.g. 1, *, 5).
-- **Field**: `position` (e.g. "1", "2"), `dataType`, `usage`, `rpt`, `length`, optional `components`.
+- **Field**: `position` (e.g. "MSH.9" or "PID-3"), `dataType`, `usage`, `rpt`, `length`.
 - **Component**: `position`, `dataType`, `usage`, `length`, optional `subComponents`.
 
 ### Usage codes
@@ -26,7 +26,7 @@ Schema is JSON with `messageType`, `version`, and `segments`. Segments can be gr
 | Code | Meaning |
 |------|--------|
 | R    | Required; must be present and non-empty |
-| RE   | Required but may be empty |
+| RE   | Required but may be empty (not enforced currently) |
 | O    | Optional |
 | C    | Conditional |
 | B    | Backward compatible |
@@ -35,15 +35,15 @@ Schema is JSON with `messageType`, `version`, and `segments`. Segments can be gr
 
 ### Datatypes
 
-Primitive types validated include: ST, TX, FT, NM, SI, SN, DT, TM, DTM/TS, IS, and others. **VARIES** is resolved at runtime (e.g. OBX-5 from OBX-2 via `VariesResolver`). TableID is not validated.
+Primitive types validated include: ST, TX, FT, NM, SI, SN, DT, TM, DTM/TS, IS, and others. `VARIES` falls back to `ST`. TableID is not validated.
 
 ## Validation Checks
 
 - **Structure**: Message starts with MSH; delimiters and segment parsing.
 - **Match**: Segment order and presence; required segments; repetition limits; unexpected segments.
 - **Message type / version**: If schema sets `messageType` or `version`, MSH-9 and MSH-12 are checked.
-- **Fields**: Required/missing, R non-empty, X not present, repetitions within `rpt`, length, datatype (including VARIES).
-- **Components**: Required/missing, length, datatype; extra fields/components/subcomponents are always detected and severity depends on `Mode`.
+- **Fields**: Required/missing, R non-empty, X/W not present, repetitions within `rpt` (when specified), length, datatype (including VARIES fallback).
+- **Components**: Length, datatype; extra fields/components/subcomponents are detected only when the extra slot is non-empty; severity depends on `Mode`.
 
 ## Error codes
 
@@ -63,15 +63,39 @@ Primitive types validated include: ST, TX, FT, NM, SI, SN, DT, TM, DTM/TS, IS, a
 | HL7_EXTRA_COMPONENT | Field has more components than datatype definition allows |
 | HL7_EXTRA_SUBCOMPONENT | Component has more subcomponents than datatype definition allows |
 
+## Severity by mode
+
+The same validation codes are bucketed into `Errors`, `Warnings`, and `Infos` depending on `ProcessOptions.Mode`.
+This is the authoritative mapping implemented in `processor.go`.
+
+| Code | STRICT | NORMAL | LENIENT |
+|------|--------|--------|---------|
+| HL7_EMPTY_MESSAGE | ERROR | ERROR | ERROR |
+| HL7_INVALID_MSH | ERROR | ERROR | ERROR |
+| HL7_INVALID_SCHEMA | ERROR | ERROR | ERROR |
+| HL7_MISSING_REQUIRED | ERROR | ERROR | WARNING |
+| HL7_MESSAGE_TYPE_MISMATCH | ERROR | ERROR | WARNING |
+| HL7_REPETITION_VIOLATION | ERROR | ERROR | WARNING |
+| HL7_DATATYPE | ERROR | ERROR | WARNING |
+| HL7_VERSION_MISMATCH | ERROR | WARNING | INFO |
+| HL7_REQUIRED | ERROR | WARNING | INFO |
+| HL7_NOT_USED | ERROR | WARNING | WARNING |
+| HL7_LENGTH | ERROR | WARNING | INFO |
+| HL7_UNEXPECTED_SEGMENT | ERROR | WARNING | INFO |
+| HL7_EXTRA_FIELD | ERROR | INFO | INFO |
+| HL7_EXTRA_COMPONENT | ERROR | INFO | INFO |
+| HL7_EXTRA_SUBCOMPONENT | ERROR | INFO | INFO |
+
 ## ProcessOptions
 
 - **CollectAllErrors**: If true, collect all validation errors; otherwise stop after the first.
 - **StrictValidation**: Deprecated alias for `Mode=STRICT`.
 - **Mode**: `STRICT`, `NORMAL`, or `LENIENT` (controls severity bucketing).
 
-## VARIES
+## Unspecified schema constraints
 
-`VARIES` resolution is intentionally disabled for now; `VARIES` falls back to validating as `ST`.
+- If `usage` is empty/omitted, it is treated as **unspecified** (no required/not-used enforcement).
+- If `rpt` is empty/omitted, it is treated as **unspecified** (no repetition enforcement).
 
 ## Usage
 

@@ -19,6 +19,12 @@ result, err := engine.ProcessCSVWithSchema(csvRowsJSON, csvSchemaDef, options)
 result, err := engine.ProcessHL7WithSchema(hl7MessageBytes, hl7SchemaDef, options)
 ```
 
+HL7 results are severity-bucketed:
+
+- `ProcessResult.Errors` (ERROR)
+- `ProcessResult.Warnings` (WARNING)
+- `ProcessResult.Infos` (INFO)
+
 ## Schema types
 
 | Format | Package | README | Description |
@@ -43,7 +49,7 @@ result, err := engine.ProcessHL7WithSchema(hl7MessageBytes, hl7SchemaDef, option
 | StructureData | ✓ | ✓ | — |
 | StrictValidation | ✓ | ✓ | ✓ |
 | CollectAllErrors | ✓ | ✓ | ✓ |
-| Mode | — | — | ✓ (STRICT/NORMAL/LENIENT; controls severity) |
+| Mode | — | — | ✓ (STRICT/NORMAL/LENIENT; controls severity buckets) |
 
 ## ProcessResult
 
