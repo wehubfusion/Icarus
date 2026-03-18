@@ -57,12 +57,22 @@ func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool, reg *
 
 func isFieldEffectivelyEmpty(f Field) bool {
 	for _, rep := range f.Repetitions {
-		// Treat fields that only contain delimiters as empty (e.g. "^^" or "&").
-		if strings.TrimLeft(rep.String(), "^&") != "" {
+		if repetitionHasNonEmptyValue(rep) {
 			return false
 		}
 	}
 	return true
+}
+
+func repetitionHasNonEmptyValue(rep Repetition) bool {
+	for _, c := range rep.Components {
+		for _, sc := range c.Subcomponents {
+			if sc.Value != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message, reg *datatypes.Registry, version string) []ValidationError {
@@ -84,7 +94,7 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 	usageField := strings.ToUpper(strings.TrimSpace(fdef.Usage))
 	if usageField == UsageNotUsed || usageField == UsageWithdrawn {
 		for _, rep := range f.Repetitions {
-			if rep.String() != "" {
+			if repetitionHasNonEmptyValue(rep) {
 				errs = append(errs, ValidationError{
 					Path: path, Message: "field must not be present or must be empty (X/W)", Code: "HL7_NOT_USED",
 				})
@@ -93,15 +103,15 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 		}
 	}
 	if strings.ToUpper(strings.TrimSpace(fdef.Usage)) == UsageRequired {
-		stripped := strings.TrimLeft(f.String(), "^&~")
-		if stripped == "" {
+		if isFieldEffectivelyEmpty(f) {
 			errs = append(errs, ValidationError{
 				Path: path, Message: "required field must be non-empty", Code: "HL7_REQUIRED",
 			})
 		}
 	}
+	// Empty rpt means "unspecified" (do not enforce repetition limits).
 	maxRep := parseRptMax(fdef.Rpt)
-	if maxRep > 0 && len(f.Repetitions) > maxRep {
+	if strings.TrimSpace(fdef.Rpt) != "" && maxRep > 0 && len(f.Repetitions) > maxRep {
 		errs = append(errs, ValidationError{
 			Path: path, Message: fmt.Sprintf("field has %d repetitions, max allowed is %s", len(f.Repetitions), fdef.Rpt), Code: "HL7_REPETITION_VIOLATION",
 		})

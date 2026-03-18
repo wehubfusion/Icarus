@@ -141,6 +141,11 @@ func matchSegments(msg *Message, msgIdx int, schemaSegs []HL7SegmentDef, result 
 		def := &schemaSegs[si]
 		if def.IsGroup {
 			maxRep := parseRptMax(def.Rpt)
+			if trim(def.Rpt) == "" {
+				maxRep = 1 << 30
+			} else if maxRep == 0 {
+				maxRep = 1
+			}
 			rep := 0
 			nested := derefSegmentDefs(def.Segments)
 			// Pre-compute which segment names can legitimately open this group so we do not
@@ -265,9 +270,14 @@ func parseRptMax(rpt string) int {
 }
 
 func segmentRep(usage, rpt string) (min, max int) {
-	max = parseRptMax(rpt)
-	if max == 0 {
-		max = 1
+	// Empty rpt means "unspecified" (no max constraint).
+	if trim(rpt) == "" {
+		max = 1 << 30
+	} else {
+		max = parseRptMax(rpt)
+		if max == 0 {
+			max = 1
+		}
 	}
 	if isRequired(usage) {
 		min = 1
