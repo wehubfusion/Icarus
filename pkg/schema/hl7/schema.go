@@ -106,9 +106,6 @@ func (h *HL7Schema) Validate() error {
 	if len(h.Segments) == 0 {
 		return fmt.Errorf("HL7 definition 'segments' must contain at least one segment")
 	}
-	if err := checkDuplicateTopLevelNames(h.Segments, "segments"); err != nil {
-		return err
-	}
 	for i := range h.Segments {
 		if err := h.validateSegment(&h.Segments[i], 0, fmt.Sprintf("segments[%d]", i)); err != nil {
 			return err
@@ -133,9 +130,6 @@ func (h *HL7Schema) validateSegment(seg *HL7SegmentDef, depth int, path string) 
 	if seg.IsGroup {
 		if len(seg.Segments) == 0 {
 			return fmt.Errorf("%s: group segment must have non-empty 'segments'", path)
-		}
-		if err := checkDuplicateSegmentNames(seg.Segments, path+".segments"); err != nil {
-			return err
 		}
 		for i, sub := range seg.Segments {
 			if sub == nil {
