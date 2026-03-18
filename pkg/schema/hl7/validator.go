@@ -109,7 +109,6 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 			})
 		}
 	}
-	// Empty rpt means "unspecified" (do not enforce repetition limits).
 	maxRep := parseRptMax(fdef.Rpt)
 	if strings.TrimSpace(fdef.Rpt) != "" && maxRep > 0 && len(f.Repetitions) > maxRep {
 		errs = append(errs, ValidationError{

@@ -114,27 +114,7 @@ func MatchMessage(msg *Message, compiled *CompiledHL7Schema) MatchResult {
 	return result
 }
 
-// matchSegments is the recursive core of the matcher.
-//
-// depth == 0  — processing top-level (direct schema children).
-// depth  > 0  — inside at least one group.
-//
-// Two mechanisms work together to handle "multiple OBX positions in the same schema":
-//
-//  1. can-start guard (groups): before each group iteration attempt, verify that the current
-//     message segment is a valid opening segment for the group.  This prevents a later,
-//     unrelated segment from accidentally starting a new group iteration (e.g. an OBX that
-//     cannot open ORDER because ORDER requires ORC first).
-//
-//  2. reserve (leaf segments): before consuming a leaf, count how many occurrences of its
-//     name are still needed by later siblings in the same schema list and hold that many
-//     back.  This lets a standalone ORC (rpt:*) leave one ORC for a following required
-//     ORDER group.
-//
-//  3. depth-gated excess detection: HL7_REPETITION_VIOLATION is emitted only at depth == 0
-//     (top-level excess).  Inside a group the parent's iteration loop absorbs additional
-//     occurrences through repeated iterations, so consuming them here would produce a false
-//     violation and prevent those extra iterations.
+// matchSegments matches a message segment stream to a schema segment list.
 func matchSegments(msg *Message, msgIdx int, schemaSegs []HL7SegmentDef, result *MatchResult, depth int) (int, []ValidationError) {
 	var errs []ValidationError
 	for si := range schemaSegs {
@@ -148,12 +128,8 @@ func matchSegments(msg *Message, msgIdx int, schemaSegs []HL7SegmentDef, result 
 			}
 			rep := 0
 			nested := derefSegmentDefs(def.Segments)
-			// Pre-compute which segment names can legitimately open this group so we do not
-			// accidentally start a new iteration with a segment that belongs to a later schema
-			// node (e.g. OBX that cannot open ORDER_OBSERVATION because OBR is required first).
 			canStart := computeGroupStart(nested)
 			for rep < maxRep {
-				// Only attempt an iteration when the current segment can open the group.
 				if msgIdx < len(msg.Segments) && !canStart[msg.Segments[msgIdx].Name] {
 					break
 				}
@@ -184,17 +160,13 @@ func matchSegments(msg *Message, msgIdx int, schemaSegs []HL7SegmentDef, result 
 
 		minRep, maxRep := segmentRep(def.Usage, def.Rpt)
 
-		// Count how many consecutive occurrences of this segment are available in the message.
 		available := 0
 		for tmpIdx := msgIdx; tmpIdx < len(msg.Segments) && msg.Segments[tmpIdx].Name == def.Name; tmpIdx++ {
 			available++
 		}
 
-		// Compute how many occurrences to reserve for later siblings in this schema list.
 		reserve := computeReserve(schemaSegs[si+1:], def.Name)
 
-		// The number we may actually consume here: at most (available − reserve), further
-		// capped by the schema's rpt maximum.
 		canConsume := available - reserve
 		if canConsume < 0 {
 			canConsume = 0
@@ -221,16 +193,6 @@ func matchSegments(msg *Message, msgIdx int, schemaSegs []HL7SegmentDef, result 
 			})
 		}
 
-		// Excess detection: only emitted at the top level (depth == 0).
-		//
-		// Inside a group (depth > 0) any extra same-name segments are deliberately left in
-		// the message stream so the parent group's iteration loop can pick them up in the
-		// next iteration — that is what makes OBSERVATION (rpt:*) / OBX (rpt:1) work for
-		// 48 consecutive OBX segments.
-		//
-		// At depth == 0 we know there is no outer group to absorb them, so we consume the
-		// true excess and emit HL7_REPETITION_VIOLATION.  "True excess" excludes the
-		// `reserve` occurrences that will be legitimately consumed by later schema siblings.
 		if depth == 0 {
 			uncaptured := available - consumed
 			trueExcess := uncaptured - reserve
