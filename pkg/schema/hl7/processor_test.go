@@ -122,7 +122,7 @@ func TestValidateMatchResult_RequiredField(t *testing.T) {
 	// Message with empty PID-3 (required)
 	msg, _ := ParseMessage([]byte("MSH|^~\\&|A|B|C|D|20250101120000||ADT^A01|1|P|2.5\rPID||||DOE^JOHN"))
 	match := MatchMessage(msg, compiled)
-	errs := ValidateMatchResult(match, msg, true, false, nil)
+	errs := ValidateMatchResult(match, msg, true, nil)
 	var found bool
 	for _, e := range errs {
 		if e.Code == "HL7_REQUIRED" && e.Path == "PID-3" {
@@ -184,7 +184,7 @@ func TestHL7SchemaProcessor_Process_ValidMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5\rPID|||12345^^^NHS^NH||DOE^JOHN"
-	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{StrictValidation: true, CollectAllErrors: true, AllowExtraFields: true})
+	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{Mode: contracts.ValidationModeNormal, CollectAllErrors: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -215,12 +215,12 @@ func TestHL7StrictValidation_ExtraField(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ORU^R01|MSG001|P|2.5|EXTRA"
-	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{StrictValidation: false, CollectAllErrors: true})
+	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{Mode: contracts.ValidationModeStrict, CollectAllErrors: true})
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
 	var hasExtraField bool
-	for _, e := range result.Infos {
+	for _, e := range result.Errors {
 		if e.Code == "HL7_EXTRA_FIELD" {
 			hasExtraField = true
 			break

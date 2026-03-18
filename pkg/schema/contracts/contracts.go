@@ -36,7 +36,7 @@ type ValidationIssue struct {
 	Message string `json:"message"`
 	Code    string `json:"code"`
 	// Severity defaults to ERROR for backward compatibility when omitted by processors.
-	Severity Severity `json:"severity,omitempty"`
+	Severity Severity `json:"severity"`
 }
 
 // ValidationError is preserved for backward compatibility (all previous findings were treated as errors).
@@ -78,7 +78,6 @@ type ProcessOptions struct {
 	StrictValidation bool
 	Mode             ValidationMode
 	CollectAllErrors bool
-	AllowExtraFields bool
 }
 
 // ProcessResult contains the result of schema processing

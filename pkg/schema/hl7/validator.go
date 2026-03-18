@@ -10,7 +10,7 @@ import (
 )
 
 // ValidateMatchResult runs field-level validation on matched segments.
-func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool, allowExtraFields bool, reg *datatypes.Registry) []ValidationError {
+func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool, reg *datatypes.Registry) []ValidationError {
 	var errs []ValidationError
 	version := ""
 	if msg != nil {
@@ -22,7 +22,7 @@ func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool, allow
 		}
 		for fi := range m.SchemaDef.Fields {
 			fdef := &m.SchemaDef.Fields[fi]
-			fieldErrs := validateField(m.Segment, fdef, m.Segment.Name, msg, allowExtraFields, reg, version)
+			fieldErrs := validateField(m.Segment, fdef, m.Segment.Name, msg, reg, version)
 			for _, e := range fieldErrs {
 				errs = append(errs, e)
 				if !collectAll {
@@ -30,30 +30,42 @@ func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool, allow
 				}
 			}
 		}
-		if !allowExtraFields {
-			maxFieldNum := 0
-			for _, fdef := range m.SchemaDef.Fields {
-				n := parseFieldNumberFromPosition(fdef.Position)
-				if n > maxFieldNum {
-					maxFieldNum = n
-				}
+		maxFieldNum := 0
+		for _, fdef := range m.SchemaDef.Fields {
+			n := parseFieldNumberFromPosition(fdef.Position)
+			if n > maxFieldNum {
+				maxFieldNum = n
 			}
-			for fn := maxFieldNum + 1; fn <= len(m.Segment.Fields); fn++ {
-				errs = append(errs, ValidationError{
-					Path:    fmt.Sprintf("%s-%d", m.Segment.Name, fn),
-					Message: "segment has more fields than schema allows",
-					Code:    "HL7_EXTRA_FIELD",
-				})
-				if !collectAll {
-					return errs
-				}
+		}
+		for fn := maxFieldNum + 1; fn <= len(m.Segment.Fields); fn++ {
+			f, ok := m.Segment.FieldAt(fn)
+			if !ok || isFieldEffectivelyEmpty(f) {
+				continue
+			}
+			errs = append(errs, ValidationError{
+				Path:    fmt.Sprintf("%s-%d", m.Segment.Name, fn),
+				Message: "segment has more fields than schema allows",
+				Code:    "HL7_EXTRA_FIELD",
+			})
+			if !collectAll {
+				return errs
 			}
 		}
 	}
 	return errs
 }
 
-func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message, allowExtraFields bool, reg *datatypes.Registry, version string) []ValidationError {
+func isFieldEffectivelyEmpty(f Field) bool {
+	for _, rep := range f.Repetitions {
+		// Treat fields that only contain delimiters as empty (e.g. "^^" or "&").
+		if strings.TrimLeft(rep.String(), "^&") != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message, reg *datatypes.Registry, version string) []ValidationError {
 	var errs []ValidationError
 	fieldNum := parseFieldNumberFromPosition(fdef.Position)
 	if fieldNum <= 0 {
@@ -122,7 +134,7 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 		if len(f.Repetitions) > 1 {
 			repPath = fmt.Sprintf("%s(%d)", path, ri+1)
 		}
-		errs = append(errs, validateDataType(effectiveType, rep, repPath, fdef.Length, msg, reg, version, allowExtraFields)...)
+		errs = append(errs, validateDataType(effectiveType, rep, repPath, fdef.Length, msg, reg, version)...)
 	}
 	return errs
 }

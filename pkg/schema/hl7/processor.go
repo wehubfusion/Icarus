@@ -2,6 +2,7 @@ package hl7
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/wehubfusion/Icarus/pkg/schema/contracts"
 	"github.com/wehubfusion/Icarus/pkg/schema/hl7/datatypes"
@@ -9,7 +10,13 @@ import (
 
 func effectiveMode(opts contracts.ProcessOptions) contracts.ValidationMode {
 	if opts.Mode != "" {
-		return opts.Mode
+		m := contracts.ValidationMode(strings.ToUpper(strings.TrimSpace(string(opts.Mode))))
+		switch m {
+		case contracts.ValidationModeStrict, contracts.ValidationModeNormal, contracts.ValidationModeLenient:
+			return m
+		default:
+			return contracts.ValidationModeNormal
+		}
 	}
 	if opts.StrictValidation {
 		return contracts.ValidationModeStrict
@@ -39,7 +46,7 @@ func resolveSeverity(code string, mode contracts.ValidationMode) contracts.Sever
 	case contracts.ValidationModeStrict:
 		switch code {
 		case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
-			return contracts.SeverityWarning
+			return contracts.SeverityError
 		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_NOT_USED", "HL7_LENGTH",
 			"HL7_UNEXPECTED_SEGMENT":
 			return contracts.SeverityError
@@ -162,7 +169,7 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 			return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
 		}
 	}
-	fieldErrs := ValidateMatchResult(match, msg, opts.CollectAllErrors, opts.AllowExtraFields, c.Registry)
+	fieldErrs := ValidateMatchResult(match, msg, true, c.Registry)
 	for _, e := range fieldErrs {
 		sev := bucketize(&all, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code}, mode)
 		if !opts.CollectAllErrors && sev == contracts.SeverityError {

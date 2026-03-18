@@ -1602,7 +1602,7 @@ result, err := engine.ProcessHL7WithSchema(
     []byte(hl7SchemaJSON),// HL7 schema definition (JSON)
     schema.ProcessOptions{
         CollectAllErrors: true,
-        AllowExtraFields: false,
+        Mode:             schema.ValidationModeNormal,
     },
 )
 

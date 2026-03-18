@@ -43,7 +43,7 @@ Primitive types validated include: ST, TX, FT, NM, SI, SN, DT, TM, DTM/TS, IS, a
 - **Match**: Segment order and presence; required segments; repetition limits; unexpected segments.
 - **Message type / version**: If schema sets `messageType` or `version`, MSH-9 and MSH-12 are checked.
 - **Fields**: Required/missing, R non-empty, X not present, repetitions within `rpt`, length, datatype (including VARIES).
-- **Components**: Required/missing, length, datatype; extra components reported unless `AllowExtraFields` is set.
+- **Components**: Required/missing, length, datatype; extra fields/components/subcomponents are always detected and severity depends on `Mode`.
 
 ## Error codes
 
@@ -59,18 +59,19 @@ Primitive types validated include: ST, TX, FT, NM, SI, SN, DT, TM, DTM/TS, IS, a
 | HL7_NOT_USED | Field present but usage is X |
 | HL7_REPETITION_VIOLATION | Repetitions exceed rpt |
 | HL7_LENGTH | Value length exceeds schema length |
-| HL7_EXTRA_FIELD | Segment has more fields than schema (suppress with AllowExtraFields) |
-| HL7_EXTRA_COMPONENT | Field has more components than schema (suppress with AllowExtraFields) |
+| HL7_EXTRA_FIELD | Segment has more fields than schema |
+| HL7_EXTRA_COMPONENT | Field has more components than datatype definition allows |
+| HL7_EXTRA_SUBCOMPONENT | Component has more subcomponents than datatype definition allows |
 
 ## ProcessOptions
 
 - **CollectAllErrors**: If true, collect all validation errors; otherwise stop after the first.
-- **StrictValidation**: If true, return a non-nil error when validation fails.
-- **AllowExtraFields**: If true, do not report HL7_EXTRA_FIELD or HL7_EXTRA_COMPONENT.
+- **StrictValidation**: Deprecated alias for `Mode=STRICT`.
+- **Mode**: `STRICT`, `NORMAL`, or `LENIENT` (controls severity bucketing).
 
-## VARIES and extensibility
+## VARIES
 
-VARIES fields (e.g. OBX-5) get their effective type from a `VariesResolver`. OBX-5 is registered to use OBX-2 of the same segment. Custom resolvers can be registered with `RegisterVariesResolver(segment, field, resolver)`.
+`VARIES` resolution is intentionally disabled for now; `VARIES` falls back to validating as `ST`.
 
 ## Usage
 
@@ -80,7 +81,7 @@ Use the schema engine for the unified API:
 engine := schema.NewEngine()
 result, err := engine.ProcessHL7WithSchema(rawMessage, schemaDef, schema.ProcessOptions{
     CollectAllErrors: true,
-    AllowExtraFields: true,
+    Mode: schema.ValidationModeNormal,
 })
 // result.Data is the original rawMessage
 ```
@@ -91,7 +92,7 @@ Or use this package directly:
 msg, err := hl7.ParseMessage(raw)
 compiled, _ := hl7.ParseHL7Schema(schemaDef)
 match := hl7.MatchMessage(msg, compiled)
-errs := hl7.ValidateMatchResult(match, msg, true, false)
+errs := hl7.ValidateMatchResult(match, msg, true, nil)
 ```
 
 ## Files

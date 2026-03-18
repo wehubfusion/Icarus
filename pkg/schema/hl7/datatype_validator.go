@@ -23,7 +23,7 @@ type leafDef struct {
 	Length   int
 }
 
-func validateDataType(typeID string, rep Repetition, path string, length int, msg *Message, reg *datatypes.Registry, version string, allowExtraFields bool) []ValidationError {
+func validateDataType(typeID string, rep Repetition, path string, length int, msg *Message, reg *datatypes.Registry, version string) []ValidationError {
 	tid := strings.ToUpper(strings.TrimSpace(typeID))
 	if tid == "" {
 		tid = "ST"
@@ -49,8 +49,15 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 
 	// Composite at field level: each component is separated by the component delimiter (^).
 	var errs []ValidationError
-	if !allowExtraFields && len(rep.Components) > len(def.Components) {
+	if len(rep.Components) > len(def.Components) {
 		for compNum := len(def.Components) + 1; compNum <= len(rep.Components); compNum++ {
+			c, ok := rep.ComponentAt(compNum)
+			if !ok {
+				continue
+			}
+			if strings.TrimLeft(componentStringWithDelimiters(c, msg), "&") == "" {
+				continue
+			}
 			errs = append(errs, ValidationError{
 				Path: fmt.Sprintf("%s.%d", path, compNum), Message: "field has more components than datatype definition allows", Code: "HL7_EXTRA_COMPONENT",
 			})
@@ -79,13 +86,16 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 		childDef, childIsComposite := reg.Lookup(version, childType)
 		if childIsComposite && childDef != nil && childDef.IsComposite {
 			leaves := flattenLeaves(childType, reg, version, map[string]bool{})
-			errs = append(errs, validateLeavesAgainstSubcomponents(leaves, c, cPath, allowExtraFields)...)
+			errs = append(errs, validateLeavesAgainstSubcomponents(leaves, c, cPath)...)
 			continue
 		}
 
 		// Primitive component: validate as scalar. Extra subcomponents are reported when strict.
-		if !allowExtraFields && len(c.Subcomponents) > 1 {
+		if len(c.Subcomponents) > 1 {
 			for subNum := 2; subNum <= len(c.Subcomponents); subNum++ {
+				if strings.TrimSpace(c.Subcomponents[subNum-1].Value) == "" {
+					continue
+				}
 				errs = append(errs, ValidationError{
 					Path: fmt.Sprintf("%s.%d", cPath, subNum), Message: "component has more subcomponents than datatype definition allows", Code: "HL7_EXTRA_SUBCOMPONENT",
 				})
@@ -98,7 +108,7 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 	return errs
 }
 
-func validateComponentLeaf(typeID string, c Component, path string, length int, msg *Message, reg *datatypes.Registry, version string, allowExtraFields bool) []ValidationError {
+func validateComponentLeaf(typeID string, c Component, path string, length int, msg *Message, reg *datatypes.Registry, version string) []ValidationError {
 	tid := strings.ToUpper(strings.TrimSpace(typeID))
 	if tid == "" {
 		tid = "ST"
@@ -119,7 +129,7 @@ func validateComponentLeaf(typeID string, c Component, path string, length int, 
 	}
 
 	leaves := flattenLeaves(tid, reg, version, map[string]bool{})
-	return validateLeavesAgainstSubcomponents(leaves, c, path, allowExtraFields)
+	return validateLeavesAgainstSubcomponents(leaves, c, path)
 }
 
 func flattenLeaves(typeID string, reg *datatypes.Registry, version string, visiting map[string]bool) []leafDef {
@@ -154,14 +164,17 @@ func flattenLeaves(typeID string, reg *datatypes.Registry, version string, visit
 	return leaves
 }
 
-func validateLeavesAgainstSubcomponents(leaves []leafDef, c Component, path string, allowExtraFields bool) []ValidationError {
+func validateLeavesAgainstSubcomponents(leaves []leafDef, c Component, path string) []ValidationError {
 	var errs []ValidationError
 	if len(leaves) == 0 {
 		return errs
 	}
 
-	if !allowExtraFields && len(c.Subcomponents) > len(leaves) {
+	if len(c.Subcomponents) > len(leaves) {
 		for subNum := len(leaves) + 1; subNum <= len(c.Subcomponents); subNum++ {
+			if strings.TrimSpace(c.Subcomponents[subNum-1].Value) == "" {
+				continue
+			}
 			errs = append(errs, ValidationError{
 				Path: fmt.Sprintf("%s.%d", path, subNum), Message: "component has more subcomponents than datatype definition allows", Code: "HL7_EXTRA_SUBCOMPONENT",
 			})

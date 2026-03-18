@@ -43,7 +43,7 @@ result, err := engine.ProcessHL7WithSchema(hl7MessageBytes, hl7SchemaDef, option
 | StructureData | ✓ | ✓ | — |
 | StrictValidation | ✓ | ✓ | ✓ |
 | CollectAllErrors | ✓ | ✓ | ✓ |
-| AllowExtraFields | — | — | ✓ (suppress extra field/component errors) |
+| Mode | — | — | ✓ (STRICT/NORMAL/LENIENT; controls severity) |
 
 ## ProcessResult
 
