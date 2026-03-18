@@ -2247,7 +2247,7 @@ func TestProcessHL7WithSchema_ValidMessage(t *testing.T) {
 	result, err := engine.ProcessHL7WithSchema(
 		[]byte(msg),
 		[]byte(hl7Schema),
-		schema.ProcessOptions{StrictValidation: true, CollectAllErrors: true, AllowExtraFields: true},
+		schema.ProcessOptions{Mode: schema.ValidationModeNormal, CollectAllErrors: true},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2323,7 +2323,7 @@ func TestEngine_ProcessWithFormatHL7(t *testing.T) {
 		[]byte(msg),
 		[]byte(hl7Schema),
 		schema.FormatHL7,
-		schema.ProcessOptions{CollectAllErrors: true, AllowExtraFields: true},
+		schema.ProcessOptions{CollectAllErrors: true},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2331,4 +2331,124 @@ func TestEngine_ProcessWithFormatHL7(t *testing.T) {
 	if !result.Valid {
 		t.Errorf("expected valid: %v", result.Errors)
 	}
+}
+
+func TestProcessHL7WithSchema_ModeBucketing(t *testing.T) {
+	hl7Schema := `{
+		"messageType": "ADT_A01",
+		"version": "2.8",
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": [
+				{"position": "MSH.1", "dataType": "ST", "usage": "R", "rpt": "1"},
+				{"position": "MSH.2", "dataType": "ST", "usage": "R", "rpt": "1"},
+				{"position": "MSH.9", "dataType": "MSG", "usage": "R", "rpt": "1"},
+				{"position": "MSH.12", "dataType": "ST", "usage": "R", "rpt": "1"}
+			]},
+			{"name": "PID", "usage": "R", "rpt": "1", "fields": [
+				{"position": "PID.3", "dataType": "CX", "usage": "R", "rpt": "1"}
+			]}
+		]
+	}`
+
+	// 1) Version mismatch: MSH-12 says 2.5 but schema says 2.8.
+	msgVersionMismatch := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5\rPID|||12345^^^NHS^NH"
+	// 2) Extra field: PID-4 is present and non-empty (beyond schema).
+	msgExtraField := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.8\rPID|||12345^^^NHS^NH|EXTRA"
+
+	engine := schema.NewEngine()
+
+	t.Run("VersionMismatch_STRICT_isError", func(t *testing.T) {
+		res, err := engine.ProcessHL7WithSchema([]byte(msgVersionMismatch), []byte(hl7Schema), schema.ProcessOptions{
+			CollectAllErrors: true,
+			Mode:             schema.ValidationModeStrict,
+		})
+		if err == nil {
+			t.Fatalf("expected non-nil err in STRICT for version mismatch")
+		}
+		var found bool
+		for _, e := range res.Errors {
+			if e.Code == "HL7_VERSION_MISMATCH" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected HL7_VERSION_MISMATCH in Errors; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
+		}
+	})
+
+	t.Run("VersionMismatch_NORMAL_isWarning", func(t *testing.T) {
+		res, err := engine.ProcessHL7WithSchema([]byte(msgVersionMismatch), []byte(hl7Schema), schema.ProcessOptions{
+			CollectAllErrors: true,
+			Mode:             schema.ValidationModeNormal,
+		})
+		if err != nil {
+			t.Fatalf("did not expect err in NORMAL; err=%v", err)
+		}
+		var found bool
+		for _, e := range res.Warnings {
+			if e.Code == "HL7_VERSION_MISMATCH" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected HL7_VERSION_MISMATCH in Warnings; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
+		}
+	})
+
+	t.Run("ExtraField_STRICT_isError", func(t *testing.T) {
+		res, err := engine.ProcessHL7WithSchema([]byte(msgExtraField), []byte(hl7Schema), schema.ProcessOptions{
+			CollectAllErrors: true,
+			Mode:             schema.ValidationModeStrict,
+		})
+		if err == nil {
+			t.Fatalf("expected non-nil err in STRICT for extra field")
+		}
+		var found bool
+		for _, e := range res.Errors {
+			if e.Code == "HL7_EXTRA_FIELD" && e.Path == "PID-4" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected HL7_EXTRA_FIELD PID-4 in Errors; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
+		}
+	})
+
+	t.Run("ExtraField_NORMAL_isInfo", func(t *testing.T) {
+		res, err := engine.ProcessHL7WithSchema([]byte(msgExtraField), []byte(hl7Schema), schema.ProcessOptions{
+			CollectAllErrors: true,
+			Mode:             schema.ValidationModeNormal,
+		})
+		if err != nil {
+			t.Fatalf("did not expect err in NORMAL; err=%v", err)
+		}
+		var found bool
+		for _, e := range res.Infos {
+			if e.Code == "HL7_EXTRA_FIELD" && e.Path == "PID-4" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected HL7_EXTRA_FIELD PID-4 in Infos; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
+		}
+	})
+
+	t.Run("ExtraField_LENIENT_isInfo", func(t *testing.T) {
+		res, err := engine.ProcessHL7WithSchema([]byte(msgExtraField), []byte(hl7Schema), schema.ProcessOptions{
+			CollectAllErrors: true,
+			Mode:             schema.ValidationModeLenient,
+		})
+		if err != nil {
+			t.Fatalf("did not expect err in LENIENT; err=%v", err)
+		}
+		var found bool
+		for _, e := range res.Infos {
+			if e.Code == "HL7_EXTRA_FIELD" && e.Path == "PID-4" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected HL7_EXTRA_FIELD PID-4 in Infos; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
+		}
+	})
 }

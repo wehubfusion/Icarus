@@ -132,8 +132,15 @@ func TestValidateHL7Only_InvalidMessage_RequiredFieldEmpty(t *testing.T) {
 	if !result.Valid {
 		t.Errorf("expected valid=true (warning only), got false; errors=%v warnings=%v infos=%v", result.Errors, result.Warnings, result.Infos)
 	}
-	if !issuesHasCodeWithPath(allIssuesVR(result), "HL7_REQUIRED", "PID-3") {
-		t.Errorf("expected HL7_REQUIRED for PID-3, got issues: %v", allIssuesVR(result))
+	var found bool
+	for _, e := range append(append(result.Errors, result.Warnings...), result.Infos...) {
+		if e.Code == "HL7_REQUIRED" && e.Path == "PID-3" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected HL7_REQUIRED for PID-3, got issues: %v", append(append(result.Errors, result.Warnings...), result.Infos...))
 	}
 }
 
