@@ -46,7 +46,7 @@ func resolveSeverity(code string, mode contracts.ValidationMode) contracts.Sever
 	case contracts.ValidationModeStrict:
 		switch code {
 		case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
-			return contracts.SeverityError
+			return contracts.SeverityWarning
 		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_NOT_USED", "HL7_LENGTH",
 			"HL7_UNEXPECTED_SEGMENT":
 			return contracts.SeverityError

@@ -82,9 +82,9 @@ This is the authoritative mapping implemented in `processor.go`.
 | HL7_NOT_USED | ERROR | WARNING | WARNING |
 | HL7_LENGTH | ERROR | WARNING | INFO |
 | HL7_UNEXPECTED_SEGMENT | ERROR | WARNING | INFO |
-| HL7_EXTRA_FIELD | ERROR | INFO | INFO |
-| HL7_EXTRA_COMPONENT | ERROR | INFO | INFO |
-| HL7_EXTRA_SUBCOMPONENT | ERROR | INFO | INFO |
+| HL7_EXTRA_FIELD | WARNING | INFO | INFO |
+| HL7_EXTRA_COMPONENT | WARNING | INFO | INFO |
+| HL7_EXTRA_SUBCOMPONENT | WARNING | INFO | INFO |
 
 ## ProcessOptions
 
@@ -128,5 +128,4 @@ errs := hl7.ValidateMatchResult(match, msg, true, nil)
 | `types.go`     | Delimiters, Segment, Field, Component, Message |
 | `matcher.go`   | MatchMessage, segment order and repetition   |
 | `validator.go` | ValidateMessageTypeAndVersion, ValidateMatchResult, datatype checks |
-| `varies.go`    | VariesResolver, OBX-5 resolver registration   |
 | `processor.go` | SchemaProcessor implementation               |

@@ -71,33 +71,6 @@ type HL7FieldDef struct {
 	TableID    *string           `json:"tableId,omitempty"`
 }
 
-func checkDuplicateSegmentNames(segs []*HL7SegmentDef, path string) error {
-	seen := make(map[string]int, len(segs))
-	for i, s := range segs {
-		if s == nil {
-			continue
-		}
-		name := strings.TrimSpace(s.Name)
-		if prev, dup := seen[name]; dup {
-			return fmt.Errorf("%s: duplicate segment name %q at indices [%d] and [%d]", path, name, prev, i)
-		}
-		seen[name] = i
-	}
-	return nil
-}
-
-func checkDuplicateTopLevelNames(segs []HL7SegmentDef, path string) error {
-	seen := make(map[string]int, len(segs))
-	for i, s := range segs {
-		name := strings.TrimSpace(s.Name)
-		if prev, dup := seen[name]; dup {
-			return fmt.Errorf("%s: duplicate segment name %q at indices [%d] and [%d]", path, name, prev, i)
-		}
-		seen[name] = i
-	}
-	return nil
-}
-
 // Validate validates the HL7 schema definition (structural only).
 func (h *HL7Schema) Validate() error {
 	if h.Segments == nil {

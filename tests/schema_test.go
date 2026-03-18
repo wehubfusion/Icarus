@@ -2398,7 +2398,7 @@ func TestProcessHL7WithSchema_ModeBucketing(t *testing.T) {
 		}
 	})
 
-	t.Run("ExtraField_STRICT_isError", func(t *testing.T) {
+	t.Run("ExtraField_STRICT_isWarning", func(t *testing.T) {
 		res, err := engine.ProcessHL7WithSchema([]byte(msgExtraField), []byte(hl7Schema), schema.ProcessOptions{
 			CollectAllErrors: true,
 			Mode:             schema.ValidationModeStrict,
@@ -2406,17 +2406,14 @@ func TestProcessHL7WithSchema_ModeBucketing(t *testing.T) {
 		if err != nil {
 			t.Fatalf("did not expect err when using Mode=STRICT (err is controlled by StrictValidation); err=%v", err)
 		}
-		if res.Valid {
-			t.Fatalf("expected valid=false in STRICT when Errors are present; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
-		}
 		var found bool
-		for _, e := range res.Errors {
+		for _, e := range res.Warnings {
 			if e.Code == "HL7_EXTRA_FIELD" && e.Path == "PID-4" {
 				found = true
 			}
 		}
 		if !found {
-			t.Fatalf("expected HL7_EXTRA_FIELD PID-4 in Errors; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
+			t.Fatalf("expected HL7_EXTRA_FIELD PID-4 in Warnings; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
 		}
 	})
 
