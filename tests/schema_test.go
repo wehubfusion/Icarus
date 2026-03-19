@@ -8,6 +8,15 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/schema"
 )
 
+// ptrBool returns a pointer to b (for schema *bool fields).
+func ptrBool(b bool) *bool { return &b }
+
+// ptrFloat64 returns a pointer to f (for schema *float64 length/count fields).
+func ptrFloat64(f float64) *float64 { return &f }
+
+// ptrString returns a pointer to s (for schema *string pattern/format fields).
+func ptrString(s string) *string { return &s }
+
 // TestSchemaParser tests schema parsing functionality
 func TestSchemaParser(t *testing.T) {
 	t.Run("Parse valid object schema", func(t *testing.T) {
@@ -126,7 +135,7 @@ func TestSchemaValidator(t *testing.T) {
 			Properties: map[string]*schema.Property{
 				"name": {
 					Type:     schema.TypeString,
-					Required: true,
+					Required: ptrBool(true),
 				},
 			},
 		}
@@ -154,17 +163,18 @@ func TestSchemaValidator(t *testing.T) {
 	})
 
 	t.Run("Validate string constraints", func(t *testing.T) {
-		minLen := 3
-		maxLen := 10
+		minLenF := 3.0
+		maxLenF := 10.0
+		pattern := "^[a-z]+$"
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
 				"username": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						MinLength: &minLen,
-						MaxLength: &maxLen,
-						Pattern:   "^[a-z]+$",
+						MinLength: &minLenF,
+						MaxLength: &maxLenF,
+						Pattern:   &pattern,
 					},
 				},
 			},
@@ -242,8 +252,9 @@ func TestSchemaValidator(t *testing.T) {
 	})
 
 	t.Run("Validate array constraints", func(t *testing.T) {
-		minItems := 1
-		maxItems := 5
+		minItemsF := 1.0
+		maxItemsF := 5.0
+		uniqueTrue := true
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
@@ -253,9 +264,9 @@ func TestSchemaValidator(t *testing.T) {
 						Type: schema.TypeString,
 					},
 					Validation: &schema.ValidationRules{
-						MinItems:    &minItems,
-						MaxItems:    &maxItems,
-						UniqueItems: true,
+						MinItems:    &minItemsF,
+						MaxItems:    &maxItemsF,
+						UniqueItems: &uniqueTrue,
 					},
 				},
 			},
@@ -301,19 +312,21 @@ func TestSchemaValidator(t *testing.T) {
 	})
 
 	t.Run("Validate format constraints", func(t *testing.T) {
+		formatEmail := "email"
+		formatURI := "uri"
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
 				"email": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						Format: "email",
+						Format: &formatEmail,
 					},
 				},
 				"website": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						Format: "uri",
+						Format: &formatURI,
 					},
 				},
 			},
@@ -380,7 +393,7 @@ func TestSchemaTransformer(t *testing.T) {
 			Properties: map[string]*schema.Property{
 				"name": {
 					Type:     schema.TypeString,
-					Required: true,
+					Required: ptrBool(true),
 				},
 				"country": {
 					Type:    schema.TypeString,
@@ -1022,7 +1035,7 @@ func TestSchemaFormats(t *testing.T) {
 				"email": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						Format: "email",
+						Format: ptrString("email"),
 					},
 				},
 			},
@@ -1067,7 +1080,7 @@ func TestSchemaFormats(t *testing.T) {
 				"id": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						Format: "uuid",
+						Format: ptrString("uuid"),
 					},
 				},
 			},
@@ -1110,7 +1123,7 @@ func TestSchemaFormats(t *testing.T) {
 				"birthdate": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						Format: "date",
+						Format: ptrString("date"),
 					},
 				},
 			},
@@ -1151,7 +1164,7 @@ func TestSchemaFormats(t *testing.T) {
 				"phone": {
 					Type: schema.TypeString,
 					Validation: &schema.ValidationRules{
-						Format: "phone",
+						Format: ptrString("phone"),
 					},
 				},
 			},
@@ -1398,7 +1411,7 @@ func TestSchemaByteType(t *testing.T) {
 			Properties: map[string]*schema.Property{
 				"result": {
 					Type:     schema.TypeByte,
-					Required: true,
+					Required: ptrBool(true),
 				},
 			},
 		}
@@ -1441,14 +1454,14 @@ func TestSchemaByteType(t *testing.T) {
 	})
 
 	t.Run("Validate BYTE minLength constraint", func(t *testing.T) {
-		minLen := 10
+		minLenF := 10.0
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
 				"result": {
 					Type: schema.TypeByte,
 					Validation: &schema.ValidationRules{
-						MinLength: &minLen,
+						MinLength: &minLenF,
 					},
 				},
 			},
@@ -1476,14 +1489,14 @@ func TestSchemaByteType(t *testing.T) {
 	})
 
 	t.Run("Validate BYTE maxLength constraint", func(t *testing.T) {
-		maxLen := 5
+		maxLenF := 5.0
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
 				"result": {
 					Type: schema.TypeByte,
 					Validation: &schema.ValidationRules{
-						MaxLength: &maxLen,
+						MaxLength: &maxLenF,
 					},
 				},
 			},
@@ -1511,16 +1524,16 @@ func TestSchemaByteType(t *testing.T) {
 	})
 
 	t.Run("Validate BYTE with both min and max length", func(t *testing.T) {
-		minLen := 5
-		maxLen := 20
+		minLenF := 5.0
+		maxLenF := 20.0
 		schemaObj := &schema.Schema{
 			Type: schema.TypeObject,
 			Properties: map[string]*schema.Property{
 				"thumbnail": {
 					Type: schema.TypeByte,
 					Validation: &schema.ValidationRules{
-						MinLength: &minLen,
-						MaxLength: &maxLen,
+						MinLength: &minLenF,
+						MaxLength: &maxLenF,
 					},
 				},
 			},
@@ -1610,10 +1623,10 @@ func TestSchemaByteType(t *testing.T) {
 			t.Fatal("Expected validation rules")
 		}
 		if *fileProp.Validation.MinLength != 100 {
-			t.Errorf("Expected minLength 100, got: %d", *fileProp.Validation.MinLength)
+			t.Errorf("Expected minLength 100, got: %g", *fileProp.Validation.MinLength)
 		}
 		if *fileProp.Validation.MaxLength != 1048576 {
-			t.Errorf("Expected maxLength 1048576, got: %d", *fileProp.Validation.MaxLength)
+			t.Errorf("Expected maxLength 1048576, got: %g", *fileProp.Validation.MaxLength)
 		}
 	})
 
@@ -2061,8 +2074,13 @@ func TestSchemaParser_UUIDTypeWithPrefix(t *testing.T) {
 	if result.Properties["fullUrl"].Type != schema.TypeUUID {
 		t.Errorf("Expected type UUID, got: %s", result.Properties["fullUrl"].Type)
 	}
-	if result.Properties["fullUrl"].Prefix != "urn:uuid:" {
-		t.Errorf("Expected prefix urn:uuid:, got: %q", result.Properties["fullUrl"].Prefix)
+	prefix := result.Properties["fullUrl"].Prefix
+	if prefix == nil || *prefix != "urn:uuid:" {
+		got := "<nil>"
+		if prefix != nil {
+			got = *prefix
+		}
+		t.Errorf("Expected prefix urn:uuid:, got: %q", got)
 	}
 }
 
@@ -2211,4 +2229,229 @@ func TestProcessWithSchema_UUIDValidationWrongPrefix(t *testing.T) {
 	if result.Valid {
 		t.Fatal("Expected invalid result")
 	}
+}
+
+func TestProcessHL7WithSchema_ValidMessage(t *testing.T) {
+	hl7Schema := `{
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": [
+				{"position": "MSH-9", "dataType": "ST", "usage": "R"}
+			]},
+			{"name": "PID", "usage": "R", "rpt": "1", "fields": [
+				{"position": "PID-3", "dataType": "CX", "usage": "R"}
+			]}
+		]
+	}`
+	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5\rPID|||12345^^^NHS^NH||DOE^JOHN"
+	engine := schema.NewEngine()
+	result, err := engine.ProcessHL7WithSchema(
+		[]byte(msg),
+		[]byte(hl7Schema),
+		schema.ProcessOptions{Mode: schema.ValidationModeNormal, CollectAllErrors: true},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Errorf("expected valid result, got errors: %v", result.Errors)
+	}
+}
+
+func TestProcessHL7WithSchema_InvalidMSH(t *testing.T) {
+	hl7Schema := `{"segments": [{"name": "MSH", "usage": "R", "rpt": "1", "fields": []}]}`
+	engine := schema.NewEngine()
+	result, err := engine.ProcessHL7WithSchema(
+		[]byte("PID|||123"),
+		[]byte(hl7Schema),
+		schema.ProcessOptions{CollectAllErrors: true},
+	)
+	if err != nil {
+		t.Fatalf("process should return result and nil error for parse failure: %v", err)
+	}
+	if result.Valid {
+		t.Fatal("expected invalid result for non-MSH message")
+	}
+	var hasCode bool
+	for _, e := range result.Errors {
+		if e.Code == "HL7_INVALID_MSH" {
+			hasCode = true
+			break
+		}
+	}
+	if !hasCode {
+		t.Errorf("expected HL7_INVALID_MSH in errors: %v", result.Errors)
+	}
+}
+
+func TestProcessHL7WithSchema_MissingRequiredSegment(t *testing.T) {
+	hl7Schema := `{
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": []},
+			{"name": "PID", "usage": "R", "rpt": "1", "fields": []}
+		]
+	}`
+	msg := "MSH|^~\\&|A|B|C|D|20250101120000||ADT^A01|1|P|2.5"
+	engine := schema.NewEngine()
+	result, err := engine.ProcessHL7WithSchema(
+		[]byte(msg),
+		[]byte(hl7Schema),
+		schema.ProcessOptions{CollectAllErrors: true},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Valid {
+		t.Fatal("expected invalid result when PID required but missing")
+	}
+	var found bool
+	for _, e := range result.Errors {
+		if e.Code == "HL7_MISSING_REQUIRED" && e.Path == "PID" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected HL7_MISSING_REQUIRED for PID: %v", result.Errors)
+	}
+}
+
+func TestEngine_ProcessWithFormatHL7(t *testing.T) {
+	hl7Schema := `{"segments": [{"name": "MSH", "usage": "R", "rpt": "1", "fields": []}]}`
+	msg := "MSH|^~\\&|A|B|C|D|20250101120000||ADT^A01|1|P|2.5"
+	engine := schema.NewEngine()
+	result, err := engine.Process(
+		[]byte(msg),
+		[]byte(hl7Schema),
+		schema.FormatHL7,
+		schema.ProcessOptions{CollectAllErrors: true},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Valid {
+		t.Errorf("expected valid: %v", result.Errors)
+	}
+}
+
+func TestProcessHL7WithSchema_ModeBucketing(t *testing.T) {
+	hl7Schema := `{
+		"messageType": "ADT_A01",
+		"version": "2.8",
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": [
+				{"position": "MSH.1", "dataType": "ST", "usage": "R", "rpt": "1"},
+				{"position": "MSH.2", "dataType": "ST", "usage": "R", "rpt": "1"},
+				{"position": "MSH.9", "dataType": "MSG", "usage": "R", "rpt": "1"},
+				{"position": "MSH.12", "dataType": "ST", "usage": "R", "rpt": "1"}
+			]},
+			{"name": "PID", "usage": "R", "rpt": "1", "fields": [
+				{"position": "PID.3", "dataType": "CX", "usage": "R", "rpt": "1"}
+			]}
+		]
+	}`
+
+	// 1) Version mismatch: MSH-12 says 2.5 but schema says 2.8.
+	msgVersionMismatch := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5\rPID|||12345^^^NHS^NH"
+	// 2) Extra field: PID-4 is present and non-empty (beyond schema).
+	msgExtraField := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.8\rPID|||12345^^^NHS^NH|EXTRA"
+
+	engine := schema.NewEngine()
+
+	t.Run("VersionMismatch_STRICT_isError", func(t *testing.T) {
+		res, err := engine.ProcessHL7WithSchema([]byte(msgVersionMismatch), []byte(hl7Schema), schema.ProcessOptions{
+			CollectAllErrors: true,
+			Mode:             schema.ValidationModeStrict,
+		})
+		if err != nil {
+			t.Fatalf("did not expect err when using Mode=STRICT (err is controlled by StrictValidation); err=%v", err)
+		}
+		if res.Valid {
+			t.Fatalf("expected valid=false in STRICT when Errors are present; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
+		}
+		var found bool
+		for _, e := range res.Errors {
+			if e.Code == "HL7_VERSION_MISMATCH" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected HL7_VERSION_MISMATCH in Errors; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
+		}
+	})
+
+	t.Run("VersionMismatch_NORMAL_isWarning", func(t *testing.T) {
+		res, err := engine.ProcessHL7WithSchema([]byte(msgVersionMismatch), []byte(hl7Schema), schema.ProcessOptions{
+			CollectAllErrors: true,
+			Mode:             schema.ValidationModeNormal,
+		})
+		if err != nil {
+			t.Fatalf("did not expect err in NORMAL; err=%v", err)
+		}
+		var found bool
+		for _, e := range res.Warnings {
+			if e.Code == "HL7_VERSION_MISMATCH" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected HL7_VERSION_MISMATCH in Warnings; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
+		}
+	})
+
+	t.Run("ExtraField_STRICT_isWarning", func(t *testing.T) {
+		res, err := engine.ProcessHL7WithSchema([]byte(msgExtraField), []byte(hl7Schema), schema.ProcessOptions{
+			CollectAllErrors: true,
+			Mode:             schema.ValidationModeStrict,
+		})
+		if err != nil {
+			t.Fatalf("did not expect err when using Mode=STRICT (err is controlled by StrictValidation); err=%v", err)
+		}
+		var found bool
+		for _, e := range res.Warnings {
+			if e.Code == "HL7_EXTRA_FIELD" && e.Path == "PID-4" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected HL7_EXTRA_FIELD PID-4 in Warnings; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
+		}
+	})
+
+	t.Run("ExtraField_NORMAL_isInfo", func(t *testing.T) {
+		res, err := engine.ProcessHL7WithSchema([]byte(msgExtraField), []byte(hl7Schema), schema.ProcessOptions{
+			CollectAllErrors: true,
+			Mode:             schema.ValidationModeNormal,
+		})
+		if err != nil {
+			t.Fatalf("did not expect err in NORMAL; err=%v", err)
+		}
+		var found bool
+		for _, e := range res.Infos {
+			if e.Code == "HL7_EXTRA_FIELD" && e.Path == "PID-4" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected HL7_EXTRA_FIELD PID-4 in Infos; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
+		}
+	})
+
+	t.Run("ExtraField_LENIENT_isInfo", func(t *testing.T) {
+		res, err := engine.ProcessHL7WithSchema([]byte(msgExtraField), []byte(hl7Schema), schema.ProcessOptions{
+			CollectAllErrors: true,
+			Mode:             schema.ValidationModeLenient,
+		})
+		if err != nil {
+			t.Fatalf("did not expect err in LENIENT; err=%v", err)
+		}
+		var found bool
+		for _, e := range res.Infos {
+			if e.Code == "HL7_EXTRA_FIELD" && e.Path == "PID-4" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected HL7_EXTRA_FIELD PID-4 in Infos; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
+		}
+	})
 }

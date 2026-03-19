@@ -1,9 +1,11 @@
-package schema
+package json
 
 import (
 	"encoding/base64"
 	"fmt"
 	"regexp"
+
+	"github.com/wehubfusion/Icarus/pkg/schema/contracts"
 )
 
 // Validator validates data against schemas
@@ -34,11 +36,11 @@ func (v *Validator) RegisterFormat(format string, validator FormatValidator) {
 
 // validationState holds errors and whether to collect all or stop after first
 type validationState struct {
-	errors     []ValidationError
+	errors     []contracts.ValidationError
 	collectAll bool
 }
 
-func (s *validationState) add(e ValidationError) bool {
+func (s *validationState) add(e contracts.ValidationError) bool {
 	s.errors = append(s.errors, e)
 	return !s.collectAll && len(s.errors) >= 1
 }
@@ -47,60 +49,42 @@ func (s *validationState) shouldStop() bool {
 	return !s.collectAll && len(s.errors) >= 1
 }
 
-// ValidateWithOptions validates data against a schema. When collectAllErrors is false (default),
-// validation stops after the first error. When true, all errors are collected.
-func (v *Validator) ValidateWithOptions(data interface{}, schema *Schema, collectAllErrors bool) *ValidationResult {
+// ValidateWithRootPath validates data against a schema using the given root path prefix for errors.
+// When collectAllErrors is false, validation stops after the first error.
+func (v *Validator) ValidateWithRootPath(data interface{}, s *Schema, rootPath string, collectAllErrors bool) *contracts.ValidationResult {
 	state := &validationState{collectAll: collectAllErrors}
 	prop := &Property{
-		Type:       schema.Type,
-		Properties: schema.Properties,
-		Items:      schema.Items,
+		Type:       s.Type,
+		Properties: s.Properties,
+		Items:      s.Items,
 	}
-	v.validateValueIntoState(data, prop, "root", state)
-	return &ValidationResult{
+	v.validateValueIntoState(data, prop, rootPath, state)
+	return &contracts.ValidationResult{
 		Valid:  len(state.errors) == 0,
 		Errors: state.errors,
 	}
+}
+
+// ValidateWithOptions validates data against a schema. When collectAllErrors is false (default),
+// validation stops after the first error. When true, all errors are collected.
+func (v *Validator) ValidateWithOptions(data interface{}, s *Schema, collectAllErrors bool) *contracts.ValidationResult {
+	return v.ValidateWithRootPath(data, s, "root", collectAllErrors)
 }
 
 // Validate validates data against a schema (collects all errors; backward compatible).
-func (v *Validator) Validate(data interface{}, schema *Schema) *ValidationResult {
-	return v.ValidateWithOptions(data, schema, true)
+func (v *Validator) Validate(data interface{}, s *Schema) *contracts.ValidationResult {
+	return v.ValidateWithOptions(data, s, true)
 }
 
-// ValidateCSVRowsWithOptions validates rows against a CSV schema. When collectAllErrors is false,
-// validation stops after the first error. When true, all errors are collected.
-func (v *Validator) ValidateCSVRowsWithOptions(rows []map[string]interface{}, schema *CSVSchema, collectAllErrors bool) *ValidationResult {
-	state := &validationState{collectAll: collectAllErrors}
-	if schema == nil {
-		return &ValidationResult{Valid: true, Errors: state.errors}
-	}
-	prop := &Property{
-		Type:       TypeObject,
-		Properties: schema.ToObjectSchema().Properties,
-	}
-	for i, row := range rows {
-		if state.shouldStop() {
-			break
-		}
-		rowPath := fmt.Sprintf("rows[%d]", i)
-		v.validateValueIntoState(row, prop, rowPath, state)
-	}
-	return &ValidationResult{
-		Valid:  len(state.errors) == 0,
-		Errors: state.errors,
-	}
-}
-
-// ValidateCSVRows validates a JSON array of row objects against a CSV schema (collects all errors; backward compatible).
-func (v *Validator) ValidateCSVRows(rows []map[string]interface{}, schema *CSVSchema) *ValidationResult {
-	return v.ValidateCSVRowsWithOptions(rows, schema, true)
+// propRequired returns true if the property is required (Morpheus-aligned: Required is *bool).
+func propRequired(prop *Property) bool {
+	return prop != nil && prop.Required != nil && *prop.Required
 }
 
 // validateValueIntoState validates a value and appends errors to state; stops when state is full (stop-on-first-error).
 func (v *Validator) validateValueIntoState(value interface{}, prop *Property, path string, state *validationState) {
-	if prop.Required && value == nil {
-		if state.add(ValidationError{Path: path, Message: "field is required", Code: "REQUIRED"}) {
+	if propRequired(prop) && value == nil {
+		if state.add(contracts.ValidationError{Path: path, Message: "field is required", Code: "REQUIRED"}) {
 			return
 		}
 		return
@@ -117,7 +101,7 @@ func (v *Validator) validateValueIntoState(value interface{}, prop *Property, pa
 				}
 			}
 		} else {
-			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected string, got %T", value), Code: "TYPE_MISMATCH"}) {
+			if state.add(contracts.ValidationError{Path: path, Message: fmt.Sprintf("expected string, got %T", value), Code: "TYPE_MISMATCH"}) {
 				return
 			}
 		}
@@ -133,7 +117,7 @@ func (v *Validator) validateValueIntoState(value interface{}, prop *Property, pa
 		case int32:
 			num = float64(val)
 		default:
-			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected number, got %T", value), Code: "TYPE_MISMATCH"}) {
+			if state.add(contracts.ValidationError{Path: path, Message: fmt.Sprintf("expected number, got %T", value), Code: "TYPE_MISMATCH"}) {
 				return
 			}
 			return
@@ -145,7 +129,7 @@ func (v *Validator) validateValueIntoState(value interface{}, prop *Property, pa
 		}
 	case TypeBoolean:
 		if _, ok := value.(bool); !ok {
-			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected boolean, got %T", value), Code: "TYPE_MISMATCH"}) {
+			if state.add(contracts.ValidationError{Path: path, Message: fmt.Sprintf("expected boolean, got %T", value), Code: "TYPE_MISMATCH"}) {
 				return
 			}
 		}
@@ -153,7 +137,7 @@ func (v *Validator) validateValueIntoState(value interface{}, prop *Property, pa
 		if arr, ok := value.([]interface{}); ok {
 			v.validateArrayIntoState(arr, prop, path, state)
 		} else {
-			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected array, got %T", value), Code: "TYPE_MISMATCH"}) {
+			if state.add(contracts.ValidationError{Path: path, Message: fmt.Sprintf("expected array, got %T", value), Code: "TYPE_MISMATCH"}) {
 				return
 			}
 		}
@@ -161,7 +145,7 @@ func (v *Validator) validateValueIntoState(value interface{}, prop *Property, pa
 		if obj, ok := value.(map[string]interface{}); ok {
 			v.validateObjectIntoState(obj, prop, path, state)
 		} else {
-			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected object, got %T", value), Code: "TYPE_MISMATCH"}) {
+			if state.add(contracts.ValidationError{Path: path, Message: fmt.Sprintf("expected object, got %T", value), Code: "TYPE_MISMATCH"}) {
 				return
 			}
 		}
@@ -172,8 +156,15 @@ func (v *Validator) validateValueIntoState(value interface{}, prop *Property, pa
 					return
 				}
 			}
+			if prop.Type == TypeDate {
+				for _, e := range v.validateDateRange(str, prop.Validation, path) {
+					if state.add(e) {
+						return
+					}
+				}
+			}
 		} else {
-			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected string for date/datetime, got %T", value), Code: "TYPE_MISMATCH"}) {
+			if state.add(contracts.ValidationError{Path: path, Message: fmt.Sprintf("expected string for date/datetime, got %T", value), Code: "TYPE_MISMATCH"}) {
 				return
 			}
 		}
@@ -192,7 +183,7 @@ func (v *Validator) validateValueIntoState(value interface{}, prop *Property, pa
 				}
 			}
 		default:
-			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected string or bytes, got %T", value), Code: "TYPE_MISMATCH"}) {
+			if state.add(contracts.ValidationError{Path: path, Message: fmt.Sprintf("expected string or bytes, got %T", value), Code: "TYPE_MISMATCH"}) {
 				return
 			}
 		}
@@ -204,7 +195,7 @@ func (v *Validator) validateValueIntoState(value interface{}, prop *Property, pa
 				}
 			}
 		} else {
-			if state.add(ValidationError{Path: path, Message: fmt.Sprintf("expected string for UUID, got %T", value), Code: "TYPE_MISMATCH"}) {
+			if state.add(contracts.ValidationError{Path: path, Message: fmt.Sprintf("expected string for UUID, got %T", value), Code: "TYPE_MISMATCH"}) {
 				return
 			}
 		}
@@ -216,26 +207,32 @@ func (v *Validator) validateValueIntoState(value interface{}, prop *Property, pa
 // validateArrayIntoState validates array and items, appending to state; stops when state is full.
 func (v *Validator) validateArrayIntoState(arr []interface{}, prop *Property, path string, state *validationState) {
 	if prop.Validation != nil {
-		if prop.Validation.MinItems != nil && len(arr) < *prop.Validation.MinItems {
-			if state.add(ValidationError{
-				Path: path, Message: fmt.Sprintf("array length %d is less than minimum %d", len(arr), *prop.Validation.MinItems), Code: "MIN_ITEMS",
-			}) {
-				return
+		if prop.Validation.MinItems != nil {
+			minN := int(*prop.Validation.MinItems)
+			if len(arr) < minN {
+				if state.add(contracts.ValidationError{
+					Path: path, Message: fmt.Sprintf("array length %d is less than minimum %d", len(arr), minN), Code: "MIN_ITEMS",
+				}) {
+					return
+				}
 			}
 		}
-		if prop.Validation.MaxItems != nil && len(arr) > *prop.Validation.MaxItems {
-			if state.add(ValidationError{
-				Path: path, Message: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), *prop.Validation.MaxItems), Code: "MAX_ITEMS",
-			}) {
-				return
+		if prop.Validation.MaxItems != nil {
+			maxN := int(*prop.Validation.MaxItems)
+			if len(arr) > maxN {
+				if state.add(contracts.ValidationError{
+					Path: path, Message: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), maxN), Code: "MAX_ITEMS",
+				}) {
+					return
+				}
 			}
 		}
-		if prop.Validation.UniqueItems {
+		if prop.Validation.UniqueItems != nil && *prop.Validation.UniqueItems {
 			seen := make(map[string]bool)
 			for i, item := range arr {
 				key := fmt.Sprintf("%v", item)
 				if seen[key] {
-					if state.add(ValidationError{Path: fmt.Sprintf("%s[%d]", path, i), Message: "duplicate item found", Code: "DUPLICATE_ITEM"}) {
+					if state.add(contracts.ValidationError{Path: fmt.Sprintf("%s[%d]", path, i), Message: "duplicate item found", Code: "DUPLICATE_ITEM"}) {
 						return
 					}
 					break
@@ -265,8 +262,8 @@ func (v *Validator) validateObjectIntoState(obj map[string]interface{}, prop *Pr
 		}
 		value, exists := obj[propName]
 		propPath := fmt.Sprintf("%s.%s", path, propName)
-		if !exists && propDef.Required {
-			if state.add(ValidationError{Path: propPath, Message: "required field missing", Code: "REQUIRED"}) {
+		if !exists && propRequired(propDef) {
+			if state.add(contracts.ValidationError{Path: propPath, Message: "required field missing", Code: "REQUIRED"}) {
 				return
 			}
 			continue
@@ -278,12 +275,12 @@ func (v *Validator) validateObjectIntoState(obj map[string]interface{}, prop *Pr
 }
 
 // validateValue validates a value against a property definition (used when collectAllErrors is true).
-func (v *Validator) validateValue(value interface{}, prop *Property, path string) []ValidationError {
-	var errors []ValidationError
+func (v *Validator) validateValue(value interface{}, prop *Property, path string) []contracts.ValidationError {
+	var errors []contracts.ValidationError
 
 	// Check required
-	if prop.Required && value == nil {
-		errors = append(errors, ValidationError{
+	if propRequired(prop) && value == nil {
+		errors = append(errors, contracts.ValidationError{
 			Path:    path,
 			Message: "field is required",
 			Code:    "REQUIRED",
@@ -302,7 +299,7 @@ func (v *Validator) validateValue(value interface{}, prop *Property, path string
 		if str, ok := value.(string); ok {
 			errors = append(errors, v.validateString(str, prop.Validation, path)...)
 		} else {
-			errors = append(errors, ValidationError{
+			errors = append(errors, contracts.ValidationError{
 				Path:    path,
 				Message: fmt.Sprintf("expected string, got %T", value),
 				Code:    "TYPE_MISMATCH",
@@ -321,7 +318,7 @@ func (v *Validator) validateValue(value interface{}, prop *Property, path string
 		case int32:
 			num = float64(val)
 		default:
-			errors = append(errors, ValidationError{
+			errors = append(errors, contracts.ValidationError{
 				Path:    path,
 				Message: fmt.Sprintf("expected number, got %T", value),
 				Code:    "TYPE_MISMATCH",
@@ -332,7 +329,7 @@ func (v *Validator) validateValue(value interface{}, prop *Property, path string
 
 	case TypeBoolean:
 		if _, ok := value.(bool); !ok {
-			errors = append(errors, ValidationError{
+			errors = append(errors, contracts.ValidationError{
 				Path:    path,
 				Message: fmt.Sprintf("expected boolean, got %T", value),
 				Code:    "TYPE_MISMATCH",
@@ -343,7 +340,7 @@ func (v *Validator) validateValue(value interface{}, prop *Property, path string
 		if arr, ok := value.([]interface{}); ok {
 			errors = append(errors, v.validateArray(arr, prop, path)...)
 		} else {
-			errors = append(errors, ValidationError{
+			errors = append(errors, contracts.ValidationError{
 				Path:    path,
 				Message: fmt.Sprintf("expected array, got %T", value),
 				Code:    "TYPE_MISMATCH",
@@ -354,7 +351,7 @@ func (v *Validator) validateValue(value interface{}, prop *Property, path string
 		if obj, ok := value.(map[string]interface{}); ok {
 			errors = append(errors, v.validateObject(obj, prop, path)...)
 		} else {
-			errors = append(errors, ValidationError{
+			errors = append(errors, contracts.ValidationError{
 				Path:    path,
 				Message: fmt.Sprintf("expected object, got %T", value),
 				Code:    "TYPE_MISMATCH",
@@ -362,11 +359,10 @@ func (v *Validator) validateValue(value interface{}, prop *Property, path string
 		}
 
 	case TypeDate, TypeDateTime:
-		// Dates/DateTimes are typically strings with format validation
 		if str, ok := value.(string); ok {
 			errors = append(errors, v.validateString(str, prop.Validation, path)...)
 		} else {
-			errors = append(errors, ValidationError{
+			errors = append(errors, contracts.ValidationError{
 				Path:    path,
 				Message: fmt.Sprintf("expected string for date/datetime, got %T", value),
 				Code:    "TYPE_MISMATCH",
@@ -374,14 +370,13 @@ func (v *Validator) validateValue(value interface{}, prop *Property, path string
 		}
 
 	case TypeByte:
-		// Byte data can be string (base64) or byte array
 		switch val := value.(type) {
 		case string:
 			errors = append(errors, v.validateByte(val, prop.Validation, path)...)
 		case []byte:
 			errors = append(errors, v.validateByte(string(val), prop.Validation, path)...)
 		default:
-			errors = append(errors, ValidationError{
+			errors = append(errors, contracts.ValidationError{
 				Path:    path,
 				Message: fmt.Sprintf("expected string or bytes, got %T", value),
 				Code:    "TYPE_MISMATCH",
@@ -392,7 +387,7 @@ func (v *Validator) validateValue(value interface{}, prop *Property, path string
 		if str, ok := value.(string); ok {
 			errors = append(errors, v.validateUUIDValue(str, prop, path)...)
 		} else {
-			errors = append(errors, ValidationError{
+			errors = append(errors, contracts.ValidationError{
 				Path:    path,
 				Message: fmt.Sprintf("expected string for UUID, got %T", value),
 				Code:    "TYPE_MISMATCH",
@@ -407,9 +402,17 @@ func (v *Validator) validateValue(value interface{}, prop *Property, path string
 }
 
 // validateUUIDValue validates a string value as UUID with optional prefix/postfix from the property.
-func (v *Validator) validateUUIDValue(value string, prop *Property, path string) []ValidationError {
-	if !ValidateUUIDWithPrefixPostfix(value, prop.Prefix, prop.Postfix) {
-		return []ValidationError{{
+func (v *Validator) validateUUIDValue(value string, prop *Property, path string) []contracts.ValidationError {
+	prefix := ""
+	if prop.Prefix != nil {
+		prefix = *prop.Prefix
+	}
+	postfix := ""
+	if prop.Postfix != nil {
+		postfix = *prop.Postfix
+	}
+	if !ValidateUUIDWithPrefixPostfix(value, prefix, postfix) {
+		return []contracts.ValidationError{{
 			Path:    path,
 			Message: "value does not match UUID format (with optional prefix/postfix)",
 			Code:    "INVALID_UUID",
@@ -418,70 +421,95 @@ func (v *Validator) validateUUIDValue(value string, prop *Property, path string)
 	return nil
 }
 
-// validateString validates string-specific rules
-func (v *Validator) validateString(value string, rules *ValidationRules, path string) []ValidationError {
-	var errors []ValidationError
+// validateDateRange validates DATE value against MinDate/MaxDate (Morpheus-aligned; YYYY-MM-DD string comparison).
+func (v *Validator) validateDateRange(value string, rules *ValidationRules, path string) []contracts.ValidationError {
+	var errors []contracts.ValidationError
+	if rules == nil {
+		return errors
+	}
+	if rules.MinDate != nil && value < *rules.MinDate {
+		errors = append(errors, contracts.ValidationError{
+			Path:    path,
+			Message: fmt.Sprintf("date %s is before minimum %s", value, *rules.MinDate),
+			Code:    "MIN_DATE",
+		})
+	}
+	if rules.MaxDate != nil && value > *rules.MaxDate {
+		errors = append(errors, contracts.ValidationError{
+			Path:    path,
+			Message: fmt.Sprintf("date %s is after maximum %s", value, *rules.MaxDate),
+			Code:    "MAX_DATE",
+		})
+	}
+	return errors
+}
+
+// validateString validates string-specific rules (Morpheus-aligned: *float64 lengths, *string pattern/format).
+func (v *Validator) validateString(value string, rules *ValidationRules, path string) []contracts.ValidationError {
+	var errors []contracts.ValidationError
 
 	if rules == nil {
 		return errors
 	}
 
-	// MinLength validation
-	if rules.MinLength != nil && len(value) < *rules.MinLength {
-		errors = append(errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("length %d is less than minimum %d", len(value), *rules.MinLength),
-			Code:    "MIN_LENGTH",
-		})
+	if rules.MinLength != nil {
+		minL := int(*rules.MinLength)
+		if len(value) < minL {
+			errors = append(errors, contracts.ValidationError{
+				Path:    path,
+				Message: fmt.Sprintf("length %d is less than minimum %d", len(value), minL),
+				Code:    "MIN_LENGTH",
+			})
+		}
 	}
 
-	// MaxLength validation
-	if rules.MaxLength != nil && len(value) > *rules.MaxLength {
-		errors = append(errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("length %d exceeds maximum %d", len(value), *rules.MaxLength),
-			Code:    "MAX_LENGTH",
-		})
+	if rules.MaxLength != nil {
+		maxL := int(*rules.MaxLength)
+		if len(value) > maxL {
+			errors = append(errors, contracts.ValidationError{
+				Path:    path,
+				Message: fmt.Sprintf("length %d exceeds maximum %d", len(value), maxL),
+				Code:    "MAX_LENGTH",
+			})
+		}
 	}
 
-	// Pattern validation
-	if rules.Pattern != "" {
-		matched, err := regexp.MatchString(rules.Pattern, value)
+	if rules.Pattern != nil && *rules.Pattern != "" {
+		matched, err := regexp.MatchString(*rules.Pattern, value)
 		if err != nil {
-			errors = append(errors, ValidationError{
+			errors = append(errors, contracts.ValidationError{
 				Path:    path,
 				Message: fmt.Sprintf("invalid regex pattern: %v", err),
 				Code:    "INVALID_PATTERN",
 			})
 		} else if !matched {
-			errors = append(errors, ValidationError{
+			errors = append(errors, contracts.ValidationError{
 				Path:    path,
-				Message: fmt.Sprintf("value does not match pattern '%s'", rules.Pattern),
+				Message: fmt.Sprintf("value does not match pattern '%s'", *rules.Pattern),
 				Code:    "PATTERN_MISMATCH",
 			})
 		}
 	}
 
-	// Format validation
-	if rules.Format != "" {
-		if validator, exists := v.formatValidators[rules.Format]; exists {
+	if rules.Format != nil && *rules.Format != "" {
+		format := *rules.Format
+		if validator, exists := v.formatValidators[format]; exists {
 			if !validator(value) {
-				errors = append(errors, ValidationError{
+				errors = append(errors, contracts.ValidationError{
 					Path:    path,
-					Message: fmt.Sprintf("value does not match format '%s'", rules.Format),
+					Message: fmt.Sprintf("value does not match format '%s'", format),
 					Code:    "FORMAT_MISMATCH",
 				})
 			}
 		} else {
-			errors = append(errors, ValidationError{
+			errors = append(errors, contracts.ValidationError{
 				Path:    path,
-				Message: fmt.Sprintf("unknown format validator: %s", rules.Format),
+				Message: fmt.Sprintf("unknown format validator: %s", format),
 				Code:    "UNKNOWN_FORMAT",
 			})
 		}
 	}
 
-	// Enum validation
 	if len(rules.Enum) > 0 {
 		found := false
 		for _, allowed := range rules.Enum {
@@ -491,7 +519,7 @@ func (v *Validator) validateString(value string, rules *ValidationRules, path st
 			}
 		}
 		if !found {
-			errors = append(errors, ValidationError{
+			errors = append(errors, contracts.ValidationError{
 				Path:    path,
 				Message: fmt.Sprintf("value '%s' not in allowed values %v", value, rules.Enum),
 				Code:    "ENUM_MISMATCH",
@@ -503,25 +531,23 @@ func (v *Validator) validateString(value string, rules *ValidationRules, path st
 }
 
 // validateNumber validates number-specific rules
-func (v *Validator) validateNumber(value float64, rules *ValidationRules, path string) []ValidationError {
-	var errors []ValidationError
+func (v *Validator) validateNumber(value float64, rules *ValidationRules, path string) []contracts.ValidationError {
+	var errors []contracts.ValidationError
 
 	if rules == nil {
 		return errors
 	}
 
-	// Minimum validation
 	if rules.Minimum != nil && value < *rules.Minimum {
-		errors = append(errors, ValidationError{
+		errors = append(errors, contracts.ValidationError{
 			Path:    path,
 			Message: fmt.Sprintf("value %f is less than minimum %f", value, *rules.Minimum),
 			Code:    "MIN_VALUE",
 		})
 	}
 
-	// Maximum validation
 	if rules.Maximum != nil && value > *rules.Maximum {
-		errors = append(errors, ValidationError{
+		errors = append(errors, contracts.ValidationError{
 			Path:    path,
 			Message: fmt.Sprintf("value %f exceeds maximum %f", value, *rules.Maximum),
 			Code:    "MAX_VALUE",
@@ -532,20 +558,18 @@ func (v *Validator) validateNumber(value float64, rules *ValidationRules, path s
 }
 
 // validateByte validates byte-specific rules (expects base64-encoded string)
-func (v *Validator) validateByte(value string, rules *ValidationRules, path string) []ValidationError {
-	var errors []ValidationError
+func (v *Validator) validateByte(value string, rules *ValidationRules, path string) []contracts.ValidationError {
+	var errors []contracts.ValidationError
 
 	if rules == nil {
 		return errors
 	}
 
-	// Decode base64 to get actual byte length
 	decoded, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {
-		// Try URL encoding if standard fails
 		decoded, err = base64.URLEncoding.DecodeString(value)
 		if err != nil {
-			errors = append(errors, ValidationError{
+			errors = append(errors, contracts.ValidationError{
 				Path:    path,
 				Message: fmt.Sprintf("invalid base64 encoding: %v", err),
 				Code:    "INVALID_BASE64",
@@ -556,59 +580,64 @@ func (v *Validator) validateByte(value string, rules *ValidationRules, path stri
 
 	byteLength := len(decoded)
 
-	// MinLength validation (on decoded bytes)
-	if rules.MinLength != nil && byteLength < *rules.MinLength {
-		errors = append(errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("byte length %d is less than minimum %d", byteLength, *rules.MinLength),
-			Code:    "MIN_LENGTH",
-		})
+	if rules.MinLength != nil {
+		minL := int(*rules.MinLength)
+		if byteLength < minL {
+			errors = append(errors, contracts.ValidationError{
+				Path:    path,
+				Message: fmt.Sprintf("byte length %d is less than minimum %d", byteLength, minL),
+				Code:    "MIN_LENGTH",
+			})
+		}
 	}
 
-	// MaxLength validation (on decoded bytes)
-	if rules.MaxLength != nil && byteLength > *rules.MaxLength {
-		errors = append(errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("byte length %d exceeds maximum %d", byteLength, *rules.MaxLength),
-			Code:    "MAX_LENGTH",
-		})
+	if rules.MaxLength != nil {
+		maxL := int(*rules.MaxLength)
+		if byteLength > maxL {
+			errors = append(errors, contracts.ValidationError{
+				Path:    path,
+				Message: fmt.Sprintf("byte length %d exceeds maximum %d", byteLength, maxL),
+				Code:    "MAX_LENGTH",
+			})
+		}
 	}
 
 	return errors
 }
 
-// validateArray validates array-specific rules
-func (v *Validator) validateArray(arr []interface{}, prop *Property, path string) []ValidationError {
-	var errors []ValidationError
+// validateArray validates array-specific rules (Morpheus-aligned: *float64 MinItems/MaxItems, *bool UniqueItems).
+func (v *Validator) validateArray(arr []interface{}, prop *Property, path string) []contracts.ValidationError {
+	var errors []contracts.ValidationError
 
-	// Array-level validation rules
 	if prop.Validation != nil {
-		// MinItems validation
-		if prop.Validation.MinItems != nil && len(arr) < *prop.Validation.MinItems {
-			errors = append(errors, ValidationError{
-				Path:    path,
-				Message: fmt.Sprintf("array length %d is less than minimum %d", len(arr), *prop.Validation.MinItems),
-				Code:    "MIN_ITEMS",
-			})
+		if prop.Validation.MinItems != nil {
+			minN := int(*prop.Validation.MinItems)
+			if len(arr) < minN {
+				errors = append(errors, contracts.ValidationError{
+					Path:    path,
+					Message: fmt.Sprintf("array length %d is less than minimum %d", len(arr), minN),
+					Code:    "MIN_ITEMS",
+				})
+			}
 		}
 
-		// MaxItems validation
-		if prop.Validation.MaxItems != nil && len(arr) > *prop.Validation.MaxItems {
-			errors = append(errors, ValidationError{
-				Path:    path,
-				Message: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), *prop.Validation.MaxItems),
-				Code:    "MAX_ITEMS",
-			})
+		if prop.Validation.MaxItems != nil {
+			maxN := int(*prop.Validation.MaxItems)
+			if len(arr) > maxN {
+				errors = append(errors, contracts.ValidationError{
+					Path:    path,
+					Message: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), maxN),
+					Code:    "MAX_ITEMS",
+				})
+			}
 		}
 
-		// UniqueItems validation
-		if prop.Validation.UniqueItems {
+		if prop.Validation.UniqueItems != nil && *prop.Validation.UniqueItems {
 			seen := make(map[string]bool)
 			for i, item := range arr {
-				// Convert item to string for comparison
 				key := fmt.Sprintf("%v", item)
 				if seen[key] {
-					errors = append(errors, ValidationError{
+					errors = append(errors, contracts.ValidationError{
 						Path:    fmt.Sprintf("%s[%d]", path, i),
 						Message: "duplicate item found",
 						Code:    "DUPLICATE_ITEM",
@@ -620,7 +649,6 @@ func (v *Validator) validateArray(arr []interface{}, prop *Property, path string
 		}
 	}
 
-	// Validate each item in the array
 	if prop.Items != nil {
 		for i, item := range arr {
 			itemPath := fmt.Sprintf("%s[%d]", path, i)
@@ -632,21 +660,19 @@ func (v *Validator) validateArray(arr []interface{}, prop *Property, path string
 }
 
 // validateObject validates object properties
-func (v *Validator) validateObject(obj map[string]interface{}, prop *Property, path string) []ValidationError {
-	var errors []ValidationError
+func (v *Validator) validateObject(obj map[string]interface{}, prop *Property, path string) []contracts.ValidationError {
+	var errors []contracts.ValidationError
 
 	if prop.Properties == nil {
 		return errors
 	}
 
-	// Validate each property defined in schema
 	for propName, propDef := range prop.Properties {
 		value, exists := obj[propName]
 		propPath := fmt.Sprintf("%s.%s", path, propName)
 
-		// Check required fields
-		if !exists && propDef.Required {
-			errors = append(errors, ValidationError{
+		if !exists && propRequired(propDef) {
+			errors = append(errors, contracts.ValidationError{
 				Path:    propPath,
 				Message: "required field missing",
 				Code:    "REQUIRED",
@@ -654,7 +680,6 @@ func (v *Validator) validateObject(obj map[string]interface{}, prop *Property, p
 			continue
 		}
 
-		// Validate existing fields
 		if exists {
 			errors = append(errors, v.validateValue(value, propDef, propPath)...)
 		}

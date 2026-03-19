@@ -83,6 +83,7 @@ type SchemaDetails struct {
 	SchemaID string          `json:"schemaId"`
 	Name     string          `json:"name"`
 	Fields   json.RawMessage `json:"fields"`
+	Type     string          `json:"type,omitempty"` // "JSON"|"CSV"|"HL7"; omitempty = backwards compat
 }
 
 // EmbeddedNode represents a node to be executed within a parent node

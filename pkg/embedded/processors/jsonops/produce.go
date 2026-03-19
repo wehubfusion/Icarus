@@ -24,7 +24,7 @@ func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) ru
 
 	// Parse schema to check root type
 	engine := schema.NewEngine()
-	parsedSchema, parseErr := engine.GetParser().Parse(cfg.Schema)
+	parsedSchema, parseErr := engine.ParseJSONSchema(cfg.Schema)
 
 	// Determine what data to process based on schema root type
 	var dataToMarshal interface{} = input.Data
