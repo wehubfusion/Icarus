@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	celhl7 "github.com/wehubfusion/Icarus/pkg/cel/hl7"
 	"github.com/wehubfusion/Icarus/pkg/schema/contracts"
 	"github.com/wehubfusion/Icarus/pkg/schema/hl7/datatypes"
 )
@@ -37,6 +38,8 @@ func resolveSeverity(code string, mode contracts.ValidationMode) contracts.Sever
 			return contracts.SeverityWarning
 		case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
 			return contracts.SeverityInfo
+		case "HL7_CEL_EVAL_ERROR":
+			return contracts.SeverityWarning
 		default:
 			return contracts.SeverityError
 		}
@@ -56,7 +59,7 @@ func resolveSeverity(code string, mode contracts.ValidationMode) contracts.Sever
 	case contracts.ValidationModeLenient:
 		switch code {
 		case "HL7_MISSING_REQUIRED", "HL7_MESSAGE_TYPE_MISMATCH", "HL7_REPETITION_VIOLATION",
-			"HL7_DATATYPE", "HL7_NOT_USED":
+			"HL7_DATATYPE", "HL7_NOT_USED", "HL7_CEL_EVAL_ERROR":
 			return contracts.SeverityWarning
 		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_LENGTH",
 			"HL7_UNEXPECTED_SEGMENT", "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
@@ -121,7 +124,21 @@ func (p *HL7SchemaProcessor) ParseSchema(definition []byte) (contracts.CompiledS
 	if err != nil {
 		return nil, fmt.Errorf("hl7 datatype registry load error: %w", err)
 	}
-	return &CompiledHL7Schema{Schema: compiled, Registry: reg}, nil
+	out := &CompiledHL7Schema{Schema: compiled, Registry: reg}
+	if len(compiled.Rules) == 0 {
+		return out, nil
+	}
+	eng, err := celhl7.Engine()
+	if err != nil {
+		return nil, fmt.Errorf("cel hl7 engine: %w", err)
+	}
+	rules, err := celhl7.CompileHL7Rules(eng, compiled.Rules)
+	if err != nil {
+		return nil, fmt.Errorf("hl7 cel rules compile: %w", err)
+	}
+	out.CELEngine = eng
+	out.CompiledRules = rules
+	return out, nil
 }
 
 // Process implements contracts.SchemaProcessor. Validation only; Data is the original input.
@@ -174,6 +191,33 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 		sev := bucketize(&all, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code}, mode)
 		if !opts.CollectAllErrors && sev == contracts.SeverityError {
 			break
+		}
+	}
+	if len(c.CompiledRules) > 0 && c.CELEngine != nil {
+		iter := &celhl7.HL7ScopeIterator{Msg: msg, Reg: c.Registry}
+		violations, evalErrs := c.CELEngine.EvaluateRules(c.CompiledRules, iter)
+		for _, v := range violations {
+			sev := contracts.SeverityError
+			switch strings.ToUpper(strings.TrimSpace(v.Severity)) {
+			case "WARNING":
+				sev = contracts.SeverityWarning
+			case "INFO":
+				sev = contracts.SeverityInfo
+			}
+			es := bucketize(&all, contracts.ValidationError{
+				Path: v.Path, Message: v.Message, Code: "HL7_CUSTOM_RULE_VIOLATION", Severity: sev,
+			}, mode)
+			if !opts.CollectAllErrors && es == contracts.SeverityError {
+				break
+			}
+		}
+		for _, e := range evalErrs {
+			sev := bucketize(&all, contracts.ValidationError{
+				Path: "cel.eval", Message: e.Err.Error(), Code: "HL7_CEL_EVAL_ERROR",
+			}, mode)
+			if !opts.CollectAllErrors && sev == contracts.SeverityError {
+				break
+			}
 		}
 	}
 	errs, warns, infos := splitBuckets(all)
