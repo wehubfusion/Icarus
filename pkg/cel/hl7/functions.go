@@ -47,7 +47,13 @@ func hl7ProgramOverloads(ctx *bindCtx) []*functions.Overload {
 			return celtypes.Bool(validateAsImpl(ctx, stringVal(lhs), stringVal(rhs)))
 		}},
 		{Operator: "matchesPattern_string_string", Binary: func(lhs, rhs ref.Val) ref.Val {
-			return celtypes.Bool(matchesPatternImpl(ctx, stringVal(lhs), stringVal(rhs)))
+			ok, err := matchesPatternImpl(ctx, stringVal(lhs), stringVal(rhs))
+			if err != nil {
+				// Returning cel-go's `error` ref.Val forces CEL evaluation to fail,
+				// which the generic engine surfaces as EvalError (HL7_CEL_EVAL_ERROR).
+				return celtypes.WrapErr(err)
+			}
+			return celtypes.Bool(ok)
 		}},
 		{Operator: "toDTM_string", Unary: func(v ref.Val) ref.Val {
 			s := msgGet(ctx, stringVal(v))
@@ -126,18 +132,18 @@ func validateAsImpl(ctx *bindCtx, typeOrLoc, valueLoc string) bool {
 	return primitive.ValidatePrimitiveType(tid, val, ctx.reg, ctx.version)
 }
 
-func matchesPatternImpl(ctx *bindCtx, loc, pattern string) bool {
+func matchesPatternImpl(ctx *bindCtx, loc, pattern string) (bool, error) {
 	val := msgGet(ctx, loc)
 	if strings.TrimSpace(val) == "" {
-		return true
+		return true, nil
 	}
 	re, err := regexp2.Compile(pattern, regexp2.None)
 	if err != nil {
-		return false
+		return false, err
 	}
 	re.MatchTimeout = 50 * time.Millisecond
 	ok, _ := re.MatchString(val)
-	return ok
+	return ok, nil
 }
 
 func msgAtImpl(msg *hl7msg.Message, seg string, idx int, loc string) string {
