@@ -73,18 +73,19 @@ func (e *Engine) EvaluateRules(rules []CompiledRule, iter ScopeIterator) ([]Viol
 	var violations []Violation
 	var evalErrs []EvalError
 	for _, cr := range rules {
-		scope := strings.TrimSpace(cr.Rule.Scope)
-		n := iter.ScopeCount(scope)
-		if scope != "" && n == 0 {
+		n := iter.IterationCount(cr.Rule)
+		if n == 0 {
 			continue
 		}
-		if n <= 0 {
-			n = 1
-		}
 		for i := 0; i < n; i++ {
-			opts := iter.ProgramOptionsAt(scope, i)
+			opts := iter.ProgramOptionsAt(cr.Rule, i)
 			if cr.WhenAst != nil {
-				ok, err := e.evalBool(cr.WhenAst, opts)
+				whenPrg, err := e.env.Program(cr.WhenAst, opts...)
+				if err != nil {
+					evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, Expr: "when", Err: err})
+					continue
+				}
+				ok, err := e.evalBool(whenPrg)
 				if err != nil {
 					evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, Expr: "when", Err: err})
 					continue
@@ -93,7 +94,12 @@ func (e *Engine) EvaluateRules(rules []CompiledRule, iter ScopeIterator) ([]Viol
 					continue
 				}
 			}
-			ok, err := e.evalBool(cr.AssertAst, opts)
+			assertPrg, err := e.env.Program(cr.AssertAst, opts...)
+			if err != nil {
+				evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, Expr: "assert", Err: err})
+				continue
+			}
+			ok, err := e.evalBool(assertPrg)
 			if err != nil {
 				evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, Expr: "assert", Err: err})
 				continue
@@ -121,11 +127,7 @@ func (e *Engine) EvaluateRules(rules []CompiledRule, iter ScopeIterator) ([]Viol
 	return violations, evalErrs
 }
 
-func (e *Engine) evalBool(ast *celgo.Ast, opts []celgo.ProgramOption) (bool, error) {
-	prg, err := e.env.Program(ast, opts...)
-	if err != nil {
-		return false, err
-	}
+func (e *Engine) evalBool(prg celgo.Program) (bool, error) {
 	out, _, err := prg.Eval(celgo.NoVars())
 	if err != nil {
 		return false, err

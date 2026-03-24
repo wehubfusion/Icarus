@@ -26,6 +26,20 @@ func intVal(v ref.Val) int {
 	}
 }
 
+func msgGet(ctx *bindCtx, loc string) string {
+	if ctx.msg == nil {
+		return ""
+	}
+	scope := strings.TrimSpace(ctx.scopeSeg)
+	if scope != "" {
+		seg, _, _, _, _ := hl7msg.LocationParts(loc)
+		if seg != "" && strings.EqualFold(seg, scope) {
+			return ctx.msg.GetAtSegmentInstance(scope, ctx.instanceIdx0+1, loc)
+		}
+	}
+	return ctx.msg.Get(loc)
+}
+
 // hl7ProgramOverloads returns runtime bindings for all HL7 helpers (must match hl7FunctionDeclarations).
 func hl7ProgramOverloads(ctx *bindCtx) []*functions.Overload {
 	return []*functions.Overload{
@@ -59,7 +73,7 @@ func hl7ProgramOverloads(ctx *bindCtx) []*functions.Overload {
 			s := msgGet(ctx, stringVal(v))
 			t, err := parseHL7DTM(s)
 			if err != nil {
-				return celtypes.Timestamp{Time: time.Unix(0, 0).UTC()}
+				return celtypes.WrapErr(err)
 			}
 			return celtypes.Timestamp{Time: t}
 		}},
@@ -117,7 +131,7 @@ func repCountImpl(ctx *bindCtx, loc string) int {
 }
 
 func validateAsImpl(ctx *bindCtx, typeOrLoc, valueLoc string) bool {
-	if ctx.msg == nil || ctx.reg == nil {
+	if ctx.msg == nil {
 		return true
 	}
 	typeOrLoc = strings.TrimSpace(typeOrLoc)

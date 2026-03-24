@@ -1,6 +1,7 @@
 package celhl7
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -50,7 +51,7 @@ func parseHL7DTM(s string) (time.Time, error) {
 	mi, _ := strconv.Atoi(string(digits[10:12]))
 	sec, _ := strconv.Atoi(string(digits[12:14]))
 	if y == 0 {
-		return time.Unix(0, 0).UTC(), nil
+		return time.Time{}, fmt.Errorf("invalid HL7 DTM value: %q", s)
 	}
 	return time.Date(y, time.Month(mo), d, h, mi, sec, 0, time.UTC), nil
 }
