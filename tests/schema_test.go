@@ -699,7 +699,7 @@ func TestSchemaEngine(t *testing.T) {
 			schema.ProcessOptions{
 				ApplyDefaults:    true,
 				StructureData:    false,
-				StrictValidation: true,
+				Mode: schema.ValidationModeStrict,
 			},
 		)
 
@@ -754,7 +754,7 @@ func TestSchemaEngine(t *testing.T) {
 			schema.ProcessOptions{
 				ApplyDefaults:    true,
 				StructureData:    false,
-				StrictValidation: false,
+				Mode: schema.ValidationModeNormal,
 			},
 		)
 
@@ -784,7 +784,7 @@ func TestSchemaEngine(t *testing.T) {
 		}
 	})
 
-	t.Run("Strict mode fails on validation errors", func(t *testing.T) {
+	t.Run("Strict mode classifies findings as errors", func(t *testing.T) {
 		schemaJSON := `{
 			"type": "OBJECT",
 			"properties": {
@@ -807,23 +807,23 @@ func TestSchemaEngine(t *testing.T) {
 			[]byte(inputData),
 			[]byte(schemaJSON),
 			schema.ProcessOptions{
-				ApplyDefaults:    false,
-				StructureData:    false,
-				StrictValidation: true,
+				ApplyDefaults: false,
+				StructureData: false,
+				Mode:          schema.ValidationModeStrict,
 			},
 		)
 
-		if err == nil {
-			t.Error("Expected error in strict mode")
+		if err != nil {
+			t.Errorf("Process should not return a Go error for validation findings; got: %v", err)
 		}
 		if result == nil {
-			t.Fatal("Expected result even with error")
+			t.Fatal("Expected non-nil result")
 		}
 		if result.Valid {
 			t.Error("Expected invalid result")
 		}
 		if len(result.Errors) == 0 {
-			t.Error("Expected validation errors")
+			t.Error("Expected validation errors in result.Errors")
 		}
 	})
 
@@ -852,7 +852,7 @@ func TestSchemaEngine(t *testing.T) {
 			schema.ProcessOptions{
 				ApplyDefaults:    false,
 				StructureData:    false,
-				StrictValidation: false,
+				Mode: schema.ValidationModeNormal,
 			},
 		)
 
@@ -900,7 +900,7 @@ func TestSchemaEngine(t *testing.T) {
 			schema.ProcessOptions{
 				ApplyDefaults:    false,
 				StructureData:    true,
-				StrictValidation: false,
+				Mode: schema.ValidationModeNormal,
 			},
 		)
 
@@ -979,7 +979,7 @@ func TestSchemaEngine(t *testing.T) {
 			schema.ProcessOptions{
 				ApplyDefaults:    true,
 				StructureData:    true,
-				StrictValidation: true,
+				Mode: schema.ValidationModeStrict,
 			},
 		)
 
@@ -1206,7 +1206,7 @@ func TestSchemaEdgeCases(t *testing.T) {
 			[]byte(inputData),
 			[]byte(schemaJSON),
 			schema.ProcessOptions{
-				StrictValidation: true,
+				Mode: schema.ValidationModeStrict,
 			},
 		)
 
@@ -1237,7 +1237,7 @@ func TestSchemaEdgeCases(t *testing.T) {
 			[]byte(inputData),
 			[]byte(schemaJSON),
 			schema.ProcessOptions{
-				StrictValidation: false,
+				Mode: schema.ValidationModeNormal,
 			},
 		)
 
@@ -1339,7 +1339,7 @@ func TestSchemaEdgeCases(t *testing.T) {
 			[]byte(schemaJSON),
 			schema.ProcessOptions{
 				ApplyDefaults:    true,
-				StrictValidation: true,
+				Mode: schema.ValidationModeStrict,
 			},
 		)
 
@@ -1686,7 +1686,7 @@ func TestSchemaByteType(t *testing.T) {
 			schema.ProcessOptions{
 				ApplyDefaults:    false,
 				StructureData:    false,
-				StrictValidation: true,
+				Mode: schema.ValidationModeStrict,
 			},
 		)
 
@@ -1817,25 +1817,22 @@ func TestProcessWithSchemaStopOnFirstError(t *testing.T) {
 		[]byte(inputData),
 		[]byte(schemaJSON),
 		schema.ProcessOptions{
-			ApplyDefaults:    false,
-			StructureData:    false,
-			StrictValidation: true,
+			ApplyDefaults: false,
+			StructureData: false,
+			Mode:          schema.ValidationModeStrict,
 		},
 	)
-	if err == nil {
-		t.Fatal("Expected error in strict mode")
+	if err != nil {
+		t.Fatalf("Process should not return a Go error for validation findings; got: %v", err)
 	}
 	if result == nil {
-		t.Fatal("Expected result even with error")
+		t.Fatal("Expected non-nil result")
 	}
 	if result.Valid {
 		t.Error("Expected invalid result")
 	}
 	if len(result.Errors) != 1 {
 		t.Errorf("Expected exactly one error (stop on first), got %d: %v", len(result.Errors), result.Errors)
-	}
-	if errMsg := err.Error(); !strings.HasPrefix(errMsg, "schema validation failed: ") {
-		t.Errorf("Expected err to start with 'schema validation failed: ', got %q", errMsg)
 	}
 	if len(result.Errors) > 0 && (result.Errors[0].Path != "root.data[0].First_Name" || result.Errors[0].Message != "expected number, got string") {
 		t.Errorf("Expected first error path root.data[0].First_Name and message 'expected number, got string', got path %q message %q",
@@ -1905,21 +1902,18 @@ func TestProcessWithSchemaCollectAllErrors(t *testing.T) {
 		schema.ProcessOptions{
 			ApplyDefaults:    false,
 			StructureData:    false,
-			StrictValidation: true,
+			Mode:             schema.ValidationModeStrict,
 			CollectAllErrors: true,
 		},
 	)
-	if err == nil {
-		t.Fatal("Expected error in strict mode")
+	if err != nil {
+		t.Fatalf("Process should not return a Go error for validation findings; got: %v", err)
 	}
 	if result == nil {
-		t.Fatal("Expected result")
+		t.Fatal("Expected non-nil result")
 	}
 	if len(result.Errors) != 3 {
 		t.Errorf("Expected 3 errors when CollectAllErrors true, got %d", len(result.Errors))
-	}
-	if !strings.HasPrefix(err.Error(), "schema validation failed with 3 errors:") {
-		t.Errorf("Expected error to start with 'schema validation failed with 3 errors:', got %q", err.Error())
 	}
 }
 
@@ -1982,7 +1976,7 @@ func TestProcessWithSchemaStopOnFirstErrorInObject(t *testing.T) {
 	result, err := engine.ProcessWithSchema(
 		[]byte(inputData),
 		[]byte(schemaJSON),
-		schema.ProcessOptions{StrictValidation: true},
+		schema.ProcessOptions{Mode: schema.ValidationModeStrict},
 	)
 	if err == nil {
 		t.Fatal("Expected error")
@@ -2012,7 +2006,7 @@ func TestProcessCSVWithSchemaStopOnFirstError(t *testing.T) {
 	result, err := engine.ProcessCSVWithSchema(
 		[]byte(inputData),
 		[]byte(csvSchemaJSON),
-		schema.ProcessOptions{StrictValidation: true},
+		schema.ProcessOptions{Mode: schema.ValidationModeStrict},
 	)
 	if err == nil {
 		t.Fatal("Expected error")
@@ -2044,7 +2038,7 @@ func TestProcessCSVWithSchemaCollectAllErrors(t *testing.T) {
 	result, err := engine.ProcessCSVWithSchema(
 		[]byte(inputData),
 		[]byte(csvSchemaJSON),
-		schema.ProcessOptions{StrictValidation: true, CollectAllErrors: true},
+		schema.ProcessOptions{Mode: schema.ValidationModeStrict, CollectAllErrors: true},
 	)
 	if err == nil {
 		t.Fatal("Expected error")
@@ -2120,7 +2114,7 @@ func TestProcessWithSchema_UUIDApplyDefaultsGenerates(t *testing.T) {
 	result, err := engine.ProcessWithSchema(
 		[]byte(inputData),
 		[]byte(schemaJSON),
-		schema.ProcessOptions{ApplyDefaults: true, StructureData: true, StrictValidation: true},
+		schema.ProcessOptions{ApplyDefaults: true, StructureData: true, Mode: schema.ValidationModeStrict},
 	)
 	if err != nil {
 		t.Fatalf("ProcessWithSchema: %v", err)
@@ -2161,7 +2155,7 @@ func TestProcessWithSchema_UUIDValidationValid(t *testing.T) {
 	result, err := engine.ProcessWithSchema(
 		[]byte(inputData),
 		[]byte(schemaJSON),
-		schema.ProcessOptions{ApplyDefaults: true, StructureData: true, StrictValidation: true},
+		schema.ProcessOptions{ApplyDefaults: true, StructureData: true, Mode: schema.ValidationModeStrict},
 	)
 	if err != nil {
 		t.Fatalf("ProcessWithSchema: %v", err)
@@ -2186,7 +2180,7 @@ func TestProcessWithSchema_UUIDValidationInvalidSegment(t *testing.T) {
 	result, err := engine.ProcessWithSchema(
 		[]byte(inputData),
 		[]byte(schemaJSON),
-		schema.ProcessOptions{StrictValidation: true},
+		schema.ProcessOptions{Mode: schema.ValidationModeStrict},
 	)
 	if err == nil {
 		t.Fatal("Expected validation error for invalid UUID segment")
@@ -2221,7 +2215,7 @@ func TestProcessWithSchema_UUIDValidationWrongPrefix(t *testing.T) {
 	result, err := engine.ProcessWithSchema(
 		[]byte(inputData),
 		[]byte(schemaJSON),
-		schema.ProcessOptions{StrictValidation: true},
+		schema.ProcessOptions{Mode: schema.ValidationModeStrict},
 	)
 	if err == nil {
 		t.Fatal("Expected validation error when value does not start with prefix")
@@ -2363,7 +2357,7 @@ func TestProcessHL7WithSchema_ModeBucketing(t *testing.T) {
 			Mode:             schema.ValidationModeStrict,
 		})
 		if err != nil {
-			t.Fatalf("did not expect err when using Mode=STRICT (err is controlled by StrictValidation); err=%v", err)
+			t.Fatalf("did not expect err when using Mode=STRICT (Mode=STRICT also returns an error); err=%v", err)
 		}
 		if res.Valid {
 			t.Fatalf("expected valid=false in STRICT when Errors are present; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
@@ -2404,7 +2398,7 @@ func TestProcessHL7WithSchema_ModeBucketing(t *testing.T) {
 			Mode:             schema.ValidationModeStrict,
 		})
 		if err != nil {
-			t.Fatalf("did not expect err when using Mode=STRICT (err is controlled by StrictValidation); err=%v", err)
+			t.Fatalf("did not expect err when using Mode=STRICT (Mode=STRICT also returns an error); err=%v", err)
 		}
 		var found bool
 		for _, e := range res.Warnings {

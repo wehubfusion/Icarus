@@ -71,12 +71,39 @@ func (r *ValidationResult) ErrorMessage() string {
 	return msg
 }
 
+// EffectiveMode returns opts.Mode when it is STRICT, NORMAL, or LENIENT; otherwise NORMAL.
+func EffectiveMode(opts ProcessOptions) ValidationMode {
+	if opts.Mode != "" {
+		m := ValidationMode(strings.ToUpper(strings.TrimSpace(string(opts.Mode))))
+		switch m {
+		case ValidationModeStrict, ValidationModeNormal, ValidationModeLenient:
+			return m
+		}
+	}
+	return ValidationModeNormal
+}
+
+// StrictProcessError returns a non-nil error when mode is STRICT and the result is invalid
+// (Valid is false). The populated ProcessResult is still returned alongside this error.
+func StrictProcessError(result *ProcessResult, mode ValidationMode) error {
+	if mode != ValidationModeStrict || result == nil || result.Valid {
+		return nil
+	}
+	vr := &ValidationResult{Valid: false, Errors: result.Errors}
+	msg := vr.ErrorMessage()
+	if msg == "" {
+		return fmt.Errorf("schema validation failed")
+	}
+	return fmt.Errorf("%s", msg)
+}
+
 // ProcessOptions controls schema processing behavior.
 //
-// Use Mode to control both severity classification and fail-on-invalid behaviour:
-//   - ValidationModeStrict:  all findings are elevated, invalid result returns a Go error.
-//   - ValidationModeNormal:  default severity table, invalid result is in payload only (err == nil).
-//   - ValidationModeLenient: findings are downgraded, invalid result is in payload only (err == nil).
+// Use Mode to control severity classification (where implemented) and fail-on-invalid:
+//   - ValidationModeStrict:  invalid result returns a Go error via StrictProcessError
+//     in addition to a populated ProcessResult. HL7 also elevates several issue codes.
+//   - ValidationModeNormal:  invalid result is in the payload only (err == nil).
+//   - ValidationModeLenient: invalid result is in the payload only (err == nil); HL7 downgrades codes.
 //
 // Deprecated: StrictValidation is no longer used by any processor and will be removed in a
 // future release. Set Mode: ValidationModeStrict instead.

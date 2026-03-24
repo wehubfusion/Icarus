@@ -67,11 +67,13 @@ func (p *CSVSchemaProcessor) Process(inputData []byte, cs contracts.CompiledSche
 		return nil, fmt.Errorf("failed to marshal output: %w", err)
 	}
 
-	return &contracts.ProcessResult{
+	mode := contracts.EffectiveMode(options)
+	result := &contracts.ProcessResult{
 		Valid:  validationResult.Valid,
 		Data:   outputData,
 		Errors: validationResult.Errors,
-	}, nil
+	}
+	return result, contracts.StrictProcessError(result, mode)
 }
 
 // compiledCSVSchema holds a parsed CSV schema.

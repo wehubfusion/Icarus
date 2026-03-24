@@ -9,17 +9,6 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/schema/hl7/datatypes"
 )
 
-func effectiveMode(opts contracts.ProcessOptions) contracts.ValidationMode {
-	if opts.Mode != "" {
-		m := contracts.ValidationMode(strings.ToUpper(strings.TrimSpace(string(opts.Mode))))
-		switch m {
-		case contracts.ValidationModeStrict, contracts.ValidationModeNormal, contracts.ValidationModeLenient:
-			return m
-		}
-	}
-	return contracts.ValidationModeNormal
-}
-
 func resolveSeverity(code string, mode contracts.ValidationMode) contracts.Severity {
 	// Defaults are NORMAL mode, based on NIST/CDC/HL7apy patterns.
 	normal := func(code string) contracts.Severity {
@@ -33,25 +22,21 @@ func resolveSeverity(code string, mode contracts.ValidationMode) contracts.Sever
 			return contracts.SeverityWarning
 		case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
 			return contracts.SeverityInfo
-	case "HL7_CEL_EVAL_ERROR":
-		return contracts.SeverityWarning
-	case "HL7_RULE_SCOPE_AMBIGUOUS":
-		return contracts.SeverityInfo
-	default:
-		return contracts.SeverityError
+		case "HL7_CEL_EVAL_ERROR":
+			return contracts.SeverityWarning
+		default:
+			return contracts.SeverityError
+		}
 	}
-}
 
-switch mode {
-case contracts.ValidationModeStrict:
-	switch code {
-	case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
-		return contracts.SeverityWarning
-	case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_NOT_USED", "HL7_LENGTH",
-		"HL7_UNEXPECTED_SEGMENT", "HL7_CEL_EVAL_ERROR":
-		return contracts.SeverityError
-	case "HL7_RULE_SCOPE_AMBIGUOUS":
-		return contracts.SeverityWarning
+	switch mode {
+	case contracts.ValidationModeStrict:
+		switch code {
+		case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
+			return contracts.SeverityWarning
+		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_NOT_USED", "HL7_LENGTH",
+			"HL7_UNEXPECTED_SEGMENT", "HL7_CEL_EVAL_ERROR":
+			return contracts.SeverityError
 		default:
 			return normal(code)
 		}
@@ -145,7 +130,7 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 	if !ok {
 		return nil, fmt.Errorf("expected *hl7.CompiledHL7Schema, got %T", compiled)
 	}
-	mode := effectiveMode(opts)
+	mode := contracts.EffectiveMode(opts)
 	msg, err := ParseMessage(inputData)
 	if err != nil {
 		code := "HL7_INVALID_MSH"
@@ -158,11 +143,12 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 			Code:     code,
 			Severity: resolveSeverity(code, mode),
 		}
-		return &contracts.ProcessResult{
+		result := &contracts.ProcessResult{
 			Valid:  false,
 			Data:   inputData,
 			Errors: []contracts.ValidationIssue{issue},
-		}, nil
+		}
+		return result, contracts.StrictProcessError(result, mode)
 	}
 	match := MatchMessage(msg, c)
 	var all []contracts.ValidationIssue
@@ -217,28 +203,11 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 				return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
 			}
 		}
-		// Emit an info/warning for every rule whose scope could not be resolved to
-		// a single segment while a referenced segment repeats in this message.
-		// These rules execute once at message scope, seeing only the first instance
-		// of every repeated segment — a coverage gap that rule authors should address.
-		for _, ruleID := range iter.ScopeAmbiguities() {
-			bucketize(&all, contracts.ValidationError{
-				Path:    fmt.Sprintf("rule[%s].scope", ruleID),
-				Message: fmt.Sprintf("rule %q references multiple segments and evaluates once at message scope; repeated segment instances may not be fully validated", ruleID),
-				Code:    "HL7_RULE_SCOPE_AMBIGUOUS",
-			}, mode)
-		}
 	}
 	errs, warns, infos := splitBuckets(all)
 	valid := len(errs) == 0
 	result := &contracts.ProcessResult{Valid: valid, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}
-	// contracts.ProcessOptions documents that ValidationModeStrict returns a Go
-	// error when the message is invalid, not just a valid:false payload.
-	if !valid && mode == contracts.ValidationModeStrict {
-		vr := &contracts.ValidationResult{Valid: false, Errors: errs}
-		return result, fmt.Errorf("%s", vr.ErrorMessage())
-	}
-	return result, nil
+	return result, contracts.StrictProcessError(result, mode)
 }
 
 // celSeverity converts the string severity stored on a CEL Violation to the

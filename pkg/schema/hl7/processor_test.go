@@ -220,6 +220,22 @@ func TestHL7SchemaProcessor_Process_InvalidMSH(t *testing.T) {
 	}
 }
 
+func TestHL7StrictMode_InvalidMSH_ReturnsError(t *testing.T) {
+	proc := NewHL7SchemaProcessor()
+	hl7Schema := `{"segments": [{"name": "MSH", "usage": "R", "rpt": "1", "fields": []}]}`
+	compiled, _ := proc.ParseSchema([]byte(hl7Schema))
+	result, err := proc.Process([]byte("PID|||123"), compiled, contracts.ProcessOptions{
+		Mode:             contracts.ValidationModeStrict,
+		CollectAllErrors: true,
+	})
+	if err == nil {
+		t.Fatal("expected non-nil error in strict mode when message is invalid")
+	}
+	if result == nil || result.Valid {
+		t.Fatalf("expected invalid result payload alongside error: result=%v", result)
+	}
+}
+
 func TestHL7SchemaProcessor_Type(t *testing.T) {
 	proc := NewHL7SchemaProcessor()
 	if proc.Type() != string(contracts.FormatHL7) {
