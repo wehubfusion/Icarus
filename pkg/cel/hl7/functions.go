@@ -66,8 +66,6 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 				celgo.BinaryBinding(func(lhs, rhs ref.Val) ref.Val {
 					ok, err := matchesPatternImpl(ctx, stringVal(lhs), stringVal(rhs))
 					if err != nil {
-						// Returning cel-go's `error` ref.Val forces CEL evaluation to fail,
-						// which the generic engine surfaces as EvalError (HL7_CEL_EVAL_ERROR).
 						return celtypes.WrapErr(err)
 					}
 					return celtypes.Bool(ok)
@@ -75,27 +73,28 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 		celgo.Function("toDTM",
 			celgo.Overload("toDTM_string", []*celgo.Type{celgo.StringType}, celgo.TimestampType,
 				celgo.UnaryBinding(func(v ref.Val) ref.Val {
-					s := msgGet(ctx, stringVal(v))
-					t, _ := parseHL7DTM(s)
-					// An unparseable DTM returns the zero time (year 0001) so that
-					// timestamp comparisons still evaluate (and produce false) rather
-					// than aborting the rule. Guard with valued()/validateAs() when
-					// the field must be a valid date.
+					loc := stringVal(v)
+					s := msgGet(ctx, loc)
+					if strings.TrimSpace(s) == "" {
+						return celtypes.WrapErr(fmt.Errorf("toDTM(%q): field is empty — guard with valued()", loc))
+					}
+					t, err := parseHL7DTM(s)
+					if err != nil {
+						return celtypes.WrapErr(err)
+					}
 					return celtypes.Timestamp{Time: t}
 				}))),
 		celgo.Function("toNumber",
 			celgo.Overload("toNumber_string", []*celgo.Type{celgo.StringType}, celgo.DoubleType,
 				celgo.UnaryBinding(func(v ref.Val) ref.Val {
-					s := strings.TrimSpace(msgGet(ctx, stringVal(v)))
+					loc := stringVal(v)
+					s := strings.TrimSpace(msgGet(ctx, loc))
 					if s == "" {
-						return celtypes.Double(0)
+						return celtypes.WrapErr(fmt.Errorf("toNumber(%q): field is empty — guard with valued()", loc))
 					}
 					f, err := strconv.ParseFloat(s, 64)
 					if err != nil {
-						// Non-numeric content returns 0 so the rule continues to
-						// evaluate rather than aborting. Guard with validateAs() or
-						// valued() in the when-clause when numeric content is required.
-						return celtypes.Double(0)
+						return celtypes.WrapErr(fmt.Errorf("toNumber(%q): %q is not a valid number", loc, s))
 					}
 					return celtypes.Double(f)
 				}))),
@@ -120,11 +119,11 @@ func validateAsImpl(ctx *bindCtx, loc, typeCode string) bool {
 func matchesPatternImpl(ctx *bindCtx, loc, pattern string) (bool, error) {
 	val := strings.TrimSpace(msgGet(ctx, loc))
 	if val == "" {
-		return true, nil
+		return false, fmt.Errorf("matchesPattern(%q): field is empty — guard with valued()", loc)
 	}
 	re, err := compiledPattern(pattern)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("matchesPattern(%q): invalid pattern %q: %v", loc, pattern, err)
 	}
 	ok, _ := re.MatchString(val)
 	return ok, nil
