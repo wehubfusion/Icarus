@@ -43,6 +43,5 @@ func hl7FunctionDeclarations() []celgo.EnvOption {
 		celgo.Function("matchesPattern", celgo.Overload("matchesPattern_string_string", []*celgo.Type{celgo.StringType, celgo.StringType}, celgo.BoolType, celgo.LateFunctionBinding())),
 		celgo.Function("toDTM", celgo.Overload("toDTM_string", []*celgo.Type{celgo.StringType}, celgo.TimestampType, celgo.LateFunctionBinding())),
 		celgo.Function("toNumber", celgo.Overload("toNumber_string", []*celgo.Type{celgo.StringType}, celgo.DoubleType, celgo.LateFunctionBinding())),
-
 	}
 }

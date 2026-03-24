@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	celgo "github.com/google/cel-go/cel"
 	"github.com/dlclark/regexp2"
+	celgo "github.com/google/cel-go/cel"
 	celtypes "github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	hl7msg "github.com/wehubfusion/Icarus/pkg/schema/hl7/message"
@@ -70,11 +70,18 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 		celgo.Function("repCount",
 			celgo.Overload("repCount_string", []*celgo.Type{celgo.StringType}, celgo.IntType,
 				celgo.UnaryBinding(func(v ref.Val) ref.Val {
-					return celtypes.Int(repCountImpl(ctx, stringVal(v)))
+					n, err := repCountImpl(ctx, stringVal(v))
+					if err != nil {
+						return celtypes.WrapErr(err)
+					}
+					return celtypes.Int(n)
 				}))),
 		celgo.Function("validateAs",
 			celgo.Overload("validateAs_string_string", []*celgo.Type{celgo.StringType, celgo.StringType}, celgo.BoolType,
 				celgo.BinaryBinding(func(lhs, rhs ref.Val) ref.Val {
+					// lhs = HL7 location to validate ('OBX-5', 'OBX-5.1', ...)
+					// rhs = type code as a plain string — either a literal ('NM', 'DT')
+					//       or the result of msg('OBX-2') evaluated by CEL first
 					return celtypes.Bool(validateAsImpl(ctx, stringVal(lhs), stringVal(rhs)))
 				}))),
 		celgo.Function("matchesPattern",
@@ -124,43 +131,50 @@ func segCountImpl(ctx *bindCtx, seg string) int {
 	return ctx.msg.SegmentInstanceCount(seg)
 }
 
-func repCountImpl(ctx *bindCtx, loc string) int {
+func repCountImpl(ctx *bindCtx, loc string) (int, error) {
 	if ctx.msg == nil {
-		return 0
+		return 0, nil
 	}
 	segName, field, _, _, _ := hl7msg.LocationParts(loc)
 	if segName == "" || field <= 0 {
-		return 0
+		return 0, nil
 	}
 	var seg *hl7msg.Segment
 	if ctx.scopeSeg != "" && strings.EqualFold(segName, ctx.scopeSeg) {
 		seg = ctx.msg.NthSegmentByName(ctx.scopeSeg, ctx.instanceIdx0+1)
 	} else {
+		// In message-scoped evaluation, repCount('OBX-5') is ambiguous when OBX
+		// repeats. Surface an eval error instead of silently using OBX[1].
+		if ctx.scopeSeg == "" && ctx.msg.SegmentInstanceCount(segName) > 1 {
+			return 0, fmt.Errorf("repCount(%q) is ambiguous in message scope: segment %s has multiple instances", loc, segName)
+		}
 		seg = ctx.msg.NthSegmentByName(segName, 1)
 	}
 	if seg == nil {
-		return 0
+		return 0, nil
 	}
 	f, ok := seg.FieldAt(field)
 	if !ok {
-		return 0
+		return 0, nil
 	}
-	return len(f.Repetitions)
+	return len(f.Repetitions), nil
 }
 
-func validateAsImpl(ctx *bindCtx, typeOrLoc, valueLoc string) bool {
+// validateAsImpl checks whether value conforms to the given HL7 primitive type.
+// Both arguments are already-resolved strings — the caller is responsible for
+// reading field values via msg() rather than passing location strings directly.
+// validateAsImpl checks whether the value at loc conforms to typeCode.
+//
+// loc      — HL7 location resolved via msgGet ('OBX-5', 'OBX-5.1', …).
+// typeCode — HL7 primitive type code as a plain string: either a literal
+//
+//	('NM', 'DT') or already evaluated by CEL (result of msg('OBX-2')).
+func validateAsImpl(ctx *bindCtx, loc, typeCode string) bool {
 	if ctx.msg == nil {
 		return true
 	}
-	typeOrLoc = strings.TrimSpace(typeOrLoc)
-	valueLoc = strings.TrimSpace(valueLoc)
-	var tid string
-	if strings.Contains(typeOrLoc, "-") {
-		tid = strings.TrimSpace(strings.ToUpper(msgGet(ctx, typeOrLoc)))
-	} else { 
-		tid = strings.TrimSpace(strings.ToUpper(typeOrLoc))
-	}
-	val := msgGet(ctx, valueLoc)
+	val := msgGet(ctx, strings.TrimSpace(loc))
+	tid := strings.ToUpper(strings.TrimSpace(typeCode))
 	return primitive.ValidatePrimitiveType(tid, val, ctx.reg, ctx.version)
 }
 
