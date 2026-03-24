@@ -76,10 +76,11 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 			celgo.Overload("toDTM_string", []*celgo.Type{celgo.StringType}, celgo.TimestampType,
 				celgo.UnaryBinding(func(v ref.Val) ref.Val {
 					s := msgGet(ctx, stringVal(v))
-					t, err := parseHL7DTM(s)
-					if err != nil {
-						return celtypes.WrapErr(err)
-					}
+					t, _ := parseHL7DTM(s)
+					// An unparseable DTM returns the zero time (year 0001) so that
+					// timestamp comparisons still evaluate (and produce false) rather
+					// than aborting the rule. Guard with valued()/validateAs() when
+					// the field must be a valid date.
 					return celtypes.Timestamp{Time: t}
 				}))),
 		celgo.Function("toNumber",
@@ -91,10 +92,10 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 					}
 					f, err := strconv.ParseFloat(s, 64)
 					if err != nil {
-						// Non-numeric content is a data error, not a missing-field case.
-						// WrapErr surfaces this as HL7_CEL_EVAL_ERROR rather than silently
-						// treating "ABC" as 0 and producing a wrong comparison result.
-						return celtypes.WrapErr(fmt.Errorf("toNumber: %q is not a valid number", s))
+						// Non-numeric content returns 0 so the rule continues to
+						// evaluate rather than aborting. Guard with validateAs() or
+						// valued() in the when-clause when numeric content is required.
+						return celtypes.Double(0)
 					}
 					return celtypes.Double(f)
 				}))),

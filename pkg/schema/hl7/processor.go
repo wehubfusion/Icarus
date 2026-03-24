@@ -207,8 +207,13 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 			}
 		}
 		for _, e := range evalErrs {
+			path := fmt.Sprintf("rule[%s].%s", e.RuleID, e.Expr)
+			msg := e.Err.Error()
+			if e.RuleName != "" {
+				msg = fmt.Sprintf("%s: %s", e.RuleName, msg)
+			}
 			sev := bucketize(&all, contracts.ValidationError{
-				Path: "cel.eval", Message: e.Err.Error(), Code: "HL7_CEL_EVAL_ERROR",
+				Path: path, Message: msg, Code: "HL7_CEL_EVAL_ERROR",
 			}, mode)
 			if !opts.CollectAllErrors && sev == contracts.SeverityError {
 				break
