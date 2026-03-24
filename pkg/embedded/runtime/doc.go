@@ -70,10 +70,10 @@
 //   - WorkerPool processes array items concurrently
 //   - Each worker runs SubflowProcessor.ProcessItem() for one item
 //
-// 2. Mid-Flow Iteration (processMidFlowConcurrently):
+// 2. Mid-Flow Iteration (processIterationConcurrent):
 //   - Embedded node produces array mid-flow
-//   - SubflowProcessor creates internal worker pool
-//   - Concurrent processing of mid-flow array items
+//   - When NestedIterationConfig.IterationConcurrency > 0 and depth is 1, items are processed concurrently
+//   - Nested iterations (depth > 1) always use sequential processing for correctness
 //
 // 3. Depth-Level Parallelism (processDepthLevelParallel):
 //   - Nodes at same depth have no dependencies on each other
@@ -82,6 +82,7 @@
 //
 // Worker counts can be configured via WorkerPoolConfig (or env overrides
 // ICARUS_EMBEDDED_WORKERS / ICARUS_EMBEDDED_WORKER_MULTIPLIER).
+// Mid-flow iteration concurrency is controlled by NestedIterationConfig.IterationConcurrency (0 = sequential).
 //
 // # Per-Item Subflow Processing
 //

@@ -194,15 +194,14 @@ type ExecutionUnit struct {
 // (such as Argus) while still allowing services like Elysium to hook into
 // embedded node execution.
 type EmbeddedNodeLifecycleEmitter interface {
-	// ParentNodeEnded is called when the parent node's plugin execution has completed
-	// but before any embedded nodes are processed. Implementations should treat this
-	// as a best-effort signal and MUST NOT panic.
-	ParentNodeEnded(ctx context.Context, info ParentNodeEndInfo)
+	// EmitNodeStartEvent is called immediately before an embedded node processes.
+	// Emits lifecycle input on node.started.
+	EmitNodeStartEvent(ctx context.Context, info EmbeddedNodeIOInfo)
 
-	// EmbeddedNodeStarted is called when an embedded node is about to start execution.
-	// Implementations should be best-effort and MUST NOT panic – errors should be logged
-	// or swallowed so that embedded processing is never blocked by observation failures.
-	EmbeddedNodeStarted(ctx context.Context, info EmbeddedNodeStartInfo)
+	// EmitNodeEndEvent is called when a node output is available.
+	// It is used for both parent and embedded node terminal events.
+	// Emits lifecycle output on node.ended.
+	EmitNodeEndEvent(ctx context.Context, info EmbeddedNodeIOInfo)
 }
 
 // EmbeddedNodeStartInfo carries contextual information about an embedded node
@@ -214,6 +213,20 @@ type EmbeddedNodeStartInfo struct {
 	ProjectID      string
 	ParentNodeID   string
 	EmbeddedNodeID string
+	Label          string
+}
+
+// EmbeddedNodeEndInfo carries lifecycle information for an embedded node completion.
+type EmbeddedNodeEndInfo struct {
+	WorkflowID     string
+	RunID          string
+	ClientID       string
+	ProjectID      string
+	ParentNodeID   string
+	EmbeddedNodeID string
+	Label          string
+	HasError       bool
+	ErrorMessage   string
 }
 
 // ParentNodeEndInfo carries contextual information about a parent node whose
@@ -229,6 +242,33 @@ type ParentNodeEndInfo struct {
 	Label string
 	// HasEmbeddedNodes indicates whether this parent has embedded nodes configured.
 	HasEmbeddedNodes bool
+}
+
+// ParentNodeOutputInfo carries the parent node's output for lifecycle output emission.
+type ParentNodeOutputInfo struct {
+	WorkflowID   string
+	RunID        string
+	ClientID     string
+	ProjectID    string
+	ParentNodeID string
+	Label        string
+	Output       map[string]interface{}
+	HasError     bool
+	ErrorMessage string
+}
+
+// EmbeddedNodeIOInfo carries input or output data for an embedded node emission.
+type EmbeddedNodeIOInfo struct {
+	WorkflowID     string
+	RunID          string
+	ClientID       string
+	ProjectID      string
+	ParentNodeID   string
+	EmbeddedNodeID string
+	Label          string
+	Data           map[string]interface{}
+	HasError       bool
+	ErrorMessage   string
 }
 
 // StandardUnitOutput represents the flattened output of a unit as a flat map.
@@ -551,6 +591,25 @@ func (s *IterationStack) GetContextForDepth(depth int) *NestedIterationContext {
 	return s.contexts[depth]
 }
 
+// CloneWithCurrentIndex returns a new stack sharing parent contexts, with the top
+// context copied and CurrentIndex/ItemData set for the given item. Safe for concurrent use.
+// Returns nil if stack is empty.
+func (s *IterationStack) CloneWithCurrentIndex(itemIndex int, itemData map[string]interface{}) *IterationStack {
+	if len(s.contexts) == 0 {
+		return nil
+	}
+	newStack := &IterationStack{
+		contexts: make([]*NestedIterationContext, len(s.contexts)),
+	}
+	copy(newStack.contexts, s.contexts)
+	top := s.contexts[len(s.contexts)-1]
+	topCopy := *top
+	topCopy.CurrentIndex = itemIndex
+	topCopy.ItemData = itemData
+	newStack.contexts[len(newStack.contexts)-1] = &topCopy
+	return newStack
+}
+
 // BuildIterationPathPrefix returns a path with indices at each level for flat output keys.
 // Example: with stack (data/0, assignments/0, details/0, topics/0) returns "/data[0]/assignments[0]/details[0]/topics[0]".
 // Used so flat keys become "nodeId-/data[0]/assignments[0]/.../field[0]" instead of "nodeId-/field[0][0][0][0]".
@@ -576,6 +635,8 @@ type NestedIterationConfig struct {
 	MaxActiveCombinations int         // Max combinations to prevent explosion (default: 100000)
 	StrictArrayNotation   bool        // Strict validation of // paths
 	ConcurrencyPerLevel   map[int]int // Workers per depth level
+	// IterationConcurrency is max workers for single-level mid-flow iteration. 0 = sequential (default).
+	IterationConcurrency int
 }
 
 // ProcessInput contains all data needed for an embedded node to process.

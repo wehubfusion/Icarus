@@ -848,6 +848,8 @@ processor := embedded.NewEmbeddedProcessor(registry, cfg)
 results, err := processor.ProcessEmbeddedNodes(ctx, msg, parentOutput)
 ```
 
+**Mid-flow iteration concurrency**: When an embedded node produces an array and a downstream node iterates over it, single-level iterations can run concurrently. Set `cfg.NestedIteration.IterationConcurrency` > 0 (e.g. `cfg.NestedIteration.IterationConcurrency = 2`) to enable. Nested iterations always run sequentially for correctness.
+
 ### Embedded Runtime Package Layout
 
 The embedded processor has been modularized into focused runtime packages to simplify maintenance:
@@ -2206,6 +2208,10 @@ c.Messages.Publish(ctx, "subject", msg)
 
 ## Changelog
 
+- **2026-03-23**: Subflow now emits `node.started` (without input) for all embedded nodes at the start of processing, before any node runs. This provides early timeline visibility; input is backfilled when each node actually runs.
+- **2026-03-23**: Embedded runtime now emits `node.started` even when input is empty by normalizing empty input to `{}`. This preserves lifecycle visibility and allows downstream systems to backfill input later when a richer `node.started` arrives.
+- **2026-03-23**: Embedded runtime now emits `node.ended` for embedded nodes at actual completion time (success and failure paths). Zeus no longer needs to synthesize embedded `node.ended` events from parent unit results.
+- **2026-03-23**: Embedded runtime now propagates `has_error` and `error_message` on embedded `node.ended` emissions, and carries output payload on `node.ended` so Athena can surface error payloads consistently without standalone `node.output`.
 - **2026-02-27**: `NormalizeRawConfig` now merges flattened nodeSchema values into the existing config instead of replacing it. This preserves top-level keys like `connection_id`, `connection`, and `manual_inputs` (from Elysium enrichment) when config uses nodeSchema format, fixing HTTP Client "connection_id is required" errors after enrichment.
 - **2025-11-24**: Standardized embedded processor plugin identifiers. Use `plugin-js`, `plugin-json-operations`, and `plugin-dateformatter` across workflows, configs, and tests.
 - **2025-02-20**: Added `plugin-http-client` embedded processor. Sends HTTP requests using a configured Nyx HTTP connection, optional headers (`manual_inputs`), and input payload. Outputs `status` (number) and `body` (byte). Requires connection enrichment from Elysium (connection_id → connection).

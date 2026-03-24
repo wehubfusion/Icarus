@@ -20,6 +20,7 @@ type (
 var (
 	NewParser    = json.NewParser
 	NewValidator = json.NewValidator
+	NewCSVParser = csv.NewParser
 )
 
 // Re-exports from csv sub-package for backward compatibility.

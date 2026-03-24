@@ -15,16 +15,24 @@ import (
 // Nodes are processed by depth level, with parallel execution within each depth.
 // Mid-flow iteration uses concurrent processing when configured workers are available.
 type SubflowProcessor struct {
-	parentNodeId     string
-	nodes            []EmbeddedNode
-	nodeConfigs      []EmbeddedNodeConfig
-	depthGroups      [][]int // indices grouped by depth
-	arrayPath        string
-	logger           Logger
-	metrics          MetricsCollector
-	workerPoolConfig WorkerPoolConfig
-	config           NestedIterationConfig // Nested iteration config
-	priorUnitOutputs map[string]map[string]interface{}
+	parentNodeId      string
+	nodes             []EmbeddedNode
+	nodeConfigs       []EmbeddedNodeConfig
+	depthGroups       [][]int // indices grouped by depth
+	arrayPath         string
+	logger            Logger
+	metrics           MetricsCollector
+	workerPoolConfig  WorkerPoolConfig
+	config            NestedIterationConfig // Nested iteration config
+	priorUnitOutputs  map[string]map[string]interface{}
+	workflowID        string
+	runID             string
+	clientID          string
+	projectID         string
+	lifecycleEmitter  EmbeddedNodeLifecycleEmitter
+	iterIOAccumulator *iterationIOAccumulator
+	endedMu           sync.Mutex
+	endedEmitted      map[string]bool
 }
 
 // NewSubflowProcessor creates a new subflow processor.
@@ -89,6 +97,12 @@ func NewSubflowProcessor(config SubflowConfig) (*SubflowProcessor, error) {
 		workerPoolConfig: workerPoolCfg,
 		config:           nestedIterCfg,
 		priorUnitOutputs: config.PriorUnitOutputs,
+		workflowID:       config.WorkflowID,
+		runID:            config.RunID,
+		clientID:         config.ClientID,
+		projectID:        config.ProjectID,
+		lifecycleEmitter: config.LifecycleEmitter,
+		endedEmitted:     make(map[string]bool),
 	}, nil
 }
 
@@ -137,6 +151,74 @@ func (sp *SubflowProcessor) hasDownstreamPluginErrorListener(sourceNodeId string
 	return false
 }
 
+// iterationIOAccumulator accumulates input/output per node across iteration items
+// for aggregated emission when iteration completes.
+type iterationIOAccumulator struct {
+	mu         sync.Mutex
+	totalItems int                                 // 0 = append mode, >0 = index-based mode
+	inputs     map[string][]map[string]interface{} // nodeId -> per-iteration inputs
+	outputs    map[string][]map[string]interface{} // nodeId -> per-iteration outputs
+}
+
+// init prepares the accumulator for indexed writes. Must be called before addInputAt/addOutputAt.
+func (a *iterationIOAccumulator) init(totalItems int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.totalItems = totalItems
+}
+
+// isIndexedMode returns true when init was called with totalItems > 0 (concurrent path).
+// Safe to call without holding mu: totalItems is set once before any workers run.
+func (a *iterationIOAccumulator) isIndexedMode() bool {
+	return a.totalItems > 0
+}
+
+func (a *iterationIOAccumulator) addInput(nodeId string, data map[string]interface{}) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.inputs[nodeId] = append(a.inputs[nodeId], data)
+}
+
+func (a *iterationIOAccumulator) addOutput(nodeId string, data map[string]interface{}) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.outputs[nodeId] = append(a.outputs[nodeId], data)
+}
+
+// addInputAt writes input at the given index. Requires init(totalItems) to have been called.
+func (a *iterationIOAccumulator) addInputAt(nodeId string, index int, data map[string]interface{}) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.totalItems <= 0 || index < 0 || index >= a.totalItems {
+		return
+	}
+	slice := a.inputs[nodeId]
+	if cap(slice) < a.totalItems {
+		newSlice := make([]map[string]interface{}, a.totalItems)
+		copy(newSlice, slice)
+		a.inputs[nodeId] = newSlice
+		slice = newSlice
+	}
+	a.inputs[nodeId][index] = data
+}
+
+// addOutputAt writes output at the given index. Requires init(totalItems) to have been called.
+func (a *iterationIOAccumulator) addOutputAt(nodeId string, index int, data map[string]interface{}) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.totalItems <= 0 || index < 0 || index >= a.totalItems {
+		return
+	}
+	slice := a.outputs[nodeId]
+	if cap(slice) < a.totalItems {
+		newSlice := make([]map[string]interface{}, a.totalItems)
+		copy(newSlice, slice)
+		a.outputs[nodeId] = newSlice
+		slice = newSlice
+	}
+	a.outputs[nodeId][index] = data
+}
+
 // SubflowConfig holds configuration for creating a SubflowProcessor
 type SubflowConfig struct {
 	ParentNodeId     string
@@ -150,6 +232,12 @@ type SubflowConfig struct {
 	// PriorUnitOutputs seeds the store with per-node outputs from prior units so embedded nodes
 	// can reference those node IDs in field mappings (e.g. Unit A node IDs when Unit B runs).
 	PriorUnitOutputs map[string]map[string]interface{}
+	// Execution context for observation lifecycle payload emission
+	WorkflowID       string
+	RunID            string
+	ClientID         string
+	ProjectID        string
+	LifecycleEmitter EmbeddedNodeLifecycleEmitter
 }
 
 // ProcessItem processes a single parent item through all embedded nodes.
@@ -167,6 +255,14 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 		res.Error = ctx.Err()
 		return res
 	default:
+	}
+
+	// Emit node.started (without input) for all embedded nodes before subflow processing.
+	// This gives timeline visibility early; input will be backfilled when each node runs.
+	if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" {
+		for _, config := range sp.nodeConfigs {
+			sp.emitEmbeddedNodeStart(ctx, config, nil)
+		}
 	}
 
 	// Initialize iteration stack (empty = root level)
@@ -557,9 +653,9 @@ func (sp *SubflowProcessor) expandAndProcessIteration(
 	// Check for combinatorial explosion
 	estimatedCombinations := newIterCtx.TotalItems
 	for i := 0; i < iterStack.Depth(); i++ {
-		ctx := iterStack.GetContextForDepth(i)
-		if ctx != nil {
-			estimatedCombinations *= ctx.TotalItems
+		stackCtx := iterStack.GetContextForDepth(i)
+		if stackCtx != nil {
+			estimatedCombinations *= stackCtx.TotalItems
 		}
 	}
 
@@ -568,6 +664,14 @@ func (sp *SubflowProcessor) expandAndProcessIteration(
 			estimatedCombinations,
 			sp.config.MaxActiveCombinations,
 		)
+	}
+
+	isOutermost := iterStack.Depth() == 0
+	if isOutermost {
+		sp.iterIOAccumulator = &iterationIOAccumulator{
+			inputs:  make(map[string][]map[string]interface{}),
+			outputs: make(map[string][]map[string]interface{}),
+		}
 	}
 
 	// DFS: Push iteration context onto stack
@@ -588,8 +692,18 @@ func (sp *SubflowProcessor) expandAndProcessIteration(
 		}
 	}
 
-	// Sequential DFS traversal of items
-	return sp.processIterationSequential(ctx, currentDepth, parentStore, iterStack, newIterCtx, res)
+	var err error
+	if iterStack.Depth() == 1 && sp.config.IterationConcurrency > 0 && newIterCtx.TotalItems > 1 {
+		sp.iterIOAccumulator.init(newIterCtx.TotalItems)
+		err = sp.processIterationConcurrent(ctx, currentDepth, parentStore, iterStack, newIterCtx, res)
+	} else {
+		err = sp.processIterationSequential(ctx, currentDepth, parentStore, iterStack, newIterCtx, res)
+	}
+	if isOutermost {
+		sp.flushAggregatedIterationIO(ctx)
+		sp.iterIOAccumulator = nil
+	}
+	return err
 }
 
 // processIterationSequential processes iteration items sequentially (DFS in order)
@@ -633,6 +747,107 @@ func (sp *SubflowProcessor) processIterationSequential(
 	}
 
 	sp.logger.Debug("completed DFS iteration (backtrack)",
+		Field{Key: "nesting_level", Value: iterStack.Depth()},
+		Field{Key: "total_items", Value: iterCtx.TotalItems},
+	)
+
+	return nil
+}
+
+// processIterationConcurrent processes iteration items concurrently (single-level only).
+// Uses a semaphore to bound concurrency and merges per-item outputs sequentially at the end.
+func (sp *SubflowProcessor) processIterationConcurrent(
+	ctx context.Context,
+	currentDepth int,
+	parentStore *NodeOutputStore,
+	iterStack *IterationStack,
+	iterCtx *NestedIterationContext,
+	res *BatchResult,
+) error {
+	numWorkers := sp.config.IterationConcurrency
+	if numWorkers <= 0 {
+		return sp.processIterationSequential(ctx, currentDepth, parentStore, iterStack, iterCtx, res)
+	}
+	if numWorkers > iterCtx.TotalItems {
+		numWorkers = iterCtx.TotalItems
+	}
+
+	sem := make(chan struct{}, numWorkers)
+	type itemResult struct {
+		index  int
+		err    error
+		output map[string]interface{}
+	}
+	results := make([]itemResult, iterCtx.TotalItems)
+	var wg sync.WaitGroup
+	var firstErrMu sync.Mutex
+	var firstErr error
+
+	for i := 0; i < iterCtx.TotalItems; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			select {
+			case <-ctx.Done():
+				results[idx] = itemResult{index: idx, err: ctx.Err()}
+				firstErrMu.Lock()
+				if firstErr == nil {
+					firstErr = ctx.Err()
+				}
+				firstErrMu.Unlock()
+				return
+			default:
+			}
+
+			stack := iterStack.CloneWithCurrentIndex(idx, sp.extractItemDataAsMap(iterCtx.Items[idx]))
+			if stack == nil {
+				cloneErr := fmt.Errorf("clone iter stack failed")
+				results[idx] = itemResult{index: idx, err: cloneErr}
+				firstErrMu.Lock()
+				if firstErr == nil {
+					firstErr = cloneErr
+				}
+				firstErrMu.Unlock()
+				return
+			}
+			itemStore := sp.createNestedItemStore(parentStore, stack)
+			itemRes := &BatchResult{Output: make(map[string]interface{})}
+			err := sp.processDepthLevelsRecursive(ctx, currentDepth, itemStore, stack, itemRes)
+			results[idx] = itemResult{index: idx, err: err, output: itemRes.Output}
+			if err != nil {
+				firstErrMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				firstErrMu.Unlock()
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	if firstErr != nil {
+		return firstErr
+	}
+
+	for _, r := range results {
+		if r.output != nil {
+			for k, v := range r.output {
+				res.Output[k] = v
+			}
+		}
+	}
+
+	sp.logger.Debug("completed concurrent iteration",
 		Field{Key: "nesting_level", Value: iterStack.Depth()},
 		Field{Key: "total_items", Value: iterCtx.TotalItems},
 	)
@@ -809,6 +1024,18 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 				procInput.IterationPath = iter.ArrayPath
 			}
 
+			if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" && input != nil {
+				if iter != nil && sp.iterIOAccumulator != nil {
+					if sp.iterIOAccumulator.isIndexedMode() && itemIndex >= 0 {
+						sp.iterIOAccumulator.addInputAt(config.NodeId, itemIndex, input)
+					} else {
+						sp.iterIOAccumulator.addInput(config.NodeId, input)
+					}
+				} else {
+					sp.emitEmbeddedNodeStart(ctx, config, input)
+				}
+			}
+
 			// Process node in a goroutine with timeout to prevent indefinite blocking
 			processDone := make(chan struct{})
 			var out ProcessOutput
@@ -833,14 +1060,22 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 			if out.Error != nil {
 				sp.metrics.RecordError()
 				if sp.hasDownstreamPluginErrorListener(config.NodeId) {
-					result.output = map[string]interface{}{
+					errorOutput := map[string]interface{}{
 						ErrorOutputKeyError:       true,
 						ErrorOutputKeyDescription: out.Error.Error(),
+					}
+					result.output = errorOutput
+					if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" {
+						sp.emitEmbeddedNodeEnd(ctx, config, errorOutput, true, out.Error.Error())
+						sp.emitEmbeddedNodeEndedOnce(ctx, config, true, out.Error.Error())
 					}
 					result.err = nil
 					result.skipped = false
 					resultChan <- result
 					return
+				}
+				if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" {
+					sp.emitEmbeddedNodeEndedOnce(ctx, config, true, out.Error.Error())
 				}
 				result.err = fmt.Errorf("node %s failed: %w", config.Label, out.Error)
 				resultChan <- result
@@ -855,6 +1090,20 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 			}
 
 			sp.metrics.RecordProcessed(dur)
+			if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" && out.Data != nil {
+				if iter != nil && sp.iterIOAccumulator != nil {
+					if sp.iterIOAccumulator.isIndexedMode() && itemIndex >= 0 {
+						sp.iterIOAccumulator.addOutputAt(config.NodeId, itemIndex, out.Data)
+					} else {
+						sp.iterIOAccumulator.addOutput(config.NodeId, out.Data)
+					}
+				} else {
+					sp.emitEmbeddedNodeEnd(ctx, config, out.Data, false, "")
+				}
+			}
+			if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" {
+				sp.emitEmbeddedNodeEndedOnce(ctx, config, false, "")
+			}
 			result.output = out.Data
 			resultChan <- result
 		}(idx)
@@ -952,6 +1201,18 @@ func (sp *SubflowProcessor) processSingleNodeAtDepth(
 		procInput.IterationPath = iter.ArrayPath
 	}
 
+	if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" && input != nil {
+		if iter != nil && sp.iterIOAccumulator != nil {
+			if sp.iterIOAccumulator.isIndexedMode() && itemIndex >= 0 {
+				sp.iterIOAccumulator.addInputAt(config.NodeId, itemIndex, input)
+			} else {
+				sp.iterIOAccumulator.addInput(config.NodeId, input)
+			}
+		} else {
+			sp.emitEmbeddedNodeStart(ctx, config, input)
+		}
+	}
+
 	startTime := time.Now()
 	out := node.Process(procInput)
 	dur := time.Since(startTime).Nanoseconds()
@@ -963,10 +1224,17 @@ func (sp *SubflowProcessor) processSingleNodeAtDepth(
 				ErrorOutputKeyError:       true,
 				ErrorOutputKeyDescription: out.Error.Error(),
 			}
+			if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" {
+				sp.emitEmbeddedNodeEnd(ctx, config, errorOutput, true, out.Error.Error())
+				sp.emitEmbeddedNodeEndedOnce(ctx, config, true, out.Error.Error())
+			}
 			store.SetSingleOutput(config.NodeId, errorOutput)
 			flat := FlattenMap(errorOutput, config.NodeId, pathPrefix)
 			MergeMaps(shared, flat)
 			return nil
+		}
+		if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" {
+			sp.emitEmbeddedNodeEndedOnce(ctx, config, true, out.Error.Error())
 		}
 		return fmt.Errorf("node %s failed: %w", config.Label, out.Error)
 	}
@@ -978,6 +1246,21 @@ func (sp *SubflowProcessor) processSingleNodeAtDepth(
 
 	sp.metrics.RecordProcessed(dur)
 
+	if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" && out.Data != nil {
+		if iter != nil && sp.iterIOAccumulator != nil {
+			if sp.iterIOAccumulator.isIndexedMode() && itemIndex >= 0 {
+				sp.iterIOAccumulator.addOutputAt(config.NodeId, itemIndex, out.Data)
+			} else {
+				sp.iterIOAccumulator.addOutput(config.NodeId, out.Data)
+			}
+		} else {
+			sp.emitEmbeddedNodeEnd(ctx, config, out.Data, false, "")
+		}
+	}
+	if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" {
+		sp.emitEmbeddedNodeEndedOnce(ctx, config, false, "")
+	}
+
 	// Store output for downstream nodes
 	store.SetSingleOutput(config.NodeId, out.Data)
 
@@ -986,6 +1269,100 @@ func (sp *SubflowProcessor) processSingleNodeAtDepth(
 	MergeMaps(shared, flat)
 
 	return nil
+}
+
+func (sp *SubflowProcessor) emitEmbeddedNodeStart(ctx context.Context, config EmbeddedNodeConfig, input map[string]interface{}) {
+	if sp.lifecycleEmitter == nil {
+		return
+	}
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				sp.logger.Debug("emit embedded node input panic recovered", Field{Key: "node_id", Value: config.NodeId})
+			}
+		}()
+		sp.lifecycleEmitter.EmitNodeStartEvent(ctx, EmbeddedNodeIOInfo{
+			WorkflowID:     sp.workflowID,
+			RunID:          sp.runID,
+			ClientID:       sp.clientID,
+			ProjectID:      sp.projectID,
+			ParentNodeID:   sp.parentNodeId,
+			EmbeddedNodeID: config.NodeId,
+			Label:          config.Label,
+			Data:           input,
+		})
+	}()
+}
+
+func (sp *SubflowProcessor) emitEmbeddedNodeEnd(ctx context.Context, config EmbeddedNodeConfig, output map[string]interface{}, hasError bool, errorMessage string) {
+	if sp.lifecycleEmitter == nil {
+		return
+	}
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				sp.logger.Debug("emit embedded node output panic recovered", Field{Key: "node_id", Value: config.NodeId})
+			}
+		}()
+		sp.lifecycleEmitter.EmitNodeEndEvent(ctx, EmbeddedNodeIOInfo{
+			WorkflowID:     sp.workflowID,
+			RunID:          sp.runID,
+			ClientID:       sp.clientID,
+			ProjectID:      sp.projectID,
+			ParentNodeID:   sp.parentNodeId,
+			EmbeddedNodeID: config.NodeId,
+			Label:          config.Label,
+			Data:           output,
+			HasError:       hasError,
+			ErrorMessage:   errorMessage,
+		})
+	}()
+}
+
+func (sp *SubflowProcessor) emitEmbeddedNodeEndedOnce(_ context.Context, config EmbeddedNodeConfig, _ bool, _ string) {
+	sp.endedMu.Lock()
+	if sp.endedEmitted[config.NodeId] {
+		sp.endedMu.Unlock()
+		return
+	}
+	sp.endedEmitted[config.NodeId] = true
+	sp.endedMu.Unlock()
+}
+
+func (sp *SubflowProcessor) flushAggregatedIterationIO(ctx context.Context) {
+	acc := sp.iterIOAccumulator
+	if acc == nil || sp.lifecycleEmitter == nil || sp.clientID == "" || sp.workflowID == "" || sp.runID == "" {
+		return
+	}
+	acc.mu.Lock()
+	inputs := acc.inputs
+	outputs := acc.outputs
+	acc.mu.Unlock()
+	for nodeId, inputList := range inputs {
+		config := sp.findNodeConfig(nodeId)
+		items := make([]interface{}, len(inputList))
+		for i, v := range inputList {
+			items[i] = v
+		}
+		sp.emitEmbeddedNodeStart(ctx, config, map[string]interface{}{"items": items})
+	}
+	for nodeId, outputList := range outputs {
+		config := sp.findNodeConfig(nodeId)
+		items := make([]interface{}, len(outputList))
+		for i, v := range outputList {
+			items[i] = v
+		}
+		sp.emitEmbeddedNodeEnd(ctx, config, map[string]interface{}{"items": items}, false, "")
+	}
+}
+
+func (sp *SubflowProcessor) findNodeConfig(nodeId string) EmbeddedNodeConfig {
+	for _, c := range sp.nodeConfigs {
+		if c.NodeId == nodeId {
+			return c
+		}
+	}
+	return EmbeddedNodeConfig{}
 }
 
 // mergeIndexedOutputToResult merges indexed output into result structure.
