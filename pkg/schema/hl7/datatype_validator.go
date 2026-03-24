@@ -24,7 +24,7 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 	if reg == nil {
 		val := repetitionStringWithDelimiters(rep, msg)
 		if err := primitive.ValidatePrimitive(tid, val, path, length); err != nil {
-			return []ValidationError{*veFromPrimitive(err)}
+			return []ValidationError{*err}
 		}
 		return nil
 	}
@@ -33,7 +33,7 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 	if !ok || def == nil || !def.IsComposite {
 		val := repetitionStringWithDelimiters(rep, msg)
 		if err := primitive.ValidatePrimitive(tid, val, path, length); err != nil {
-			return []ValidationError{*veFromPrimitive(err)}
+			return []ValidationError{*err}
 		}
 		return nil
 	}
@@ -93,7 +93,7 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 			}
 		}
 		if err := primitive.ValidatePrimitive(childType, compVal, cPath, cdef.Length); err != nil {
-			errs = append(errs, *veFromPrimitive(err))
+			errs = append(errs, *err)
 		}
 	}
 	return errs
@@ -159,7 +159,7 @@ func validateLeavesAgainstSubcomponents(leaves []leafDef, c Component, path stri
 			errs = append(errs, ValidationError{Path: sPath, Message: fmt.Sprintf("length %d exceeds maximum %d", utf8.RuneCountInString(val), leaf.Length), Code: "HL7_LENGTH"})
 		}
 		if err := primitive.ValidatePrimitive(leaf.DataType, val, sPath, leaf.Length); err != nil {
-			errs = append(errs, *veFromPrimitive(err))
+			errs = append(errs, *err)
 		}
 	}
 	return errs
@@ -199,13 +199,6 @@ func componentStringWithDelimiters(c Component, msg *Message) string {
 		parts = append(parts, sc.Value)
 	}
 	return strings.Join(parts, string(d.Subcomponent))
-}
-
-func veFromPrimitive(fe *primitive.FieldError) *ValidationError {
-	if fe == nil {
-		return nil
-	}
-	return &ValidationError{Path: fe.Path, Message: fe.Message, Code: fe.Code}
 }
 
 // ValidatePrimitiveType reports whether value conforms to the primitive HL7 datatype.

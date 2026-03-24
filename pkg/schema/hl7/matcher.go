@@ -4,14 +4,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/wehubfusion/Icarus/pkg/schema/hl7/primitive"
 )
 
 // ValidationError represents a single HL7 validation error (Path, Message, Code).
-type ValidationError struct {
-	Path    string
-	Message string
-	Code    string
-}
+// It is aliased to the primitive validation error to avoid duplicated types.
+type ValidationError = primitive.FieldError
 
 // MatchedSegment pairs a message segment with its schema definition for validation.
 type MatchedSegment struct {
