@@ -264,11 +264,16 @@ func TestHL7StrictMode_CELEvalErrorIsFatal(t *testing.T) {
 		Mode:             contracts.ValidationModeStrict,
 		CollectAllErrors: true,
 	})
-	if err != nil {
-		t.Fatalf("Process should not return a Go error for validation findings; got: %v", err)
+	// contracts.ProcessOptions documents that ValidationModeStrict returns a
+	// Go error when the message is invalid — not just a valid:false payload.
+	if err == nil {
+		t.Fatal("expected Process to return a Go error in strict mode with invalid message")
+	}
+	if result == nil {
+		t.Fatal("Process must return a non-nil result even when it also returns a Go error")
 	}
 	if result.Valid {
-		t.Fatal("expected invalid result when CEL eval fails in strict mode")
+		t.Fatal("expected valid:false when CEL eval fails in strict mode")
 	}
 	var found bool
 	for _, e := range result.Errors {

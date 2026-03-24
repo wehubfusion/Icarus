@@ -18,28 +18,63 @@ import (
 // e.g. 'OBX-5', 'PID-3'. Capture group 1 is the segment name.
 var hl7LocationRe = regexp.MustCompile(`'([A-Z][A-Z0-9]{2,3})-\d`)
 
+// uniqueSegments scans an expression for quoted HL7 location literals and
+// returns the set of distinct segment names referenced (e.g. {"OBX", "PID"}).
+func uniqueSegments(expr string) map[string]bool {
+	segs := map[string]bool{}
+	for _, m := range hl7LocationRe.FindAllStringSubmatch(expr, -1) {
+		segs[m[1]] = true
+	}
+	return segs
+}
+
 // inferScopeFromExprs derives the iteration segment scope from the rule's CEL
 // expressions (when + assert, in their final expanded form).
 //
-// Every quoted HL7 location literal (e.g. 'OBX-5', 'PID-3') is scanned.
-// If all references point to the same segment, that segment is returned so the
-// iterator runs the rule once per instance of that segment.
-// Mixed references (e.g. both 'OBX-5' and 'PID-3') or no quoted literals at
-// all result in message scope (returns ""), where the rule runs exactly once
-// and helper functions like msg() only see the FIRST instance of each segment.
-// Rule authors must ensure all quoted locations refer to a single segment if
-// per-row iteration over a repeating segment is required.
+// Priority order:
+//  1. Assert references exactly one segment → use it.
+//     Any cross-segment references in `when` resolve to first-occurrence via
+//     Message.Get, which is correct for singleton segments (PID, MSH, EVN…).
+//  2. Assert is empty or multi-segment → try when alone; if it names exactly
+//     one segment, use it (common pattern: single-segment guard expression).
+//  3. Both are multi-segment → count occurrences of each segment across the
+//     combined expression. The segment cited most often is the strongest
+//     signal of the author's iteration intent. If there is a unique maximum,
+//     return that segment and resolve without ambiguity.
+//  4. Genuinely tied (two or more segments equally cited) or no literals →
+//     message scope (run once). A warning is emitted at runtime when a
+//     referenced segment actually repeats in the message.
 func inferScopeFromExprs(when, assert string) string {
-	all := when + " " + assert
-	segs := map[string]bool{}
-	for _, m := range hl7LocationRe.FindAllStringSubmatch(all, -1) {
-		segs[m[1]] = true
-	}
-	if len(segs) == 1 {
-		for seg := range segs {
+	// Step 1: derive scope from assert alone.
+	if assertSegs := uniqueSegments(assert); len(assertSegs) == 1 {
+		for seg := range assertSegs {
 			return seg
 		}
 	}
+	// Step 2: derive scope from when alone.
+	if whenSegs := uniqueSegments(when); len(whenSegs) == 1 {
+		for seg := range whenSegs {
+			return seg
+		}
+	}
+	// Step 3: most-referenced segment across both expressions wins.
+	combined := map[string]int{}
+	for _, m := range hl7LocationRe.FindAllStringSubmatch(when+" "+assert, -1) {
+		combined[m[1]]++
+	}
+	maxCount, winner, tied := 0, "", false
+	for seg, cnt := range combined {
+		switch {
+		case cnt > maxCount:
+			maxCount, winner, tied = cnt, seg, false
+		case cnt == maxCount:
+			tied = true
+		}
+	}
+	if !tied && winner != "" {
+		return winner
+	}
+	// Step 4: genuinely tied or no literals → message scope.
 	return ""
 }
 
@@ -79,22 +114,58 @@ func bindMessage(msg *hl7msg.Message, scopeSeg string, instanceIdx0 int, reg *da
 // HL7ScopeIterator implements icel.ScopeIterator for HL7 messages.
 // It infers the iteration scope (segment name) from each rule's expressions,
 // caching the result per rule ID so the regex scan runs at most once per rule.
+// Use ScopeAmbiguities() after evaluation to retrieve any rules where scope
+// fell to message-level while a referenced segment actually repeats.
 type HL7ScopeIterator struct {
 	Msg        *hl7msg.Message
 	Reg        *datatypes.Registry
-	scopeCache sync.Map // rule.ID → string
+	scopeCache sync.Map       // rule.ID → string
+	ambiguous  map[string]bool // rule IDs with unresolvable scope over repeating segments
 }
 
 var _ icel.ScopeIterator = (*HL7ScopeIterator)(nil)
 
 // scope returns the inferred scope for a rule, computing it once and caching.
+// If scope cannot be inferred (message-level) and a referenced segment repeats
+// in the message, the rule ID is recorded in ambiguous for later reporting.
 func (it *HL7ScopeIterator) scope(rule icel.InputRule) string {
 	if v, ok := it.scopeCache.Load(rule.ID); ok {
 		return v.(string)
 	}
 	s := inferScopeFromExprs(rule.When, rule.Assert)
+	// Detect coverage gap: scope is message-level but a referenced segment
+	// repeats, meaning per-instance evaluation was likely the intent.
+	if s == "" && it.Msg != nil {
+		all := rule.When + " " + rule.Assert
+		for seg := range uniqueSegments(all) {
+			if it.Msg.SegmentInstanceCount(seg) > 1 {
+				if it.ambiguous == nil {
+					it.ambiguous = make(map[string]bool)
+				}
+				it.ambiguous[rule.ID] = true
+				break
+			}
+		}
+	}
 	it.scopeCache.Store(rule.ID, s)
 	return s
+}
+
+// ScopeAmbiguities returns the IDs of rules that could not have their scope
+// inferred to a single segment (both when and assert reference multiple
+// segments) while at least one of those segments repeats in the message.
+// These rules execute once at message scope, seeing only the first instance
+// of every repeated segment — a silent coverage gap.
+// Call this after EvaluateRules to surface the issue as a diagnostic.
+func (it *HL7ScopeIterator) ScopeAmbiguities() []string {
+	if len(it.ambiguous) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(it.ambiguous))
+	for id := range it.ambiguous {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // IterationCount returns how many times the rule should run.
