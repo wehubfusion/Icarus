@@ -1605,46 +1605,44 @@ result, err := engine.ProcessCSVWithSchema(
 
 ### HL7 v2.x Schema Validation
 
-The schema engine also includes a dedicated **HL7 v2.x** validator in `pkg/schema/hl7` for validating raw HL7 messages against JSON-based HL7 schemas:
+The schema engine includes a dedicated **HL7 v2.x** validator in `pkg/schema/hl7` that validates raw HL7 messages against JSON-based schema definitions and optional CEL custom rules.
 
 ```go
 import "github.com/wehubfusion/Icarus/pkg/schema"
 
 engine := schema.NewEngine()
 
-// Validate an HL7 message against an HL7 schema definition
 result, err := engine.ProcessHL7WithSchema(
-    []byte(hl7Message),   // raw HL7 v2.x message bytes
-    []byte(hl7SchemaJSON),// HL7 schema definition (JSON)
+    []byte(hl7Message),    // raw HL7 v2.x message bytes
+    []byte(hl7SchemaJSON), // HL7 schema definition (JSON)
     schema.ProcessOptions{
         CollectAllErrors: true,
         Mode:             schema.ValidationModeNormal,
     },
 )
-
 if err != nil {
     log.Fatalf("HL7 processing failed: %v", err)
 }
-if !result.Valid {
-    for _, e := range result.Errors {
-        fmt.Printf("HL7 error at %s (%s): %s\n", e.Path, e.Code, e.Message)
-    }
+// result.Errors   — ERROR-severity issues
+// result.Warnings — WARNING-severity issues
+// result.Infos    — INFO-severity issues
+// result.Data     — original message bytes (unchanged)
+for _, e := range result.Errors {
+    fmt.Printf("error at %s (%s): %s\n", e.Path, e.Code, e.Message)
 }
 ```
 
-Key HL7 semantics (see `pkg/schema/hl7/HL7_VALIDATION_REPORT.md` for full details):
+**Key validation layers:**
 
-- **Usages**
-  - **R (Required)**: Element (segment/field/component/subcomponent) **must be present** and **non-empty**.
-  - **RE (Required but may be empty)**: Accepted in schemas; current engine does **not** enforce presence. If present, value may be empty.
-  - **O (Optional)**: May be present or absent; value validated only by datatype/length.
-  - **X, W (Not used / Withdrawn)**: Element may be absent or empty; **any non-empty value** yields `HL7_NOT_USED`.
-- **Datatypes**
-  - Primitive datatypes (NM, SI, DT, TM, DTM/TS, MO, NR, etc.) are validated for format/range.
-  - String-like types (ST, TX, FT, ID, IS, GTS, SN) are accepted without format checks.
-  - Composite types (CE, CX, HD, XPN, etc.) are validated structurally; only their **leaf** components/subcomponents are checked via primitive rules.
+- **Structural**: segment order, required/optional/repeated groups, unexpected segments.
+- **Message header**: MSH-9 message type and MSH-12 version (semantic: `"2.5"` == `"2.5.0"`).
+- **Field / component**: usage (R/X/W), repetition limits, length (truncation-delimiter-aware for HL7 v2.7+), datatype format and calendar range (month-specific day count, leap-year, TZ offset).
+- **Composite datatypes**: registry-driven decomposition — leaf components are validated by their own scalar types.
+- **CEL custom rules**: declarative `assert`/`require`/`forbid` rules with `when` guards, scope inference per segment, and helper functions (`msg`, `valued`, `validateAs`, `toDTM`, `toNumber`, `matchesPattern`).
 
-For in-depth behavior (segment matching, VARIES handling, detailed error codes), refer to `pkg/schema/hl7/HL7_VALIDATION_REPORT.md`.
+**Security guards:** messages larger than 10 MB or with more than 5,000 segments are rejected before parsing.
+
+For full details on schema format, error codes, severity tables, and CEL rule authoring, see [`pkg/schema/hl7/README.md`](pkg/schema/hl7/README.md).
 
 ### Schema Types
 
