@@ -159,7 +159,7 @@ The `tableId` field is parsed and stored but not validated — terminology/value
 
 ### CEL custom rules
 - `HL7_CUSTOM_RULE_VIOLATION` — a CEL `assert`/`require`/`forbid` rule evaluated to false
-- `HL7_CEL_EVAL_ERROR` — a CEL rule raised a runtime warning (empty input to `toDTM`, invalid pattern for `matchesPattern`, etc.)
+- `HL7_CEL_EVAL_ERROR` — a CEL rule raised a runtime evaluation issue (empty input to `toDTM`, invalid pattern for `matchesPattern`, etc.)
 
 ---
 
@@ -184,7 +184,7 @@ The `tableId` field is parsed and stored but not validated — terminology/value
 | HL7_EXTRA_COMPONENT | WARNING | INFO | INFO |
 | HL7_EXTRA_SUBCOMPONENT | WARNING | INFO | INFO |
 | HL7_CUSTOM_RULE_VIOLATION | per rule severity | per rule severity | per rule severity |
-| HL7_CEL_EVAL_ERROR | WARNING | WARNING | WARNING |
+| HL7_CEL_EVAL_ERROR | ERROR | WARNING | WARNING |
 
 ---
 
@@ -225,7 +225,7 @@ The iterator automatically infers the iteration scope from quoted HL7 location l
 | `toDTM(loc)` | `string → timestamp` | Parses the HL7 DTM/TS value at `loc` into a CEL `timestamp`; warns on empty or invalid input |
 | `toNumber(loc)` | `string → double` | Parses the value at `loc` as a float64; warns on empty or non-numeric input |
 
-All warning-generating functions produce `HL7_CEL_EVAL_ERROR` violations (always bucketed as WARNING).
+Warning-generating helper functions produce `HL7_CEL_EVAL_ERROR` violations. In `STRICT` mode they are promoted to `ERROR`; in `NORMAL` and `LENIENT` they remain `WARNING`.
 
 ### Example rules
 

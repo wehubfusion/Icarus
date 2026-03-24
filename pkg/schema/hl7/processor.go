@@ -15,12 +15,7 @@ func effectiveMode(opts contracts.ProcessOptions) contracts.ValidationMode {
 		switch m {
 		case contracts.ValidationModeStrict, contracts.ValidationModeNormal, contracts.ValidationModeLenient:
 			return m
-		default:
-			return contracts.ValidationModeNormal
 		}
-	}
-	if opts.StrictValidation {
-		return contracts.ValidationModeStrict
 	}
 	return contracts.ValidationModeNormal
 }
@@ -51,7 +46,7 @@ func resolveSeverity(code string, mode contracts.ValidationMode) contracts.Sever
 		case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
 			return contracts.SeverityWarning
 		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_NOT_USED", "HL7_LENGTH",
-			"HL7_UNEXPECTED_SEGMENT":
+			"HL7_UNEXPECTED_SEGMENT", "HL7_CEL_EVAL_ERROR":
 			return contracts.SeverityError
 		default:
 			return normal(code)
@@ -159,15 +154,11 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 			Code:     code,
 			Severity: resolveSeverity(code, mode),
 		}
-		result := &contracts.ProcessResult{
+		return &contracts.ProcessResult{
 			Valid:  false,
 			Data:   inputData,
 			Errors: []contracts.ValidationIssue{issue},
-		}
-		if opts.StrictValidation {
-			return result, fmt.Errorf("%s", (&contracts.ValidationResult{Valid: false, Errors: result.Errors}).ErrorMessage())
-		}
-		return result, nil
+		}, nil
 	}
 	match := MatchMessage(msg, c)
 	var all []contracts.ValidationIssue
@@ -225,11 +216,7 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 	}
 	errs, warns, infos := splitBuckets(all)
 	valid := len(errs) == 0
-	result := &contracts.ProcessResult{Valid: valid, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}
-	if !valid && opts.StrictValidation {
-		return result, fmt.Errorf("%s", (&contracts.ValidationResult{Valid: false, Errors: errs}).ErrorMessage())
-	}
-	return result, nil
+	return &contracts.ProcessResult{Valid: valid, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
 }
 
 // celSeverity converts the string severity stored on a CEL Violation to the

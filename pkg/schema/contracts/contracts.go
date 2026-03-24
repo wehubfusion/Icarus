@@ -72,12 +72,23 @@ func (r *ValidationResult) ErrorMessage() string {
 }
 
 // ProcessOptions controls schema processing behavior.
+//
+// Use Mode to control both severity classification and fail-on-invalid behaviour:
+//   - ValidationModeStrict:  all findings are elevated, invalid result returns a Go error.
+//   - ValidationModeNormal:  default severity table, invalid result is in payload only (err == nil).
+//   - ValidationModeLenient: findings are downgraded, invalid result is in payload only (err == nil).
+//
+// Deprecated: StrictValidation is no longer used by any processor and will be removed in a
+// future release. Set Mode: ValidationModeStrict instead.
 type ProcessOptions struct {
 	ApplyDefaults    bool
 	StructureData    bool
-	StrictValidation bool
 	Mode             ValidationMode
 	CollectAllErrors bool
+
+	// Deprecated: use Mode: ValidationModeStrict instead. Kept for JSON/config
+	// backward-compatibility only; processors no longer inspect this field.
+	StrictValidation bool `json:"strict_validation,omitempty"`
 }
 
 // ProcessResult contains the result of schema processing

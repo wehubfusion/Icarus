@@ -16,13 +16,37 @@ func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool, reg *
 	if msg != nil {
 		version = strings.TrimSpace(msg.Get("MSH-12"))
 	}
+
+	// Count how many times each segment name appears in match.Matched so we can
+	// include an instance suffix (e.g. "DG1[2]-6") whenever a segment repeats.
+	// A single-occurrence segment keeps the plain name ("DG1-6") for backward compat.
+	segCount := make(map[string]int)
+	for _, m := range match.Matched {
+		if m.Segment != nil {
+			segCount[m.Segment.Name]++
+		}
+	}
+	segInstance := make(map[string]int) // running per-name counter during iteration
+
 	for _, m := range match.Matched {
 		if m.Segment == nil || m.SchemaDef == nil {
 			continue
 		}
+		name := m.Segment.Name
+		segInstance[name]++
+		instance := segInstance[name]
+		total := segCount[name]
+
+		// segPrefix produces "SEG" for single-occurrence segments and "SEG[N]" for
+		// repeated ones, matching the path style used by CEL violation paths.
+		segPrefix := name
+		if total > 1 {
+			segPrefix = fmt.Sprintf("%s[%d]", name, instance)
+		}
+
 		for fi := range m.SchemaDef.Fields {
 			fdef := &m.SchemaDef.Fields[fi]
-			fieldErrs := validateField(m.Segment, fdef, m.Segment.Name, msg, reg, version)
+			fieldErrs := validateField(m.Segment, fdef, segPrefix, msg, reg, version)
 			for _, e := range fieldErrs {
 				errs = append(errs, e)
 				if !collectAll {
@@ -43,7 +67,7 @@ func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool, reg *
 				continue
 			}
 			errs = append(errs, ValidationError{
-				Path:    fmt.Sprintf("%s-%d", m.Segment.Name, fn),
+				Path:    fmt.Sprintf("%s-%d", segPrefix, fn),
 				Message: "segment has more fields than schema allows",
 				Code:    "HL7_EXTRA_FIELD",
 			})

@@ -62,15 +62,6 @@ func (p *CSVSchemaProcessor) Process(inputData []byte, cs contracts.CompiledSche
 
 	validationResult := ValidateCSVRowsWithOptions(rows, s, options.CollectAllErrors)
 
-	if !validationResult.Valid && options.StrictValidation {
-		outputData, _ := json.Marshal(rows)
-		return &contracts.ProcessResult{
-			Valid:  false,
-			Data:   outputData,
-			Errors: validationResult.Errors,
-		}, fmt.Errorf("%s", validationResult.ErrorMessage())
-	}
-
 	outputData, err := json.Marshal(rows)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal output: %w", err)

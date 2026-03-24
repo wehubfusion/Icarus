@@ -2,8 +2,6 @@ package hl7
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/wehubfusion/Icarus/pkg/schema/contracts"
@@ -135,38 +133,6 @@ func TestValidateMatchResult_RequiredField(t *testing.T) {
 	}
 }
 
-func findRepoRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
-}
-
-func readTestFile(t *testing.T, name string) []byte {
-	t.Helper()
-	root := findRepoRoot(t)
-	if root == "" {
-		t.Skip("could not find repo root (go.mod)")
-	}
-	path := filepath.Join(root, name)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Skipf("test file %q not found: %v", path, err)
-	}
-	return data
-}
-
 func TestHL7SchemaProcessor_Process_ValidMessage(t *testing.T) {
 	proc := NewHL7SchemaProcessor()
 	hl7Schema := `{
@@ -258,5 +224,60 @@ func TestHL7SchemaProcessor_Type(t *testing.T) {
 	proc := NewHL7SchemaProcessor()
 	if proc.Type() != string(contracts.FormatHL7) {
 		t.Errorf("Type() = %q, want %q", proc.Type(), contracts.FormatHL7)
+	}
+}
+
+func TestHL7StrictMode_CELEvalErrorIsFatal(t *testing.T) {
+	proc := NewHL7SchemaProcessor()
+	schemaDef := []byte(`{
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": [
+				{"position": "MSH.1", "dataType": "ST", "usage": "R"},
+				{"position": "MSH.2", "dataType": "ST", "usage": "R"},
+				{"position": "MSH.7", "dataType": "DTM", "usage": "O"},
+				{"position": "MSH.9", "dataType": "ST", "usage": "R"}
+			]},
+			{"name": "PID", "usage": "R", "rpt": "1", "fields": [
+				{"position": "PID.3", "dataType": "CX", "usage": "R"},
+				{"position": "PID.5", "dataType": "XPN", "usage": "O"}
+			]}
+		],
+		"rules": [
+			{
+				"id": "bad-regex",
+				"name": "intentional eval error",
+				"when": "valued('PID-5')",
+				"assert": "matchesPattern('PID-5', '[')",
+				"message": "should not evaluate cleanly",
+				"errorPath": "PID-5",
+				"severity": "ERROR"
+			}
+		]
+	}`)
+
+	compiled, err := proc.ParseSchema(schemaDef)
+	if err != nil {
+		t.Fatalf("ParseSchema: %v", err)
+	}
+	msg := []byte("MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.8\rPID|||12345^^^NHS^NH||DOE^JOHN")
+	result, err := proc.Process(msg, compiled, contracts.ProcessOptions{
+		Mode:             contracts.ValidationModeStrict,
+		CollectAllErrors: true,
+	})
+	if err != nil {
+		t.Fatalf("Process should not return a Go error for validation findings; got: %v", err)
+	}
+	if result.Valid {
+		t.Fatal("expected invalid result when CEL eval fails in strict mode")
+	}
+	var found bool
+	for _, e := range result.Errors {
+		if e.Code == "HL7_CEL_EVAL_ERROR" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected HL7_CEL_EVAL_ERROR in Errors, got errors=%v warnings=%v", result.Errors, result.Warnings)
 	}
 }
