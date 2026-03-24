@@ -35,13 +35,17 @@ var (
 // compile time. Implementations are merged in at evaluation time via Env.Extend.
 func hl7FunctionDeclarations() []celgo.EnvOption {
 	return []celgo.EnvOption{
+		// msg(loc) — read field value at loc from the current message context.
 		celgo.Function("msg", celgo.Overload("msg_string", []*celgo.Type{celgo.StringType}, celgo.StringType, celgo.LateFunctionBinding())),
+		// valued(loc) — true if field value at loc is non-empty and not just space padding.
 		celgo.Function("valued", celgo.Overload("valued_string", []*celgo.Type{celgo.StringType}, celgo.BoolType, celgo.LateFunctionBinding())),
-		celgo.Function("segCount", celgo.Overload("segCount_string", []*celgo.Type{celgo.StringType}, celgo.IntType, celgo.LateFunctionBinding())),
-		celgo.Function("repCount", celgo.Overload("repCount_string", []*celgo.Type{celgo.StringType}, celgo.IntType, celgo.LateFunctionBinding())),
+		// validateAs(loc, typeCode) — true if the value at loc conforms to typeCode.
 		celgo.Function("validateAs", celgo.Overload("validateAs_string_string", []*celgo.Type{celgo.StringType, celgo.StringType}, celgo.BoolType, celgo.LateFunctionBinding())),
+		// matchesPattern(loc, pattern) — true if the value at loc matches the given pattern.
 		celgo.Function("matchesPattern", celgo.Overload("matchesPattern_string_string", []*celgo.Type{celgo.StringType, celgo.StringType}, celgo.BoolType, celgo.LateFunctionBinding())),
+		// toDTM(loc) — convert the value at loc to a UTC timestamp.
 		celgo.Function("toDTM", celgo.Overload("toDTM_string", []*celgo.Type{celgo.StringType}, celgo.TimestampType, celgo.LateFunctionBinding())),
+		// toNumber(loc) — convert the value at loc to a double.
 		celgo.Function("toNumber", celgo.Overload("toNumber_string", []*celgo.Type{celgo.StringType}, celgo.DoubleType, celgo.LateFunctionBinding())),
 	}
 }

@@ -22,15 +22,6 @@ var compiledPatternCache sync.Map // string → *regexp2.Regexp
 
 func stringVal(v ref.Val) string { return fmt.Sprint(v.Value()) }
 
-func intVal(v ref.Val) int {
-	switch x := v.(type) {
-	case celtypes.Int:
-		return int(x)
-	default:
-		i, _ := strconv.Atoi(stringVal(v))
-		return i
-	}
-}
 
 func msgGet(ctx *bindCtx, loc string) string {
 	if ctx.msg == nil {
@@ -61,20 +52,6 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 					// is treated identically to `""`.
 					s := strings.TrimSpace(msgGet(ctx, stringVal(v)))
 					return celtypes.Bool(s != "" && s != `""`)
-				}))),
-		celgo.Function("segCount",
-			celgo.Overload("segCount_string", []*celgo.Type{celgo.StringType}, celgo.IntType,
-				celgo.UnaryBinding(func(v ref.Val) ref.Val {
-					return celtypes.Int(segCountImpl(ctx, stringVal(v)))
-				}))),
-		celgo.Function("repCount",
-			celgo.Overload("repCount_string", []*celgo.Type{celgo.StringType}, celgo.IntType,
-				celgo.UnaryBinding(func(v ref.Val) ref.Val {
-					n, err := repCountImpl(ctx, stringVal(v))
-					if err != nil {
-						return celtypes.WrapErr(err)
-					}
-					return celtypes.Int(n)
 				}))),
 		celgo.Function("validateAs",
 			celgo.Overload("validateAs_string_string", []*celgo.Type{celgo.StringType, celgo.StringType}, celgo.BoolType,
@@ -124,45 +101,6 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 	}
 }
 
-func segCountImpl(ctx *bindCtx, seg string) int {
-	if ctx.msg == nil {
-		return 0
-	}
-	return ctx.msg.SegmentInstanceCount(seg)
-}
-
-func repCountImpl(ctx *bindCtx, loc string) (int, error) {
-	if ctx.msg == nil {
-		return 0, nil
-	}
-	segName, field, _, _, _ := hl7msg.LocationParts(loc)
-	if segName == "" || field <= 0 {
-		return 0, nil
-	}
-	var seg *hl7msg.Segment
-	if ctx.scopeSeg != "" && strings.EqualFold(segName, ctx.scopeSeg) {
-		seg = ctx.msg.NthSegmentByName(ctx.scopeSeg, ctx.instanceIdx0+1)
-	} else {
-		// In message-scoped evaluation, repCount('OBX-5') is ambiguous when OBX
-		// repeats. Surface an eval error instead of silently using OBX[1].
-		if ctx.scopeSeg == "" && ctx.msg.SegmentInstanceCount(segName) > 1 {
-			return 0, fmt.Errorf("repCount(%q) is ambiguous in message scope: segment %s has multiple instances", loc, segName)
-		}
-		seg = ctx.msg.NthSegmentByName(segName, 1)
-	}
-	if seg == nil {
-		return 0, nil
-	}
-	f, ok := seg.FieldAt(field)
-	if !ok {
-		return 0, nil
-	}
-	return len(f.Repetitions), nil
-}
-
-// validateAsImpl checks whether value conforms to the given HL7 primitive type.
-// Both arguments are already-resolved strings — the caller is responsible for
-// reading field values via msg() rather than passing location strings directly.
 // validateAsImpl checks whether the value at loc conforms to typeCode.
 //
 // loc      — HL7 location resolved via msgGet ('OBX-5', 'OBX-5.1', …).
