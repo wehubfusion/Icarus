@@ -185,11 +185,12 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 			return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
 		}
 	}
-	fieldErrs := ValidateMatchResult(match, msg, true, c.Registry)
+	fieldErrs := ValidateMatchResult(match, msg, opts.CollectAllErrors, c.Registry)
 	for _, e := range fieldErrs {
 		sev := bucketize(&all, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code}, mode)
 		if !opts.CollectAllErrors && sev == contracts.SeverityError {
-			break
+			errs, warns, infos := splitBuckets(all)
+			return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
 		}
 	}
 	if cv := c.CELValidation; cv != nil && len(cv.Rules) > 0 {
@@ -203,20 +204,22 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 				Severity: celSeverity(v.Severity),
 			}, mode)
 			if !opts.CollectAllErrors && es == contracts.SeverityError {
-				break
+				errs, warns, infos := splitBuckets(all)
+				return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
 			}
 		}
 		for _, e := range evalErrs {
 			path := fmt.Sprintf("rule[%s].%s", e.RuleID, e.Expr)
-			msg := e.Err.Error()
+			errMsg := e.Err.Error()
 			if e.RuleName != "" {
-				msg = fmt.Sprintf("%s: %s", e.RuleName, msg)
+				errMsg = fmt.Sprintf("%s: %s", e.RuleName, errMsg)
 			}
 			sev := bucketize(&all, contracts.ValidationError{
-				Path: path, Message: msg, Code: "HL7_CEL_EVAL_ERROR",
+				Path: path, Message: errMsg, Code: "HL7_CEL_EVAL_ERROR",
 			}, mode)
 			if !opts.CollectAllErrors && sev == contracts.SeverityError {
-				break
+				errs, warns, infos := splitBuckets(all)
+				return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
 			}
 		}
 	}

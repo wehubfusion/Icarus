@@ -119,7 +119,8 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 	isMSH2 := segName == "MSH" && fieldNum == 2
 	if fdef.Length > 0 && !isMSH2 {
 		for ri, rep := range f.Repetitions {
-			val := rep.String()
+			// Use message-specific delimiters when joining components, not the default '^'.
+			val := truncateAtMarker(repetitionStringWithDelimiters(rep, msg), msg)
 			if utf8.RuneCountInString(val) > fdef.Length {
 				p := path
 				if len(f.Repetitions) > 1 {
@@ -131,7 +132,10 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 			}
 		}
 	}
-	// tableId/value-set validation requires an external terminology service and is not implemented.
+	// TODO(terminology): fdef.TableID carries the HL7 table identifier (e.g. "0076", "0085").
+	// Value-set validation against these tables requires an external terminology service.
+	// When that service is available, add a check here:
+	//   if fdef.TableID != nil && !terminology.IsInTable(*fdef.TableID, fieldRawValue) { … }
 
 	effectiveType := fdef.DataType
 	if strings.ToUpper(fdef.DataType) == "VARIES" {
@@ -172,6 +176,20 @@ func parseFieldNumberFromPosition(position string) int {
 	}
 	n, _ := strconv.Atoi(position)
 	return n
+}
+
+// truncateAtMarker removes content at and after the truncation delimiter from val.
+// This implements the HL7 v2.7+ rule: content after '#' (or the configured truncation
+// character) was intentionally shortened by the sender and must not be counted for
+// length-conformance checks. If no truncation delimiter is configured, val is returned as-is.
+func truncateAtMarker(val string, msg *Message) string {
+	if msg == nil || msg.Delimiters.Truncation == 0 {
+		return val
+	}
+	if idx := strings.IndexByte(val, msg.Delimiters.Truncation); idx >= 0 {
+		return val[:idx]
+	}
+	return val
 }
 
 func parseComponentNumberFromPosition(position string) int {

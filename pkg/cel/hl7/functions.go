@@ -201,13 +201,15 @@ func parseHL7DTM(s string) (time.Time, error) {
 		body = body[:dot]
 	}
 
-	// Collect only digit characters (ignores any non-digit noise).
-	digits := make([]byte, 0, 14)
+	// The remaining body must be pure ASCII digits. Any non-digit character
+	// (e.g. "2026abcd01") means the input is not a valid HL7 DTM value.
 	for _, c := range body {
-		if c >= '0' && c <= '9' {
-			digits = append(digits, byte(c))
+		if c < '0' || c > '9' {
+			return time.Time{}, fmt.Errorf("invalid HL7 DTM value: %q (unexpected character %q in date-time body)", s, c)
 		}
 	}
+
+	digits := []byte(body)
 	if len(digits) > 14 {
 		digits = digits[:14]
 	}

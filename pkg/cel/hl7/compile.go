@@ -2,10 +2,16 @@ package celhl7
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	icel "github.com/wehubfusion/Icarus/pkg/cel"
 )
+
+// reHL7Location matches valid HL7 v2 field/component/sub-component location tokens
+// (e.g. "MSH-9", "PID-3(2).1", "OBX-5"). Used to guard Require/Forbid strings
+// before embedding them in generated CEL expressions.
+var reHL7Location = regexp.MustCompile(`^[A-Z][A-Z0-9]{2}(-\d+(\(\d+\))?(\.\d+(\.\d+)?)?)?$`)
 
 // ValidateCELRuleMetadata checks rule IDs and assertion modes without compiling CEL.
 func ValidateCELRuleMetadata(rules []CELRule) error {
@@ -66,11 +72,17 @@ func validateCELRuleStruct(r *CELRule, idx int, seen map[string]bool) error {
 	if strings.TrimSpace(r.Assert) != "" {
 		n++
 	}
-	if strings.TrimSpace(r.Require) != "" {
+	if req := strings.TrimSpace(r.Require); req != "" {
 		n++
+		if !reHL7Location.MatchString(req) {
+			return fmt.Errorf("%s: require value %q is not a valid HL7 location (expected e.g. OBX-5 or PID-3.1)", path, req)
+		}
 	}
-	if strings.TrimSpace(r.Forbid) != "" {
+	if fbd := strings.TrimSpace(r.Forbid); fbd != "" {
 		n++
+		if !reHL7Location.MatchString(fbd) {
+			return fmt.Errorf("%s: forbid value %q is not a valid HL7 location (expected e.g. OBX-5 or PID-3.1)", path, fbd)
+		}
 	}
 	if n != 1 {
 		return fmt.Errorf("%s: exactly one of assert, require, forbid must be set", path)

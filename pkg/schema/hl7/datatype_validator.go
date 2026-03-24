@@ -67,9 +67,11 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 		}
 
 		compVal := componentStringWithDelimiters(c, msg)
-		if cdef.Length > 0 && utf8.RuneCountInString(compVal) > cdef.Length {
+		// Apply truncation delimiter before measuring length (HL7 v2.7+).
+		measuredVal := truncateAtMarker(compVal, msg)
+		if cdef.Length > 0 && utf8.RuneCountInString(measuredVal) > cdef.Length {
 			errs = append(errs, ValidationError{
-				Path: cPath, Message: fmt.Sprintf("length %d exceeds maximum %d", utf8.RuneCountInString(compVal), cdef.Length), Code: "HL7_LENGTH",
+				Path: cPath, Message: fmt.Sprintf("length %d exceeds maximum %d", utf8.RuneCountInString(measuredVal), cdef.Length), Code: "HL7_LENGTH",
 			})
 		}
 
@@ -81,7 +83,9 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 			continue
 		}
 
-		// Primitive component: validate as scalar. Extra subcomponents are reported when strict.
+		// Primitive component: report extra subcomponents, then validate only
+		// the first subcomponent value as the scalar. Using the full joined string
+		// (e.g. "3.5&2.1") would cause false positives on NM/DT/etc checks.
 		if len(c.Subcomponents) > 1 {
 			for subNum := 2; subNum <= len(c.Subcomponents); subNum++ {
 				if strings.TrimSpace(c.Subcomponents[subNum-1].Value) == "" {
@@ -92,7 +96,11 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 				})
 			}
 		}
-		if err := primitive.ValidatePrimitive(childType, compVal, cPath, cdef.Length); err != nil {
+		primitiveVal := ""
+		if len(c.Subcomponents) > 0 {
+			primitiveVal = c.Subcomponents[0].Value
+		}
+		if err := primitive.ValidatePrimitive(childType, primitiveVal, cPath, cdef.Length); err != nil {
 			errs = append(errs, *err)
 		}
 	}

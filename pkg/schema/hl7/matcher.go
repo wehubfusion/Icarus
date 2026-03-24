@@ -80,9 +80,20 @@ func computeReserve(laterSegs []HL7SegmentDef, segName string) int {
 	return reserve
 }
 
+// maxMatchDepth is the hard limit on group nesting during message-to-schema matching.
+// Schemas are already validated against maxHL7RecursionDepth (20). This guard is a
+// secondary safety net against crafted schemas or unexpected recursion.
+const maxMatchDepth = 32
+
 // MatchMessage matches message segments against the schema; Z-segments not in schema are skipped.
 func MatchMessage(msg *Message, compiled *CompiledHL7Schema) MatchResult {
 	var result MatchResult
+	if msg == nil {
+		result.Errors = append(result.Errors, ValidationError{
+			Path: "message", Message: "nil message", Code: "HL7_INVALID_MESSAGE",
+		})
+		return result
+	}
 	if compiled == nil || compiled.Schema == nil {
 		result.Errors = append(result.Errors, ValidationError{
 			Path: "message", Message: "no schema", Code: "HL7_INVALID_SCHEMA",
@@ -115,6 +126,13 @@ func MatchMessage(msg *Message, compiled *CompiledHL7Schema) MatchResult {
 
 // matchSegments matches a message segment stream to a schema segment list.
 func matchSegments(msg *Message, msgIdx int, schemaSegs []HL7SegmentDef, result *MatchResult, depth int) (int, []ValidationError) {
+	if depth > maxMatchDepth {
+		return msgIdx, []ValidationError{{
+			Path:    "schema",
+			Message: fmt.Sprintf("segment group nesting exceeds maximum depth (%d)", maxMatchDepth),
+			Code:    "HL7_INVALID_SCHEMA",
+		}}
+	}
 	var errs []ValidationError
 	for si := range schemaSegs {
 		def := &schemaSegs[si]
@@ -210,6 +228,12 @@ func matchSegments(msg *Message, msgIdx int, schemaSegs []HL7SegmentDef, result 
 	return msgIdx, errs
 }
 
+// isRequired returns true only for R (Required). RE, O, C, B, X, and W are not treated
+// as required here:
+//   - RE (Required but may be Empty): absence is allowed; treated like Optional.
+//   - C  (Conditional): presence depends on another element value. The predicate is
+//     implementation-guide specific and cannot be evaluated statically.
+//     Use CEL rules (e.g. when/assert) to enforce conditional presence.
 func isRequired(usage string) bool {
 	u := strings.ToUpper(strings.TrimSpace(usage))
 	return u == UsageRequired

@@ -111,17 +111,39 @@ func ValidatePrimitiveType(typeID string, value string, reg *datatypes.Registry,
 	return ValidatePrimitive(tid, value, "", 0) == nil
 }
 
+func isLeapYear(y int) bool {
+	return y%4 == 0 && (y%100 != 0 || y%400 == 0)
+}
+
+// maxDaysInMonth returns the number of days in the given month (1-based) for the given year.
+func maxDaysInMonth(year, month int) int {
+	switch month {
+	case 1, 3, 5, 7, 8, 10, 12:
+		return 31
+	case 4, 6, 9, 11:
+		return 30
+	case 2:
+		if isLeapYear(year) {
+			return 29
+		}
+		return 28
+	default:
+		return 31
+	}
+}
+
 func validateDTCalendarRange(value, path string) *FieldError {
+	yyyy, _ := strconv.Atoi(value[0:4])
 	if len(value) >= 6 {
 		mm, _ := strconv.Atoi(value[4:6])
 		if mm < 1 || mm > 12 {
 			return &FieldError{Path: path, Message: fmt.Sprintf("invalid month %02d in date", mm), Code: "HL7_DATATYPE"}
 		}
-	}
-	if len(value) == 8 {
-		dd, _ := strconv.Atoi(value[6:8])
-		if dd < 1 || dd > 31 {
-			return &FieldError{Path: path, Message: fmt.Sprintf("invalid day %02d in date", dd), Code: "HL7_DATATYPE"}
+		if len(value) == 8 {
+			dd, _ := strconv.Atoi(value[6:8])
+			if maxDD := maxDaysInMonth(yyyy, mm); dd < 1 || dd > maxDD {
+				return &FieldError{Path: path, Message: fmt.Sprintf("invalid day %02d for %04d-%02d", dd, yyyy, mm), Code: "HL7_DATATYPE"}
+			}
 		}
 	}
 	return nil
@@ -153,16 +175,17 @@ func validateTMRange(value, path string) *FieldError {
 
 func validateDTMCalendarRange(value, path string) *FieldError {
 	digits := stripTZOffset(value)
+	yyyy, _ := strconv.Atoi(digits[0:4])
 	if len(digits) >= 6 {
 		mm, _ := strconv.Atoi(digits[4:6])
 		if mm < 1 || mm > 12 {
 			return &FieldError{Path: path, Message: fmt.Sprintf("invalid month %02d in timestamp", mm), Code: "HL7_DATATYPE"}
 		}
-	}
-	if len(digits) >= 8 {
-		dd, _ := strconv.Atoi(digits[6:8])
-		if dd < 1 || dd > 31 {
-			return &FieldError{Path: path, Message: fmt.Sprintf("invalid day %02d in timestamp", dd), Code: "HL7_DATATYPE"}
+		if len(digits) >= 8 {
+			dd, _ := strconv.Atoi(digits[6:8])
+			if maxDD := maxDaysInMonth(yyyy, mm); dd < 1 || dd > maxDD {
+				return &FieldError{Path: path, Message: fmt.Sprintf("invalid day %02d for %04d-%02d", dd, yyyy, mm), Code: "HL7_DATATYPE"}
+			}
 		}
 	}
 	if len(digits) >= 10 {
@@ -211,6 +234,7 @@ func validateTZOffset(value, path string) *FieldError {
 	if tzIdx < 0 {
 		return nil
 	}
+	sign := value[tzIdx]
 	tz := value[tzIdx+1:]
 	if len(tz) != 4 {
 		return nil
@@ -220,17 +244,22 @@ func validateTZOffset(value, path string) *FieldError {
 	if err1 != nil || err2 != nil {
 		return nil
 	}
-	if tzH > 14 || (tzH == 14 && tzM > 0) {
+	// Valid UTC offset range: -12:00 (UTC-12) to +14:00 (UTC+14, Line Islands).
+	maxH := 14
+	if sign == '-' {
+		maxH = 12
+	}
+	if tzH > maxH || (tzH == maxH && tzM > 0) {
 		return &FieldError{
 			Path:    path,
-			Message: fmt.Sprintf("invalid timezone offset %c%s: hours must be 00-14", value[tzIdx], tz),
+			Message: fmt.Sprintf("invalid timezone offset %c%s: exceeds allowed range", sign, tz),
 			Code:    "HL7_DATATYPE",
 		}
 	}
 	if tzM > 59 {
 		return &FieldError{
 			Path:    path,
-			Message: fmt.Sprintf("invalid timezone offset %c%s: minutes must be 00-59", value[tzIdx], tz),
+			Message: fmt.Sprintf("invalid timezone offset %c%s: minutes must be 00-59", sign, tz),
 			Code:    "HL7_DATATYPE",
 		}
 	}

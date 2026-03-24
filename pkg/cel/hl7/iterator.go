@@ -124,10 +124,18 @@ func (it *HL7ScopeIterator) EnvOptionsAt(rule icel.InputRule, index int) []celgo
 
 // ErrorPath builds a qualified path like OBX[2]-5 for segment-scoped rules,
 // or returns the raw errorPath unchanged for message-scoped rules.
+// If errorPath is empty for a segment-scoped rule, the segment name with an
+// instance suffix (e.g. "OBX[2]") is used so the path is always meaningful.
 func (it *HL7ScopeIterator) ErrorPath(rule icel.InputRule, index int) string {
 	base := strings.TrimSpace(rule.ErrorPath)
-	if it.scope(rule) == "" {
+	scope := it.scope(rule)
+	if scope == "" {
+		// Message-scoped: return the raw errorPath (may be empty — caller must handle).
 		return base
+	}
+	if base == "" {
+		// Segment-scoped but no errorPath declared: use the segment name + instance.
+		return fmt.Sprintf("%s[%d]", scope, index+1)
 	}
 	parts := strings.SplitN(base, "-", 2)
 	if len(parts) == 2 {
