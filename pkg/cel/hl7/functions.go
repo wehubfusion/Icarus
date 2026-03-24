@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	celgo "github.com/google/cel-go/cel"
@@ -13,6 +14,11 @@ import (
 	hl7msg "github.com/wehubfusion/Icarus/pkg/schema/hl7/message"
 	"github.com/wehubfusion/Icarus/pkg/schema/hl7/primitive"
 )
+
+// compiledPatternCache stores compiled regexp2 patterns keyed by pattern string.
+// Rules typically use constant patterns, so compiling once per unique pattern
+// avoids repeated compilation on every rule evaluation.
+var compiledPatternCache sync.Map // string → *regexp2.Regexp
 
 func stringVal(v ref.Val) string { return fmt.Sprint(v.Value()) }
 
@@ -30,11 +36,10 @@ func msgGet(ctx *bindCtx, loc string) string {
 	if ctx.msg == nil {
 		return ""
 	}
-	scope := strings.TrimSpace(ctx.scopeSeg)
-	if scope != "" {
+	if ctx.scopeSeg != "" {
 		seg, _, _, _, _ := hl7msg.LocationParts(loc)
-		if seg != "" && strings.EqualFold(seg, scope) {
-			return ctx.msg.GetAtSegmentInstance(scope, ctx.instanceIdx0+1, loc)
+		if seg != "" && strings.EqualFold(seg, ctx.scopeSeg) {
+			return ctx.msg.GetAtSegmentInstance(ctx.scopeSeg, ctx.instanceIdx0+1, loc)
 		}
 	}
 	return ctx.msg.Get(loc)
@@ -52,8 +57,10 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 		celgo.Function("valued",
 			celgo.Overload("valued_string", []*celgo.Type{celgo.StringType}, celgo.BoolType,
 				celgo.UnaryBinding(func(v ref.Val) ref.Val {
-					s := msgGet(ctx, stringVal(v))
-					return celtypes.Bool(strings.TrimSpace(s) != "" && s != `""`)
+					// Trim first so that a value like `  ""  ` (space-padded HL7 blank)
+					// is treated identically to `""`.
+					s := strings.TrimSpace(msgGet(ctx, stringVal(v)))
+					return celtypes.Bool(s != "" && s != `""`)
 				}))),
 		celgo.Function("segCount",
 			celgo.Overload("segCount_string", []*celgo.Type{celgo.StringType}, celgo.IntType,
@@ -94,13 +101,16 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 		celgo.Function("toNumber",
 			celgo.Overload("toNumber_string", []*celgo.Type{celgo.StringType}, celgo.DoubleType,
 				celgo.UnaryBinding(func(v ref.Val) ref.Val {
-					s := msgGet(ctx, stringVal(v))
-					if strings.TrimSpace(s) == "" {
+					s := strings.TrimSpace(msgGet(ctx, stringVal(v)))
+					if s == "" {
 						return celtypes.Double(0)
 					}
 					f, err := strconv.ParseFloat(s, 64)
 					if err != nil {
-						return celtypes.Double(0)
+						// Non-numeric content is a data error, not a missing-field case.
+						// WrapErr surfaces this as HL7_CEL_EVAL_ERROR rather than silently
+						// treating "ABC" as 0 and producing a wrong comparison result.
+						return celtypes.WrapErr(fmt.Errorf("toNumber: %q is not a valid number", s))
 					}
 					return celtypes.Double(f)
 				}))),
@@ -155,17 +165,33 @@ func validateAsImpl(ctx *bindCtx, typeOrLoc, valueLoc string) bool {
 }
 
 func matchesPatternImpl(ctx *bindCtx, loc, pattern string) (bool, error) {
-	val := msgGet(ctx, loc)
-	if strings.TrimSpace(val) == "" {
+	val := strings.TrimSpace(msgGet(ctx, loc))
+	if val == "" {
 		return true, nil
 	}
-	re, err := regexp2.Compile(pattern, regexp2.None)
+	re, err := compiledPattern(pattern)
 	if err != nil {
 		return false, err
 	}
-	re.MatchTimeout = 50 * time.Millisecond
 	ok, _ := re.MatchString(val)
 	return ok, nil
+}
+
+// compiledPattern returns a cached *regexp2.Regexp for pattern, compiling it on
+// first use. The timeout is set once at compile time so every match respects it
+// without per-call overhead.
+func compiledPattern(pattern string) (*regexp2.Regexp, error) {
+	if v, ok := compiledPatternCache.Load(pattern); ok {
+		return v.(*regexp2.Regexp), nil
+	}
+	re, err := regexp2.Compile(pattern, regexp2.None)
+	if err != nil {
+		return nil, err
+	}
+	re.MatchTimeout = 50 * time.Millisecond
+	// Store only on success; a bad pattern stays uncached so callers always get the error.
+	compiledPatternCache.Store(pattern, re)
+	return re, nil
 }
 
 // parseHL7DTM parses an HL7 DTM/TS string (partial precision allowed) into UTC.
