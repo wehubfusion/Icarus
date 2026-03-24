@@ -24,11 +24,7 @@ func Tokenize(raw []byte) (Delimiters, []string, error) {
 	}
 	s = strings.TrimLeft(s, " \t\r\n")
 	for len(s) > 0 && (s[len(s)-1] == '\r' || s[len(s)-1] == '\n' || s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-		if s[len(s)-1] == '\r' || s[len(s)-1] == '\n' {
-			s = s[:len(s)-1]
-		} else {
-			break
-		}
+		s = s[:len(s)-1]
 	}
 	if len(s) == 0 {
 		return Delimiters{}, nil, ErrEmptyMessage
@@ -276,7 +272,11 @@ func decodeEscapeSequence(seq string, d Delimiters) (string, bool) {
 		return string(d.Escape), true
 	case ".br", ".sp":
 		return "\n", true
-	case ".ce", ".sk", ".fi", ".nf", ".in", ".ti", "H", "N", "C", "M":
+	case ".ce", ".sk", ".fi", ".nf", ".in", ".ti", "H", "N":
+		// Formatting hints (highlight on/off, etc.) — strip to empty.
+		return "", true
+	case "C", "M":
+		// Single-char \C\ / \M\ charset markers with no identifier — strip.
 		return "", true
 	default:
 		if len(seq) >= 2 && (seq[0] == 'X' || seq[0] == 'x') {
@@ -292,6 +292,13 @@ func decodeEscapeSequence(seq string, d Delimiters) (string, bool) {
 			if strings.HasPrefix(seq, ".in") {
 				return "", true
 			}
+		}
+		// \Cxxx\ and \Mxxx\ introduce character-set switches. We do not have
+		// charset support, so the escape sequence is preserved verbatim in the
+		// output rather than being stripped. Callers that need proper charset
+		// handling should detect the leading 'C'/'M' and process accordingly.
+		if len(seq) >= 2 && (seq[0] == 'C' || seq[0] == 'M') {
+			return string(d.Escape) + seq + string(d.Escape), true
 		}
 	}
 	return "", false

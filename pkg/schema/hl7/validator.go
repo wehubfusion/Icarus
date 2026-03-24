@@ -135,7 +135,12 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 
 	effectiveType := fdef.DataType
 	if strings.ToUpper(fdef.DataType) == "VARIES" {
-		// VARIES resolution is intentionally disabled for now; validate as a plain string.
+		// KNOWN LIMITATION: VARIES fields (e.g. OBX-5) carry a runtime type declared
+		// in a sibling field (e.g. OBX-2). Resolving that at validation time requires
+		// passing the live message into schema validation, which is not yet done.
+		// Until then, VARIES is treated as ST (free-text string) so at least length
+		// checks still apply. Use CEL validateAs('OBX-5', msg('OBX-2')) for
+		// proper per-message type enforcement.
 		effectiveType = "ST"
 	}
 	for ri, rep := range f.Repetitions {
@@ -152,7 +157,16 @@ func parseFieldNumberFromPosition(position string) int {
 	position = strings.TrimSpace(position)
 	for _, sep := range []string{"-", "."} {
 		if i := strings.LastIndex(position, sep); i >= 0 && i+1 < len(position) {
-			n, _ := strconv.Atoi(strings.TrimSpace(position[i+1:]))
+			tail := strings.TrimSpace(position[i+1:])
+			// Compound forms like "PID-3.1" have a component suffix after the field
+			// number. Strip it so Atoi sees just "3", not "3.1" (which would fail).
+			if dot := strings.IndexByte(tail, '.'); dot >= 0 {
+				tail = tail[:dot]
+			}
+			n, err := strconv.Atoi(tail)
+			if err != nil || n <= 0 {
+				continue // try next separator
+			}
 			return n
 		}
 	}

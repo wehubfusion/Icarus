@@ -109,7 +109,8 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 //	('NM', 'DT') or already evaluated by CEL (result of msg('OBX-2')).
 func validateAsImpl(ctx *bindCtx, loc, typeCode string) bool {
 	if ctx.msg == nil {
-		return true
+		// Fail-safe: no message means we cannot validate; treat as invalid.
+		return false
 	}
 	val := msgGet(ctx, strings.TrimSpace(loc))
 	tid := strings.ToUpper(strings.TrimSpace(typeCode))
@@ -125,7 +126,14 @@ func matchesPatternImpl(ctx *bindCtx, loc, pattern string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("matchesPattern(%q): invalid pattern %q: %v", loc, pattern, err)
 	}
-	ok, _ := re.MatchString(val)
+	ok, err := re.MatchString(val)
+	if err != nil {
+		// regexp2 returns an error on match timeout (50 ms ReDoS guard) or
+		// internal runtime failure. Surface it as HL7_CEL_EVAL_ERROR rather
+		// than silently returning false (which would produce a spurious
+		// violation) or true (which would silently pass a potentially-matching field).
+		return false, fmt.Errorf("matchesPattern(%q): match failed: %w", loc, err)
+	}
 	return ok, nil
 }
 
@@ -150,9 +158,15 @@ func compiledPattern(pattern string) (*regexp2.Regexp, error) {
 //
 // HL7 DTM format: YYYY[MM[DD[HH[MM[SS[.S[S[S[S]]]]]]]]][+/-ZZZZ]
 //
-// Partial values are zero-extended (e.g. "202601" → 2026-01-01 00:00:00 UTC).
-// A timezone offset, when present, is parsed and applied so the returned time
-// is always in UTC. An empty string returns the zero time without error.
+// Partial values are extended to the start of the period:
+//   - "2026"     → 2026-01-01 00:00:00 UTC
+//   - "202601"   → 2026-01-01 00:00:00 UTC
+//   - "20260115" → 2026-01-15 00:00:00 UTC
+//
+// A timezone offset, when present, is parsed and applied so the result is UTC.
+// An empty string returns the zero time without error.
+// Calendar components are validated after parsing; out-of-range values (e.g.
+// month 14, Feb 31) are rejected even though time.Date would silently normalise them.
 func parseHL7DTM(s string) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -187,33 +201,52 @@ func parseHL7DTM(s string) (time.Time, error) {
 		body = body[:dot]
 	}
 
-	// Collect only digit characters and zero-pad to 14 digits (YYYYMMDDHHmmss).
+	// Collect only digit characters (ignores any non-digit noise).
 	digits := make([]byte, 0, 14)
 	for _, c := range body {
 		if c >= '0' && c <= '9' {
 			digits = append(digits, byte(c))
 		}
 	}
-	for len(digits) < 14 {
-		digits = append(digits, '0')
-	}
 	if len(digits) > 14 {
 		digits = digits[:14]
 	}
+	realLen := len(digits) // track how many digits were actually present
 
+	// Zero-pad time components to 14 digits. Month and day default to "01"
+	// (start of period) not "00", since time.Date(y,0,0) wraps backward.
+	for len(digits) < 14 {
+		digits = append(digits, '0')
+	}
+
+	// strconv.Atoi on a slice of guaranteed digit bytes cannot fail.
 	y, _ := strconv.Atoi(string(digits[0:4]))
-	mo, _ := strconv.Atoi(string(digits[4:6]))
-	d, _ := strconv.Atoi(string(digits[6:8]))
-	h, _ := strconv.Atoi(string(digits[8:10]))
-	mi, _ := strconv.Atoi(string(digits[10:12]))
-	sec, _ := strconv.Atoi(string(digits[12:14]))
-
 	if y == 0 {
 		return time.Time{}, fmt.Errorf("invalid HL7 DTM value: %q", s)
 	}
 
-	// Build in the declared local timezone, then convert to UTC.
-	loc := time.FixedZone("", offsetSecs)
-	t := time.Date(y, time.Month(mo), d, h, mi, sec, 0, loc)
+	// Use 1 as the default for month and day when omitted (partial precision).
+	mo := 1
+	if realLen >= 6 {
+		mo, _ = strconv.Atoi(string(digits[4:6]))
+	}
+	d := 1
+	if realLen >= 8 {
+		d, _ = strconv.Atoi(string(digits[6:8]))
+	}
+	h, _ := strconv.Atoi(string(digits[8:10]))
+	mi, _ := strconv.Atoi(string(digits[10:12]))
+	sec, _ := strconv.Atoi(string(digits[12:14]))
+
+	// Build in the declared timezone, then convert to UTC.
+	zone := time.FixedZone("", offsetSecs)
+	t := time.Date(y, time.Month(mo), d, h, mi, sec, 0, zone)
+
+	// time.Date normalises out-of-range values silently (Feb 31 → Mar 2/3,
+	// month 13 → Jan of next year). Detect this by comparing back.
+	if t.Year() != y || int(t.Month()) != mo || t.Day() != d ||
+		t.Hour() != h || t.Minute() != mi || t.Second() != sec {
+		return time.Time{}, fmt.Errorf("invalid HL7 DTM value: %q (calendar components out of range)", s)
+	}
 	return t.UTC(), nil
 }

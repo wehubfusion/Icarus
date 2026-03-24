@@ -21,12 +21,14 @@ var hl7LocationRe = regexp.MustCompile(`'([A-Z][A-Z0-9]{2,3})-\d`)
 // inferScopeFromExprs derives the iteration segment scope from the rule's CEL
 // expressions (when + assert, in their final expanded form).
 //
-// Rules using segIndices() or msgAt() manage their own multi-segment iteration
-// and are always message-scoped (returns "").
-//
-// Otherwise every quoted HL7 location literal is scanned. If all references
-// point to the same segment that segment is returned so the iterator runs the
-// rule once per instance. Mixed or absent segment references → message scope.
+// Every quoted HL7 location literal (e.g. 'OBX-5', 'PID-3') is scanned.
+// If all references point to the same segment, that segment is returned so the
+// iterator runs the rule once per instance of that segment.
+// Mixed references (e.g. both 'OBX-5' and 'PID-3') or no quoted literals at
+// all result in message scope (returns ""), where the rule runs exactly once
+// and helper functions like msg() only see the FIRST instance of each segment.
+// Rule authors must ensure all quoted locations refer to a single segment if
+// per-row iteration over a repeating segment is required.
 func inferScopeFromExprs(when, assert string) string {
 	all := when + " " + assert
 	segs := map[string]bool{}
@@ -97,10 +99,17 @@ func (it *HL7ScopeIterator) scope(rule icel.InputRule) string {
 
 // IterationCount returns how many times the rule should run.
 // Returns 0 when the target segment is absent (rule is skipped).
+//
+// MESSAGE-SCOPED RULES (scope == ""): the rule runs exactly once. All helper
+// functions (msg, valued, validateAs, …) resolve fields via Message.Get which
+// returns the FIRST occurrence of any repeated segment (e.g. the first OBX).
+// This is by design for rules that operate on the message as a whole, but is a
+// silent correctness trap for rules that reference a repeating segment without
+// forcing segment scope via a single quoted literal such as 'OBX-5'.
 func (it *HL7ScopeIterator) IterationCount(rule icel.InputRule) int {
 	scope := it.scope(rule)
 	if scope == "" {
-		return 1 // message-scoped: always run once
+		return 1
 	}
 	if it.Msg == nil {
 		return 0

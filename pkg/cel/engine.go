@@ -141,5 +141,5 @@ func (e *Engine) evalBool(prg celgo.Program) (bool, error) {
 	if b, ok := out.Value().(bool); ok {
 		return b, nil
 	}
-	return false, fmt.Errorf("expected bool result, got %v", out)
+	return false, fmt.Errorf("expected bool result, got %v (%T)", out.Value(), out.Value())
 }

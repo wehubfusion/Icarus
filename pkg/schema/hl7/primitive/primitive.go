@@ -26,8 +26,19 @@ type FieldError struct {
 
 func (e *FieldError) Error() string { return e.Message }
 
-// ValidatePrimitive validates HL7 primitive/simple data types used at field or component level.
-// HL7 v2.x primitives (per Ch 2.A): ST, TX, FT, NM, SI, SN, DT, TM, DTM/TS, ID, IS, MO, GTS, NR.
+// ValidatePrimitive validates HL7 scalar primitive data types.
+// Only truly scalar types are validated here:
+//   ST, TX, FT — free text (no format constraint)
+//   NM         — numeric
+//   SI         — sequence ID (non-negative integer)
+//   DT         — date (YYYY[MM[DD]])
+//   TM         — time (HH[MM[SS[.S+]]][±ZZZZ])
+//   DTM / TS   — date-time
+//   ID, IS     — coded value (table-driven; format not checked here)
+//
+// Composite types (SN, MO, NR) are NOT validated here — their components are
+// split by the HL7 parser and each component is validated by its own scalar type.
+// Unknown or composite-used-as-leaf types are accepted without error.
 func ValidatePrimitive(dataType, value, path string, _ int) *FieldError {
 	dt := strings.ToUpper(strings.TrimSpace(dataType))
 	if value == "" || value == `""` {
@@ -44,8 +55,6 @@ func ValidatePrimitive(dataType, value, path string, _ int) *FieldError {
 		if !reSI.MatchString(value) {
 			return &FieldError{Path: path, Message: "value must be integer", Code: "HL7_DATATYPE"}
 		}
-	case "SN":
-		return nil
 	case "DT":
 		if !reDT.MatchString(value) {
 			return &FieldError{Path: path, Message: "value must be date (YYYY[MM[DD]])", Code: "HL7_DATATYPE"}
@@ -73,26 +82,13 @@ func ValidatePrimitive(dataType, value, path string, _ int) *FieldError {
 		if err := validateTZOffset(value, path); err != nil {
 			return err
 		}
-	case "ID", "IS":
+	case "ID", "IS", "GTS":
+		// Coded/table-driven or free-form timing: no format constraint at this level.
 		return nil
-	case "MO":
-		parts := strings.SplitN(value, "^", 2)
-		qty := strings.TrimSpace(parts[0])
-		if qty != "" && !reNM.MatchString(qty) {
-			return &FieldError{Path: path, Message: "MO quantity must be numeric", Code: "HL7_DATATYPE"}
-		}
-	case "GTS":
-		return nil
-	case "NR":
-		parts := strings.SplitN(value, "^", 2)
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" && !reNM.MatchString(p) {
-				return &FieldError{Path: path, Message: "NR low/high value must be numeric", Code: "HL7_DATATYPE"}
-			}
-		}
 	default:
-		// Unrecognized or composite-used-as-leaf: accept
+		// Composite types (SN, MO, NR, …) and unrecognized types: accept without error.
+		// Composite types have their components split by the HL7 parser before reaching
+		// this function, so each component is validated by its own scalar type.
 	}
 	return nil
 }
