@@ -29,6 +29,8 @@ func (c *WorkerPoolConfig) Validate() {
 type ProcessorConfig struct {
 	// WorkerPool configures the worker pool for concurrent processing.
 	WorkerPool WorkerPoolConfig
+	// NestedIteration configures mid-flow iteration (e.g. IterationConcurrency for single-level parallelism).
+	NestedIteration NestedIterationConfig
 	// Logger is the logger to use. If nil, a no-op logger is used.
 	Logger Logger
 	// LifecycleEmitter emits lifecycle events (parent.ended, embedded.started). Optional.

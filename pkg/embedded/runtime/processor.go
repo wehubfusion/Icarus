@@ -183,61 +183,31 @@ func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 		Field{Key: "embedded_count", Value: len(unit.EmbeddedNodes)},
 	)
 
-	// Best-effort parent node.ended lifecycle callback for units that have embedded nodes.
-	// This marks the end of the parent plugin execution, before any embedded nodes run.
+	// Emit parent terminal lifecycle output payload (for Athena observation).
 	if p.config.LifecycleEmitter != nil && len(unit.EmbeddedNodes) > 0 {
-		parentInfo := ParentNodeEndInfo{
-			WorkflowID:       unit.WorkflowId,
-			RunID:            unit.RunId,
-			ClientID:         unit.ClientId,
-			ProjectID:        unit.ProjectId,
-			ParentNodeID:     unit.NodeId,
-			Label:            unit.Label,
-			HasEmbeddedNodes: true,
+		info := EmbeddedNodeIOInfo{
+			WorkflowID:   unit.WorkflowId,
+			RunID:        unit.RunId,
+			ClientID:     unit.ClientId,
+			ProjectID:    unit.ProjectId,
+			ParentNodeID: unit.NodeId,
+			Label:        unit.Label,
+			Data:         parentOutput,
 		}
-
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					p.logger.Error("parent node lifecycle emitter panic recovered",
+					p.logger.Error("parent node end-event lifecycle emitter panic recovered",
 						Field{Key: "parent_node_id", Value: unit.NodeId},
 					)
 				}
 			}()
-			p.config.LifecycleEmitter.ParentNodeEnded(ctx, parentInfo)
+			p.config.LifecycleEmitter.EmitNodeEndEvent(ctx, info)
 		}()
 	}
 
-	// Best-effort embedded node.started lifecycle callbacks.
-	// We intentionally emit these before any iteration analysis so that all
-	// embedded nodes in the unit are considered "started together" at this level.
-	if p.config.LifecycleEmitter != nil && len(unit.EmbeddedNodes) > 0 {
-		for _, embeddedNode := range unit.EmbeddedNodes {
-			info := EmbeddedNodeStartInfo{
-				WorkflowID:     unit.WorkflowId,
-				RunID:          unit.RunId,
-				ClientID:       unit.ClientId,
-				ProjectID:      unit.ProjectId,
-				ParentNodeID:   unit.NodeId,
-				EmbeddedNodeID: embeddedNode.NodeId,
-			}
-
-			// Do not let panics in emitters break processing.
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						p.logger.Error("embedded node lifecycle emitter panic recovered",
-							Field{Key: "parent_node_id", Value: unit.NodeId},
-							Field{Key: "embedded_node_id", Value: embeddedNode.NodeId},
-						)
-					}
-				}()
-				p.config.LifecycleEmitter.EmbeddedNodeStarted(ctx, info)
-			}()
-		}
-	}
-
-	// If no embedded nodes, just flatten parent output
+	// Invariant: callers (plugins) must handle len(EmbeddedNodes)==0 themselves and never
+	// invoke ProcessEmbeddedNodes in that case. Reaching here indicates a contract violation.
 	if len(unit.EmbeddedNodes) == 0 {
 		return p.flattenParentOnly(parentOutput, unit.NodeId)
 	}
@@ -316,7 +286,13 @@ func (p *EmbeddedProcessor) processSingleObject(
 		ArrayPath:        "",
 		Logger:           p.logger,
 		WorkerPoolConfig: p.config.WorkerPool,
+		Config:           p.config.NestedIteration,
 		PriorUnitOutputs: priorUnitOutputs,
+		WorkflowID:       unit.WorkflowId,
+		RunID:            unit.RunId,
+		ClientID:         unit.ClientId,
+		ProjectID:        unit.ProjectId,
+		LifecycleEmitter: p.config.LifecycleEmitter,
 	}
 	subflow, err := NewSubflowProcessor(subflowCfg)
 	if err != nil {
@@ -409,7 +385,13 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 		ArrayPath:        iterCtx.ArrayPath,
 		Logger:           p.logger,
 		WorkerPoolConfig: p.config.WorkerPool,
+		Config:           p.config.NestedIteration,
 		PriorUnitOutputs: priorUnitOutputs,
+		WorkflowID:       unit.WorkflowId,
+		RunID:            unit.RunId,
+		ClientID:         unit.ClientId,
+		ProjectID:        unit.ProjectId,
+		LifecycleEmitter: p.config.LifecycleEmitter,
 	}
 	subflow, err := NewSubflowProcessor(subflowCfg)
 	if err != nil {
