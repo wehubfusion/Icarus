@@ -9,8 +9,10 @@ type ScopeIterator interface {
 	// IterationCount returns how many times the rule should run.
 	// Return 0 to skip the rule entirely (e.g. the target segment is absent).
 	IterationCount(rule InputRule) int
-	// ProgramOptionsAt returns CEL bindings for the i-th instance (0-based).
-	ProgramOptionsAt(rule InputRule, index int) []celgo.ProgramOption
+	// EnvOptionsAt returns EnvOptions that bind runtime function implementations for
+	// the i-th instance (0-based). The engine extends its base Env with these options
+	// before creating the CEL program for this instance.
+	EnvOptionsAt(rule InputRule, index int) []celgo.EnvOption
 	// ErrorPath builds the validation issue path for the i-th instance.
 	ErrorPath(rule InputRule, index int) string
 }

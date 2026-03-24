@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
+	celgo "github.com/google/cel-go/cel"
 	"github.com/dlclark/regexp2"
-	"github.com/google/cel-go/common/functions"
 	celtypes "github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	hl7msg "github.com/wehubfusion/Icarus/pkg/schema/hl7/message"
@@ -40,69 +40,94 @@ func msgGet(ctx *bindCtx, loc string) string {
 	return ctx.msg.Get(loc)
 }
 
-// hl7ProgramOverloads returns runtime bindings for all HL7 helpers (must match hl7FunctionDeclarations).
-func hl7ProgramOverloads(ctx *bindCtx) []*functions.Overload {
-	return []*functions.Overload{
-		{Operator: "msg_string", Unary: func(v ref.Val) ref.Val { return celtypes.String(msgGet(ctx, stringVal(v))) }},
-		{Operator: "valued_string", Unary: func(v ref.Val) ref.Val {
-			s := msgGet(ctx, stringVal(v))
-			return celtypes.Bool(strings.TrimSpace(s) != "" && s != `""`)
-		}},
-		{Operator: "segCount_string", Unary: func(v ref.Val) ref.Val {
-			if ctx.msg == nil {
-				return celtypes.Int(0)
-			}
-			return celtypes.Int(ctx.msg.SegmentInstanceCount(stringVal(v)))
-		}},
-		{Operator: "repCount_string", Unary: func(v ref.Val) ref.Val {
-			return celtypes.Int(repCountImpl(ctx, stringVal(v)))
-		}},
-		{Operator: "validateAs_string_string", Binary: func(lhs, rhs ref.Val) ref.Val {
-			return celtypes.Bool(validateAsImpl(ctx, stringVal(lhs), stringVal(rhs)))
-		}},
-		{Operator: "matchesPattern_string_string", Binary: func(lhs, rhs ref.Val) ref.Val {
-			ok, err := matchesPatternImpl(ctx, stringVal(lhs), stringVal(rhs))
-			if err != nil {
-				// Returning cel-go's `error` ref.Val forces CEL evaluation to fail,
-				// which the generic engine surfaces as EvalError (HL7_CEL_EVAL_ERROR).
-				return celtypes.WrapErr(err)
-			}
-			return celtypes.Bool(ok)
-		}},
-		{Operator: "toDTM_string", Unary: func(v ref.Val) ref.Val {
-			s := msgGet(ctx, stringVal(v))
-			t, err := parseHL7DTM(s)
-			if err != nil {
-				return celtypes.WrapErr(err)
-			}
-			return celtypes.Timestamp{Time: t}
-		}},
-		{Operator: "toNumber_string", Unary: func(v ref.Val) ref.Val {
-			s := msgGet(ctx, stringVal(v))
-			if strings.TrimSpace(s) == "" {
-				return celtypes.Double(0)
-			}
-			f, err := strconv.ParseFloat(s, 64)
-			if err != nil {
-				return celtypes.Double(0)
-			}
-			return celtypes.Double(f)
-		}},
-		{Operator: "msgAt_string_int_string", Function: func(args ...ref.Val) ref.Val {
-			if len(args) < 3 {
-				return celtypes.String("")
-			}
-			return celtypes.String(msgAtImpl(ctx.msg, stringVal(args[0]), intVal(args[1]), stringVal(args[2])))
-		}},
-		{Operator: "segIndices_string", Unary: func(v ref.Val) ref.Val {
-			return segIndicesImpl(ctx.msg, stringVal(v))
-		}},
-		{Operator: "msgInGroup_string_int_string", Function: func(args ...ref.Val) ref.Val {
-			if len(args) < 3 {
-				return celtypes.String("")
-			}
-			return celtypes.String(msgInGroupImpl(ctx.msg, stringVal(args[0]), intVal(args[1]), stringVal(args[2])))
-		}},
+// hl7EnvOptions returns EnvOptions that bind all HL7 helper implementations to ctx.
+// Each Function() call overrides the LateFunctionBinding() placeholder declared in engine.go.
+func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
+	return []celgo.EnvOption{
+		celgo.Function("msg",
+			celgo.Overload("msg_string", []*celgo.Type{celgo.StringType}, celgo.StringType,
+				celgo.UnaryBinding(func(v ref.Val) ref.Val {
+					return celtypes.String(msgGet(ctx, stringVal(v)))
+				}))),
+		celgo.Function("valued",
+			celgo.Overload("valued_string", []*celgo.Type{celgo.StringType}, celgo.BoolType,
+				celgo.UnaryBinding(func(v ref.Val) ref.Val {
+					s := msgGet(ctx, stringVal(v))
+					return celtypes.Bool(strings.TrimSpace(s) != "" && s != `""`)
+				}))),
+		celgo.Function("segCount",
+			celgo.Overload("segCount_string", []*celgo.Type{celgo.StringType}, celgo.IntType,
+				celgo.UnaryBinding(func(v ref.Val) ref.Val {
+					if ctx.msg == nil {
+						return celtypes.Int(0)
+					}
+					return celtypes.Int(ctx.msg.SegmentInstanceCount(stringVal(v)))
+				}))),
+		celgo.Function("repCount",
+			celgo.Overload("repCount_string", []*celgo.Type{celgo.StringType}, celgo.IntType,
+				celgo.UnaryBinding(func(v ref.Val) ref.Val {
+					return celtypes.Int(repCountImpl(ctx, stringVal(v)))
+				}))),
+		celgo.Function("validateAs",
+			celgo.Overload("validateAs_string_string", []*celgo.Type{celgo.StringType, celgo.StringType}, celgo.BoolType,
+				celgo.BinaryBinding(func(lhs, rhs ref.Val) ref.Val {
+					return celtypes.Bool(validateAsImpl(ctx, stringVal(lhs), stringVal(rhs)))
+				}))),
+		celgo.Function("matchesPattern",
+			celgo.Overload("matchesPattern_string_string", []*celgo.Type{celgo.StringType, celgo.StringType}, celgo.BoolType,
+				celgo.BinaryBinding(func(lhs, rhs ref.Val) ref.Val {
+					ok, err := matchesPatternImpl(ctx, stringVal(lhs), stringVal(rhs))
+					if err != nil {
+						// Returning cel-go's `error` ref.Val forces CEL evaluation to fail,
+						// which the generic engine surfaces as EvalError (HL7_CEL_EVAL_ERROR).
+						return celtypes.WrapErr(err)
+					}
+					return celtypes.Bool(ok)
+				}))),
+		celgo.Function("toDTM",
+			celgo.Overload("toDTM_string", []*celgo.Type{celgo.StringType}, celgo.TimestampType,
+				celgo.UnaryBinding(func(v ref.Val) ref.Val {
+					s := msgGet(ctx, stringVal(v))
+					t, err := parseHL7DTM(s)
+					if err != nil {
+						return celtypes.WrapErr(err)
+					}
+					return celtypes.Timestamp{Time: t}
+				}))),
+		celgo.Function("toNumber",
+			celgo.Overload("toNumber_string", []*celgo.Type{celgo.StringType}, celgo.DoubleType,
+				celgo.UnaryBinding(func(v ref.Val) ref.Val {
+					s := msgGet(ctx, stringVal(v))
+					if strings.TrimSpace(s) == "" {
+						return celtypes.Double(0)
+					}
+					f, err := strconv.ParseFloat(s, 64)
+					if err != nil {
+						return celtypes.Double(0)
+					}
+					return celtypes.Double(f)
+				}))),
+		celgo.Function("msgAt",
+			celgo.Overload("msgAt_string_int_string", []*celgo.Type{celgo.StringType, celgo.IntType, celgo.StringType}, celgo.StringType,
+				celgo.FunctionBinding(func(args ...ref.Val) ref.Val {
+					if len(args) < 3 {
+						return celtypes.String("")
+					}
+					return celtypes.String(msgAtImpl(ctx.msg, stringVal(args[0]), intVal(args[1]), stringVal(args[2])))
+				}))),
+		celgo.Function("segIndices",
+			celgo.Overload("segIndices_string", []*celgo.Type{celgo.StringType}, celgo.ListType(celgo.IntType),
+				celgo.UnaryBinding(func(v ref.Val) ref.Val {
+					return segIndicesImpl(ctx.msg, stringVal(v))
+				}))),
+		celgo.Function("msgInGroup",
+			celgo.Overload("msgInGroup_string_int_string", []*celgo.Type{celgo.StringType, celgo.IntType, celgo.StringType}, celgo.StringType,
+				celgo.FunctionBinding(func(args ...ref.Val) ref.Val {
+					if len(args) < 3 {
+						return celtypes.String("")
+					}
+					return celtypes.String(msgInGroupImpl(ctx.msg, stringVal(args[0]), intVal(args[1]), stringVal(args[2])))
+				}))),
 	}
 }
 
@@ -139,7 +164,7 @@ func validateAsImpl(ctx *bindCtx, typeOrLoc, valueLoc string) bool {
 	var tid string
 	if strings.Contains(typeOrLoc, "-") {
 		tid = strings.TrimSpace(strings.ToUpper(msgGet(ctx, typeOrLoc)))
-	} else {
+	} else { 
 		tid = strings.TrimSpace(strings.ToUpper(typeOrLoc))
 	}
 	val := msgGet(ctx, valueLoc)

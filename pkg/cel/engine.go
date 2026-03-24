@@ -78,9 +78,15 @@ func (e *Engine) EvaluateRules(rules []CompiledRule, iter ScopeIterator) ([]Viol
 			continue
 		}
 		for i := 0; i < n; i++ {
-			opts := iter.ProgramOptionsAt(cr.Rule, i)
+			// Extend the base env with per-instance runtime bindings (e.g. live HL7 message
+			// context). This replaces the deprecated celgo.Functions() ProgramOption.
+			boundEnv, err := e.env.Extend(iter.EnvOptionsAt(cr.Rule, i)...)
+			if err != nil {
+				evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, Expr: "when", Err: err})
+				continue
+			}
 			if cr.WhenAst != nil {
-				whenPrg, err := e.env.Program(cr.WhenAst, opts...)
+				whenPrg, err := boundEnv.Program(cr.WhenAst)
 				if err != nil {
 					evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, Expr: "when", Err: err})
 					continue
@@ -94,7 +100,7 @@ func (e *Engine) EvaluateRules(rules []CompiledRule, iter ScopeIterator) ([]Viol
 					continue
 				}
 			}
-			assertPrg, err := e.env.Program(cr.AssertAst, opts...)
+			assertPrg, err := boundEnv.Program(cr.AssertAst)
 			if err != nil {
 				evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, Expr: "assert", Err: err})
 				continue

@@ -25,8 +25,10 @@ func newBindCtx(msg *hl7msg.Message, scopeSeg string, instanceIdx0 int, reg *dat
 	return &bindCtx{msg: msg, scopeSeg: strings.TrimSpace(scopeSeg), instanceIdx0: instanceIdx0, reg: reg, version: v}
 }
 
-// BindMessage returns ProgramOptions that bind all HL7 helper functions to the given message context.
-func BindMessage(msg *hl7msg.Message, scopeSeg string, instanceIdx0 int, reg *datatypes.Registry) []celgo.ProgramOption {
+// BindMessage returns EnvOptions that bind all HL7 helper functions to the given message context.
+// Using Function()+UnaryBinding/BinaryBinding/FunctionBinding is the non-deprecated replacement
+// for the old celgo.Functions([]*functions.Overload) ProgramOption.
+func BindMessage(msg *hl7msg.Message, scopeSeg string, instanceIdx0 int, reg *datatypes.Registry) []celgo.EnvOption {
 	ctx := newBindCtx(msg, scopeSeg, instanceIdx0, reg)
-	return []celgo.ProgramOption{celgo.Functions(hl7ProgramOverloads(ctx)...)}
+	return hl7EnvOptions(ctx)
 }

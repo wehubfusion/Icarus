@@ -34,8 +34,8 @@ func (it *HL7ScopeIterator) IterationCount(rule icel.InputRule) int {
 	return it.Msg.SegmentInstanceCount(scope) // 0 → segment absent, rule is skipped
 }
 
-// ProgramOptionsAt binds HL7 helpers for the i-th instance (0-based) of the rule's scope.
-func (it *HL7ScopeIterator) ProgramOptionsAt(rule icel.InputRule, index int) []celgo.ProgramOption {
+// EnvOptionsAt returns EnvOptions that bind HL7 helper functions for the i-th instance (0-based).
+func (it *HL7ScopeIterator) EnvOptionsAt(rule icel.InputRule, index int) []celgo.EnvOption {
 	scope := inferScopeFromExprs(rule.When, rule.Assert)
 	return BindMessage(it.Msg, scope, index, it.Reg)
 }
