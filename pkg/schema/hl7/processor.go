@@ -136,8 +136,7 @@ func (p *HL7SchemaProcessor) ParseSchema(definition []byte) (contracts.CompiledS
 	if err != nil {
 		return nil, fmt.Errorf("hl7 cel rules compile: %w", err)
 	}
-	out.CELEngine = eng
-	out.CompiledRules = rules
+	out.CELValidation = &CompiledCELValidation{Engine: eng, Rules: rules}
 	return out, nil
 }
 
@@ -193,19 +192,15 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 			break
 		}
 	}
-	if len(c.CompiledRules) > 0 && c.CELEngine != nil {
+	if cv := c.CELValidation; cv != nil && len(cv.Rules) > 0 {
 		iter := &celhl7.HL7ScopeIterator{Msg: msg, Reg: c.Registry}
-		violations, evalErrs := c.CELEngine.EvaluateRules(c.CompiledRules, iter)
+		violations, evalErrs := cv.Engine.EvaluateRules(cv.Rules, iter)
 		for _, v := range violations {
-			sev := contracts.SeverityError
-			switch strings.ToUpper(strings.TrimSpace(v.Severity)) {
-			case "WARNING":
-				sev = contracts.SeverityWarning
-			case "INFO":
-				sev = contracts.SeverityInfo
-			}
 			es := bucketize(&all, contracts.ValidationError{
-				Path: v.Path, Message: v.Message, Code: "HL7_CUSTOM_RULE_VIOLATION", Severity: sev,
+				Path:     v.Path,
+				Message:  v.Message,
+				Code:     "HL7_CUSTOM_RULE_VIOLATION",
+				Severity: celSeverity(v.Severity),
 			}, mode)
 			if !opts.CollectAllErrors && es == contracts.SeverityError {
 				break
@@ -227,4 +222,17 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 		return result, fmt.Errorf("%s", (&contracts.ValidationResult{Valid: false, Errors: errs}).ErrorMessage())
 	}
 	return result, nil
+}
+
+// celSeverity converts the string severity stored on a CEL Violation to the
+// contracts.Severity type used throughout the processor pipeline.
+func celSeverity(s string) contracts.Severity {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "WARNING":
+		return contracts.SeverityWarning
+	case "INFO":
+		return contracts.SeverityInfo
+	default:
+		return contracts.SeverityError
+	}
 }

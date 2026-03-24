@@ -12,12 +12,22 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/schema/hl7/datatypes"
 )
 
-// CompiledHL7Schema holds a validated HL7 schema for use by the processor.
+// CompiledHL7Schema holds a validated HL7 schema ready for message processing.
+//
+// Schema and Registry carry the structural definition and datatype validation
+// data. CELValidation is non-nil only when the schema declares custom CEL rules.
 type CompiledHL7Schema struct {
 	Schema        *HL7Schema
 	Registry      *datatypes.Registry
-	CELEngine     *icel.Engine
-	CompiledRules []icel.CompiledRule
+	CELValidation *CompiledCELValidation // nil when no CEL rules are defined
+}
+
+// CompiledCELValidation bundles the compiled CEL engine and rule set together.
+// Keeping it separate from CompiledHL7Schema makes the CEL dependency opt-in
+// and easier to replace or disable independently.
+type CompiledCELValidation struct {
+	Engine *icel.Engine
+	Rules  []icel.CompiledRule
 }
 
 // SchemaType returns the format identifier for the schema engine registry.

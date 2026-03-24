@@ -58,10 +58,7 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 		celgo.Function("segCount",
 			celgo.Overload("segCount_string", []*celgo.Type{celgo.StringType}, celgo.IntType,
 				celgo.UnaryBinding(func(v ref.Val) ref.Val {
-					if ctx.msg == nil {
-						return celtypes.Int(0)
-					}
-					return celtypes.Int(ctx.msg.SegmentInstanceCount(stringVal(v)))
+					return celtypes.Int(segCountImpl(ctx, stringVal(v)))
 				}))),
 		celgo.Function("repCount",
 			celgo.Overload("repCount_string", []*celgo.Type{celgo.StringType}, celgo.IntType,
@@ -107,28 +104,14 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 					}
 					return celtypes.Double(f)
 				}))),
-		celgo.Function("msgAt",
-			celgo.Overload("msgAt_string_int_string", []*celgo.Type{celgo.StringType, celgo.IntType, celgo.StringType}, celgo.StringType,
-				celgo.FunctionBinding(func(args ...ref.Val) ref.Val {
-					if len(args) < 3 {
-						return celtypes.String("")
-					}
-					return celtypes.String(msgAtImpl(ctx.msg, stringVal(args[0]), intVal(args[1]), stringVal(args[2])))
-				}))),
-		celgo.Function("segIndices",
-			celgo.Overload("segIndices_string", []*celgo.Type{celgo.StringType}, celgo.ListType(celgo.IntType),
-				celgo.UnaryBinding(func(v ref.Val) ref.Val {
-					return segIndicesImpl(ctx.msg, stringVal(v))
-				}))),
-		celgo.Function("msgInGroup",
-			celgo.Overload("msgInGroup_string_int_string", []*celgo.Type{celgo.StringType, celgo.IntType, celgo.StringType}, celgo.StringType,
-				celgo.FunctionBinding(func(args ...ref.Val) ref.Val {
-					if len(args) < 3 {
-						return celtypes.String("")
-					}
-					return celtypes.String(msgInGroupImpl(ctx.msg, stringVal(args[0]), intVal(args[1]), stringVal(args[2])))
-				}))),
 	}
+}
+
+func segCountImpl(ctx *bindCtx, seg string) int {
+	if ctx.msg == nil {
+		return 0
+	}
+	return ctx.msg.SegmentInstanceCount(seg)
 }
 
 func repCountImpl(ctx *bindCtx, loc string) int {
@@ -185,67 +168,74 @@ func matchesPatternImpl(ctx *bindCtx, loc, pattern string) (bool, error) {
 	return ok, nil
 }
 
-func msgAtImpl(msg *hl7msg.Message, seg string, idx int, loc string) string {
-	if msg == nil || idx < 1 {
-		return ""
+// parseHL7DTM parses an HL7 DTM/TS string (partial precision allowed) into UTC.
+//
+// HL7 DTM format: YYYY[MM[DD[HH[MM[SS[.S[S[S[S]]]]]]]]][+/-ZZZZ]
+//
+// Partial values are zero-extended (e.g. "202601" → 2026-01-01 00:00:00 UTC).
+// A timezone offset, when present, is parsed and applied so the returned time
+// is always in UTC. An empty string returns the zero time without error.
+func parseHL7DTM(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, nil
 	}
-	s := msg.NthSegmentByName(seg, idx)
-	if s == nil {
-		return ""
-	}
-	return hl7msg.FieldValueOnSegment(s, loc)
-}
 
-func segIndicesImpl(msg *hl7msg.Message, seg string) ref.Val {
-	if msg == nil {
-		return celtypes.NewDynamicList(celtypes.DefaultTypeAdapter, []any{})
+	// Extract and apply timezone offset suffix (+/-HHMM), if present.
+	offsetSecs := 0
+	body := s
+	for _, sign := range []byte{'+', '-'} {
+		if idx := strings.LastIndexByte(body, sign); idx > 0 {
+			tail := body[idx+1:]
+			if len(tail) == 4 {
+				if mins, err := strconv.Atoi(tail); err == nil {
+					hh := mins / 100
+					mm := mins % 100
+					total := hh*3600 + mm*60
+					if sign == '-' {
+						offsetSecs = -total
+					} else {
+						offsetSecs = total
+					}
+					body = body[:idx]
+					break
+				}
+			}
+		}
 	}
-	n := msg.SegmentInstanceCount(seg)
-	if n == 0 {
-		return celtypes.NewDynamicList(celtypes.DefaultTypeAdapter, []any{})
-	}
-	elts := make([]any, n)
-	for i := 0; i < n; i++ {
-		elts[i] = int64(i + 1)
-	}
-	return celtypes.DefaultTypeAdapter.NativeToValue(elts)
-}
 
-func msgInGroupImpl(msg *hl7msg.Message, groupStart string, groupIdx int, loc string) string {
-	if msg == nil {
-		return ""
+	// Strip fractional seconds (.SSSS).
+	if dot := strings.IndexByte(body, '.'); dot >= 0 {
+		body = body[:dot]
 	}
-	groupStart = strings.ToUpper(strings.TrimSpace(groupStart))
-	segName, _, _, _, _ := hl7msg.LocationParts(loc)
-	if segName == "" {
-		return ""
-	}
-	if strings.EqualFold(segName, groupStart) {
-		s := msg.NthSegmentByName(groupStart, groupIdx+1)
-		if s == nil {
-			return ""
-		}
-		return hl7msg.FieldValueOnSegment(s, loc)
-	}
-	var starts []int
-	for i := range msg.Segments {
-		if strings.EqualFold(msg.Segments[i].Name, groupStart) {
-			starts = append(starts, i)
+
+	// Collect only digit characters and zero-pad to 14 digits (YYYYMMDDHHmmss).
+	digits := make([]byte, 0, 14)
+	for _, c := range body {
+		if c >= '0' && c <= '9' {
+			digits = append(digits, byte(c))
 		}
 	}
-	if groupIdx < 0 || groupIdx >= len(starts) {
-		return ""
+	for len(digits) < 14 {
+		digits = append(digits, '0')
 	}
-	start := starts[groupIdx]
-	end := len(msg.Segments)
-	if groupIdx+1 < len(starts) {
-		end = starts[groupIdx+1]
+	if len(digits) > 14 {
+		digits = digits[:14]
 	}
-	want := strings.ToUpper(strings.TrimSpace(segName))
-	for i := start; i < end; i++ {
-		if strings.EqualFold(msg.Segments[i].Name, want) {
-			return hl7msg.FieldValueOnSegment(&msg.Segments[i], loc)
-		}
+
+	y, _ := strconv.Atoi(string(digits[0:4]))
+	mo, _ := strconv.Atoi(string(digits[4:6]))
+	d, _ := strconv.Atoi(string(digits[6:8]))
+	h, _ := strconv.Atoi(string(digits[8:10]))
+	mi, _ := strconv.Atoi(string(digits[10:12]))
+	sec, _ := strconv.Atoi(string(digits[12:14]))
+
+	if y == 0 {
+		return time.Time{}, fmt.Errorf("invalid HL7 DTM value: %q", s)
 	}
-	return ""
+
+	// Build in the declared local timezone, then convert to UTC.
+	loc := time.FixedZone("", offsetSecs)
+	t := time.Date(y, time.Month(mo), d, h, mi, sec, 0, loc)
+	return t.UTC(), nil
 }

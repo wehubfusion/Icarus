@@ -259,17 +259,4 @@ func derefSegmentDefs(pts []*HL7SegmentDef) []HL7SegmentDef {
 	return out
 }
 
-func trim(s string) string {
-	if s == "" {
-		return ""
-	}
-	start := 0
-	for start < len(s) && (s[start] == ' ' || s[start] == '\t') {
-		start++
-	}
-	end := len(s)
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
-		end--
-	}
-	return s[start:end]
-}
+func trim(s string) string { return strings.TrimSpace(s) }
