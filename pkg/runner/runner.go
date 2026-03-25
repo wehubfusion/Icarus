@@ -13,8 +13,6 @@ import (
 	"sync"
 	"time"
 
-	argusevent "github.com/wehubfusion/Argus/pkg/event"
-	argusobserver "github.com/wehubfusion/Argus/pkg/observer"
 	internaltracing "github.com/wehubfusion/Icarus/internal/tracing"
 	"github.com/wehubfusion/Icarus/pkg/client"
 	"github.com/wehubfusion/Icarus/pkg/message"
@@ -46,7 +44,6 @@ type Runner struct {
 	tracingShutdown func(context.Context) error
 	config          Config
 	jobChan         chan *message.Message
-	observer        argusobserver.Observer
 }
 
 // Config controls runner worker pool behavior.
@@ -180,21 +177,6 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 		jobChan:        make(chan *message.Message, config.QueueSize),
 	}
 
-	// Setup Argus observer for observation events (node.started, etc.) if JetStream is available.
-	if js := client.JetStream(); js != nil {
-		opts := argusobserver.DefaultOptions()
-		obs, err := argusobserver.NewObserver(js, opts, logger)
-		if err != nil {
-			logger.Warn("Failed to setup Argus observer, continuing without observation events", zap.Error(err))
-		} else {
-			runner.observer = obs
-			logger.Info("Argus observer setup complete for Icarus runner",
-				zap.String("stream", argusevent.StreamName))
-		}
-	} else {
-		logger.Warn("JetStream context is nil, Argus observer not initialized")
-	}
-
 	// Setup tracing if configuration is provided
 	if tracingConfig != nil {
 		ctx := context.Background()
@@ -224,17 +206,6 @@ func (r *Runner) Close() error {
 			return err
 		}
 		r.logger.Info("Tracing shutdown complete")
-	}
-
-	// Close Argus observer if initialized to ensure buffered events are flushed.
-	if r.observer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := r.observer.Close(ctx); err != nil {
-			r.logger.Warn("Error shutting down Argus observer", zap.Error(err))
-		} else {
-			r.logger.Info("Argus observer shutdown complete")
-		}
 	}
 
 	return nil
@@ -453,74 +424,6 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 	}
 	processSpan.SetAttributes(attribute.String("message.created_at", msg.CreatedAt))
 	defer processSpan.End()
-
-	// Best-effort node.started observation for the parent node.
-	// Uses Argus Event Level 3 semantics (client_id, workflow_id, run_id, node_id, project_id).
-	if r.observer != nil {
-		clientID := ""
-		projectID := ""
-		if msg.Metadata != nil {
-			clientID = msg.Metadata["client_id"]
-			projectID = msg.Metadata["project_id"]
-		}
-
-		nodeID := ""
-		if msg.Node != nil {
-			nodeID = msg.Node.NodeID
-		}
-		if nodeID == "" && msg.Payload != nil {
-			nodeID = msg.Payload.NodeID
-		}
-
-		// Build input payload for observation (inline JSON or blob reference).
-		var inputPayload *argusevent.Payload
-		if msg.Payload != nil {
-			evPayload := &argusevent.Payload{}
-			if msg.Payload.HasInlineData() {
-				inline := []byte(msg.Payload.GetInlineData())
-				if len(inline) > 0 {
-					evPayload.InlineData = inline
-				}
-			}
-			if msg.Payload.BlobReference != nil {
-				evPayload.BlobReference = &argusevent.BlobReference{
-					URL:  msg.Payload.BlobReference.URL,
-					Size: int64(msg.Payload.BlobReference.SizeBytes),
-				}
-			}
-			if len(evPayload.InlineData) > 0 || evPayload.BlobReference != nil {
-				inputPayload = evPayload
-			}
-		}
-
-		if clientID != "" && workflowID != "" && runID != "" && nodeID != "" {
-			startData := &argusevent.StartNode{
-				WorkflowID: workflowID,
-				RunID:      runID,
-				ClientID:   clientID,
-				ProjectID:  projectID,
-				NodeID:     nodeID,
-				StartedAt:  time.Now().UnixMilli(),
-				Input:      inputPayload,
-			}
-
-			evt := argusevent.New(argusevent.TypeNodeStarted).
-				WithClient(clientID).
-				WithWorkflow(workflowID).
-				WithRun(runID).
-				WithNode(nodeID).
-				WithData(startData)
-
-			// Best-effort emit; observer handles buffering and publishing.
-			if err := r.observer.Emit(ctx, evt); err != nil {
-				r.logger.Warn("Failed to emit node.started observation event",
-					zap.String("workflowID", workflowID),
-					zap.String("runID", runID),
-					zap.String("nodeID", nodeID),
-					zap.Error(err))
-			}
-		}
-	}
 
 	// Process the message
 	resultMessage, processErr := r.processor.Process(processCtx, msg)
