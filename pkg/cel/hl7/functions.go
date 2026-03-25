@@ -11,6 +11,7 @@ import (
 	celgo "github.com/google/cel-go/cel"
 	celtypes "github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
+	"github.com/wehubfusion/Icarus/pkg/schema/hl7/datatypes"
 	hl7msg "github.com/wehubfusion/Icarus/pkg/schema/hl7/message"
 	"github.com/wehubfusion/Icarus/pkg/schema/hl7/primitive"
 )
@@ -21,7 +22,6 @@ import (
 var compiledPatternCache sync.Map // string → *regexp2.Regexp
 
 func stringVal(v ref.Val) string { return fmt.Sprint(v.Value()) }
-
 
 func msgGet(ctx *bindCtx, loc string) string {
 	if ctx.msg == nil {
@@ -59,7 +59,11 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 					// lhs = HL7 location to validate ('OBX-5', 'OBX-5.1', ...)
 					// rhs = type code as a plain string — either a literal ('NM', 'DT')
 					//       or the result of msg('OBX-2') evaluated by CEL first
-					return celtypes.Bool(validateAsImpl(ctx, stringVal(lhs), stringVal(rhs)))
+					ok, err := validateAsImpl(ctx, stringVal(lhs), stringVal(rhs))
+					if err != nil {
+						return celtypes.WrapErr(err)
+					}
+					return celtypes.Bool(ok)
 				}))),
 		celgo.Function("matchesPattern",
 			celgo.Overload("matchesPattern_string_string", []*celgo.Type{celgo.StringType, celgo.StringType}, celgo.BoolType,
@@ -101,20 +105,61 @@ func hl7EnvOptions(ctx *bindCtx) []celgo.EnvOption {
 	}
 }
 
+// validateAsKnownPrimitives are scalar HL7 datatype codes that primitive.ValidatePrimitive
+// can evaluate. VARIES skips leaf validation by design.
+var validateAsKnownPrimitives = map[string]struct{}{
+	"ST": {}, "TX": {}, "FT": {}, "NM": {}, "SI": {}, "DT": {}, "TM": {},
+	"DTM": {}, "TS": {}, "ID": {}, "IS": {}, "GTS": {}, "VARIES": {},
+}
+
+func isValidateAsTypeCodeAllowed(tid string, reg *datatypes.Registry, version string) bool {
+	tid = strings.ToUpper(strings.TrimSpace(tid))
+	if tid == "" {
+		return false
+	}
+	if _, ok := validateAsKnownPrimitives[tid]; ok {
+		return true
+	}
+	if reg != nil {
+		if _, ok := reg.Lookup(version, tid); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // validateAsImpl checks whether the value at loc conforms to typeCode.
 //
 // loc      — HL7 location resolved via msgGet ('OBX-5', 'OBX-5.1', …).
-// typeCode — HL7 primitive type code as a plain string: either a literal
+// typeCode — HL7 datatype code (literal or msg('OBX-2')).
 //
-//	('NM', 'DT') or already evaluated by CEL (result of msg('OBX-2')).
-func validateAsImpl(ctx *bindCtx, loc, typeCode string) bool {
+// Passing msg('OBX-5') as the first argument is invalid (that is a field value, not a location)
+// and returns an error surfaced as HL7_CEL_EVAL_ERROR. Unknown datatype codes like "SHIT"
+// also error instead of silently passing.
+func validateAsImpl(ctx *bindCtx, loc, typeCode string) (bool, error) {
 	if ctx.msg == nil {
-		// Fail-safe: no message means we cannot validate; treat as invalid.
-		return false
+		return false, nil
 	}
-	val := msgGet(ctx, strings.TrimSpace(loc))
+	loc = strings.TrimSpace(loc)
+	locNorm := strings.ToUpper(loc)
+	if !reHL7Location.MatchString(locNorm) {
+		return false, fmt.Errorf(
+			"validateAs: first argument must be an HL7 field location (e.g. 'OBX-5'), not a field value; got %q",
+			loc,
+		)
+	}
 	tid := strings.ToUpper(strings.TrimSpace(typeCode))
-	return primitive.ValidatePrimitiveType(tid, val, ctx.reg, ctx.version)
+	if tid == "" {
+		return false, fmt.Errorf("validateAs: second argument (datatype code) must be non-empty")
+	}
+	if !isValidateAsTypeCodeAllowed(tid, ctx.reg, ctx.version) {
+		return false, fmt.Errorf(
+			"validateAs: unknown HL7 datatype code %q (use a registered type from the message version or a primitive such as ST, NM, DT)",
+			tid,
+		)
+	}
+	val := msgGet(ctx, locNorm)
+	return primitive.ValidatePrimitiveType(tid, val, ctx.reg, ctx.version), nil
 }
 
 func matchesPatternImpl(ctx *bindCtx, loc, pattern string) (bool, error) {

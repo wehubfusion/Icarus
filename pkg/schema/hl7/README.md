@@ -159,11 +159,13 @@ The `tableId` field is parsed and stored but not validated — terminology/value
 
 ### CEL custom rules
 - `HL7_CUSTOM_RULE_VIOLATION` — a CEL `assert`/`require`/`forbid` rule evaluated to false
-- `HL7_CEL_EVAL_ERROR` — a CEL rule raised a runtime evaluation issue (empty input to `toDTM`, invalid pattern for `matchesPattern`, etc.)
+- `HL7_CEL_EVAL_ERROR` — a CEL rule could not finish evaluating (e.g. invalid regex in `matchesPattern`, non-DTM text passed to `toDTM`). This is **not** the same as a failed assertion; see [CEL eval errors vs rule violations](#cel-eval-errors-vs-rule-violations).
 
 ---
 
 ## Severity by mode
+
+`STRICT` promotes several structural / field HL7 codes from WARNING to ERROR so unexpected segments, length, version mismatch, etc. surface as hard failures. **`HL7_CEL_EVAL_ERROR` is never promoted:** it stays **WARNING** in STRICT, NORMAL, and LENIENT, so expression runtime issues do not invalidate an otherwise structurally valid message the same way a missing required segment does.
 
 | Code | STRICT | NORMAL | LENIENT |
 |------|--------|--------|---------|
@@ -184,7 +186,19 @@ The `tableId` field is parsed and stored but not validated — terminology/value
 | HL7_EXTRA_COMPONENT | WARNING | INFO | INFO |
 | HL7_EXTRA_SUBCOMPONENT | WARNING | INFO | INFO |
 | HL7_CUSTOM_RULE_VIOLATION | per rule severity | per rule severity | per rule severity |
-| HL7_CEL_EVAL_ERROR | ERROR | WARNING | WARNING |
+| HL7_CEL_EVAL_ERROR | WARNING | WARNING | WARNING |
+
+---
+
+## CEL eval errors vs rule violations
+
+| | `HL7_CUSTOM_RULE_VIOLATION` | `HL7_CEL_EVAL_ERROR` |
+|---|------------------------------|----------------------|
+| **Meaning** | The rule **ran**; the check failed (assert false, require missing, forbid present). | The rule **did not complete** (helper threw / could not parse input). |
+| **Typical path** | HL7 location from `errorPath`, e.g. `OBX[2]-5`, `PID[1]-8`. | Rule location: `rule[<id>].assert` or `rule[<id>].when` (engine could not map a single field). |
+| **Severity** | From the rule’s `severity` field (ERROR / WARNING / INFO). | Always bucketed as **WARNING** (all modes). |
+
+If bad data must **hard-fail** validation, prefer schema/datatype checks or guarded rules (`valued('X') && validateAs('X', 'DT')`) before `toDTM`, so failures become `HL7_DATATYPE` or `HL7_CUSTOM_RULE_VIOLATION`, not eval errors.
 
 ---
 
@@ -208,11 +222,7 @@ Rules are declared in the schema's `"rules"` array and compiled once at schema l
 
 ### Scope inference
 
-The iterator automatically infers the iteration scope from quoted HL7 location literals in the rule expressions:
-
-- `msg('OBX-5')` → rule runs once per OBX segment instance (segment-scoped)
-- `msg('MSH-9')` → rule runs once on the whole message (message-scoped)
-- Mixed locations → the first uppercase 3-letter segment name found determines scope
+The iterator infers iteration scope from quoted HL7 location literals in `when` and `assert` (assert-first when a single segment dominates, frequency-based tie-breaking, then message instance counts). See `pkg/cel/hl7/iterator.go` for the full algorithm.
 
 ### CEL helper functions
 
@@ -225,7 +235,7 @@ The iterator automatically infers the iteration scope from quoted HL7 location l
 | `toDTM(loc)` | `string → timestamp` | Parses the HL7 DTM/TS value at `loc` into a CEL `timestamp`; warns on empty or invalid input |
 | `toNumber(loc)` | `string → double` | Parses the value at `loc` as a float64; warns on empty or non-numeric input |
 
-Warning-generating helper functions produce `HL7_CEL_EVAL_ERROR` violations. In `STRICT` mode they are promoted to `ERROR`; in `NORMAL` and `LENIENT` they remain `WARNING`.
+When a helper cannot complete (invalid regex, unparseable `toDTM`/`toNumber` input, etc.), the engine emits **`HL7_CEL_EVAL_ERROR`** at **WARNING** severity in **all** modes (including STRICT). That keeps “rule engine could not run” separate from structural HL7 errors and from **`HL7_CUSTOM_RULE_VIOLATION`** (rule ran and failed).
 
 ### Example rules
 
@@ -276,8 +286,10 @@ Warning-generating helper functions produce `HL7_CEL_EVAL_ERROR` violations. In 
 | Option | Effect on HL7 |
 |--------|---------------|
 | `CollectAllErrors` | `true` = collect all issues; `false` = stop after the first error-severity issue |
-| `StrictValidation` | Alias for `Mode = STRICT`; returns a Go error in addition to `ProcessResult` |
+| `StrictValidation` | Deprecated; use `Mode: ValidationModeStrict`. When effective, same as STRICT below. |
 | `Mode` | `STRICT`, `NORMAL` (default), or `LENIENT` — controls severity bucketing |
+
+**STRICT and `Process` errors:** When `Mode` is `STRICT` and `ProcessResult.Valid` is `false` (any ERROR-severity issue), `Process` also returns a non-nil Go error (`StrictProcessError`) while still populating `Errors` / `Warnings` / `Infos`. Warnings alone (including `HL7_CEL_EVAL_ERROR`) do not set `Valid` to false.
 
 ---
 
@@ -326,7 +338,7 @@ fieldErrs := hl7.ValidateMatchResult(match, msg, true, compiled.Registry)
 | `validator.go` | `ValidateMatchResult`, `ValidateMessageTypeAndVersion`, field/length/truncation helpers |
 | `datatype_validator.go` | `validateDataType`, composite decomposition, `flattenLeaves`, leaf validation |
 | `header_validator.go` | MSH-9 message type and MSH-12 version comparison |
-| `processor.go` | `HL7Processor` — full pipeline, severity bucketing, early-stop logic |
+| `processor.go` | `HL7SchemaProcessor` — full pipeline, severity bucketing, early-stop logic |
 | `message/` | `Message`, `Segment`, `Field`, `Component`, `Subcomponent`, `Delimiters`, location parsing |
 | `primitive/` | `ValidatePrimitive` — scalar type checks (NM, SI, DT, TM, DTM, TZ offset) |
 | `datatypes/` | `Registry` — composite datatype definitions loaded from JSON; `Lookup` by version |

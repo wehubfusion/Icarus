@@ -34,8 +34,17 @@ func resolveSeverity(code string, mode contracts.ValidationMode) contracts.Sever
 		switch code {
 		case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
 			return contracts.SeverityWarning
+		// HL7_CEL_EVAL_ERROR is intentionally NOT elevated here.
+		//
+		// Rationale (HL7 integration practice): a failed rule *evaluation* (bad regex,
+		// toDTM on non-DTM text, etc.) is not the same class as a structural/schema
+		// violation or an asserted business rule (HL7_CUSTOM_RULE_VIOLATION). Strict
+		// mode tightens segment/field conformance; CEL eval failures remain operational
+		// signals for rule authors and are surfaced as warnings so they do not reject
+		// otherwise structurally valid clinical traffic. Use schema/datatype checks or
+		// guarded rules (valued/validateAs) when bad data must hard-fail.
 		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_NOT_USED", "HL7_LENGTH",
-			"HL7_UNEXPECTED_SEGMENT", "HL7_CEL_EVAL_ERROR":
+			"HL7_UNEXPECTED_SEGMENT":
 			return contracts.SeverityError
 		default:
 			return normal(code)
@@ -189,8 +198,14 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 				return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
 			}
 		}
+		// Eval errors use the iterator HL7 path when available (e.g. REL[1]-5); otherwise
+		// rule[id].expr so the failure is still attributable. Distinct from
+		// HL7_CUSTOM_RULE_VIOLATION, where the expression ran and returned false.
 		for _, e := range evalErrs {
-			path := fmt.Sprintf("rule[%s].%s", e.RuleID, e.Expr)
+			path := strings.TrimSpace(e.Path)
+			if path == "" {
+				path = fmt.Sprintf("rule[%s].%s", e.RuleID, e.Expr)
+			}
 			errMsg := e.Err.Error()
 			if e.RuleName != "" {
 				errMsg = fmt.Sprintf("%s: %s", e.RuleName, errMsg)

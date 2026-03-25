@@ -243,7 +243,7 @@ func TestHL7SchemaProcessor_Type(t *testing.T) {
 	}
 }
 
-func TestHL7StrictMode_CELEvalErrorIsFatal(t *testing.T) {
+func TestHL7StrictMode_CELEvalError_StaysWarning(t *testing.T) {
 	proc := NewHL7SchemaProcessor()
 	schemaDef := []byte(`{
 		"segments": [
@@ -280,25 +280,28 @@ func TestHL7StrictMode_CELEvalErrorIsFatal(t *testing.T) {
 		Mode:             contracts.ValidationModeStrict,
 		CollectAllErrors: true,
 	})
-	// contracts.ProcessOptions documents that ValidationModeStrict returns a
-	// Go error when the message is invalid — not just a valid:false payload.
-	if err == nil {
-		t.Fatal("expected Process to return a Go error in strict mode with invalid message")
+	if err != nil {
+		t.Fatalf("strict mode: CEL eval failure must not force Process error when message is otherwise valid: %v", err)
 	}
 	if result == nil {
-		t.Fatal("Process must return a non-nil result even when it also returns a Go error")
+		t.Fatal("Process must return a non-nil result")
 	}
-	if result.Valid {
-		t.Fatal("expected valid:false when CEL eval fails in strict mode")
+	if !result.Valid {
+		t.Fatalf("expected valid:true (CEL eval issues are warnings, not errors); errors=%v", result.Errors)
 	}
 	var found bool
-	for _, e := range result.Errors {
+	for _, e := range result.Warnings {
 		if e.Code == "HL7_CEL_EVAL_ERROR" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected HL7_CEL_EVAL_ERROR in Errors, got errors=%v warnings=%v", result.Errors, result.Warnings)
+		t.Fatalf("expected HL7_CEL_EVAL_ERROR in Warnings, got errors=%v warnings=%v", result.Errors, result.Warnings)
+	}
+	for _, e := range result.Errors {
+		if e.Code == "HL7_CEL_EVAL_ERROR" {
+			t.Fatalf("HL7_CEL_EVAL_ERROR must not appear in Errors in strict mode; got %v", result.Errors)
+		}
 	}
 }

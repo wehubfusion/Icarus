@@ -92,7 +92,11 @@ func StrictProcessError(result *ProcessResult, mode ValidationMode) error {
 	vr := &ValidationResult{Valid: false, Errors: result.Errors}
 	msg := vr.ErrorMessage()
 	if msg == "" {
-		return fmt.Errorf("schema validation failed")
+		msg = "schema validation failed"
+	}
+	nw, ni := len(result.Warnings), len(result.Infos)
+	if nw > 0 || ni > 0 {
+		msg = fmt.Sprintf("%s (also %d warning(s), %d info finding(s))", msg, nw, ni)
 	}
 	return fmt.Errorf("%s", msg)
 }
@@ -101,7 +105,9 @@ func StrictProcessError(result *ProcessResult, mode ValidationMode) error {
 //
 // Use Mode to control severity classification (where implemented) and fail-on-invalid:
 //   - ValidationModeStrict:  invalid result returns a Go error via StrictProcessError
-//     in addition to a populated ProcessResult. HL7 also elevates several issue codes.
+//     in addition to a populated ProcessResult. HL7 elevates several issue codes to
+//     ERROR; HL7_CEL_EVAL_ERROR stays WARNING (rule engine could not evaluate), distinct
+//     from HL7_CUSTOM_RULE_VIOLATION (rule evaluated and failed).
 //   - ValidationModeNormal:  invalid result is in the payload only (err == nil).
 //   - ValidationModeLenient: invalid result is in the payload only (err == nil); HL7 downgrades codes.
 //
@@ -118,7 +124,11 @@ type ProcessOptions struct {
 	StrictValidation bool `json:"strict_validation,omitempty"`
 }
 
-// ProcessResult contains the result of schema processing
+// ProcessResult contains the result of schema processing.
+//
+// Valid is false when Errors contains at least one issue (ERROR severity).
+// Warnings and infos do not affect Valid. For HL7, HL7_CEL_EVAL_ERROR is
+// bucketed as WARNING, so it does not set Valid to false by itself.
 type ProcessResult struct {
 	Valid    bool              `json:"valid"`
 	Data     []byte            `json:"data"`

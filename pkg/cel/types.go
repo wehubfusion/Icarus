@@ -33,6 +33,7 @@ type EvalError struct {
 	RuleName string
 	Expr     string // "bind", "when", or "assert"
 	Err      error
+	Path     string
 }
 
 // ScopeIterator supplies per-instance bindings and error paths for evaluation.

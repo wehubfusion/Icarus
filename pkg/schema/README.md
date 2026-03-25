@@ -28,7 +28,7 @@ HL7 results are severity-bucketed into three slices:
 - `ProcessResult.Warnings` — WARNING severity issues
 - `ProcessResult.Infos` — INFO severity issues
 
-The bucket a code lands in depends on `ProcessOptions.Mode` (STRICT / NORMAL / LENIENT). See `pkg/schema/hl7/README.md` for the full mapping.
+The bucket a code lands in depends on `ProcessOptions.Mode` (STRICT / NORMAL / LENIENT). For HL7, see `pkg/schema/hl7/README.md` for the full mapping, including **`HL7_CEL_EVAL_ERROR`** (always WARNING, even in STRICT).
 
 ## Schema formats
 
@@ -56,15 +56,15 @@ The bucket a code lands in depends on `ProcessOptions.Mode` (STRICT / NORMAL / L
 |--------|------|-----|-----|-------------|
 | `ApplyDefaults` | ✓ | ✓ | — | Fill in default values from the schema |
 | `StructureData` | ✓ | ✓ | — | Reshape data to match schema structure; remove undeclared keys |
-| `StrictValidation` | ✓ | ✓ | ✓ | Alias for `Mode=STRICT` for HL7; treat all issues as errors for JSON/CSV |
+| `StrictValidation` | ✓ | ✓ | ✓ | Deprecated; prefer `Mode`. When set, behaves like `Mode=STRICT` where supported. |
 | `CollectAllErrors` | ✓ | ✓ | ✓ | Collect every issue (true) or stop at the first error-severity issue (false) |
-| `Mode` | — | — | ✓ | `STRICT` / `NORMAL` / `LENIENT` — controls HL7 severity buckets |
+| `Mode` | — | — | ✓ | `STRICT` / `NORMAL` / `LENIENT` — controls HL7 severity buckets (see `hl7/README.md`) |
 
 ## ProcessResult
 
 | Field | Description |
 |-------|-------------|
-| `Valid` | `true` when there are no ERROR-severity issues |
+| `Valid` | `true` when there are no ERROR-severity issues (warnings alone, including HL7 CEL eval warnings, do not set `Valid` to false) |
 | `Data` | Processed output — JSON/CSV: transformed bytes; HL7: original input bytes unchanged |
 | `Errors` | ERROR-severity validation issues (path, message, code) |
 | `Warnings` | WARNING-severity issues (HL7 only) |
