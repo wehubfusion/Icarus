@@ -133,9 +133,9 @@ func isValidateAsTypeCodeAllowed(tid string, reg *datatypes.Registry, version st
 // loc      — HL7 location resolved via msgGet ('OBX-5', 'OBX-5.1', …).
 // typeCode — HL7 datatype code (literal or msg('OBX-2')).
 //
-// Passing msg('OBX-5') as the first argument is invalid (that is a field value, not a location)
-// and returns an error surfaced as HL7_CEL_EVAL_ERROR. Unknown datatype codes like "SHIT"
-// also error instead of silently passing.
+// Passing msg('OBX-5') as the first argument is invalid (field value, not a location) and
+// surfaces as HL7_CUSTOM_RULE_RUNTIME_ERROR. Unknown datatype codes yield false (not an error)
+// so rule authors get HL7_CUSTOM_RULE_VIOLATION instead of a runtime error.
 func validateAsImpl(ctx *bindCtx, loc, typeCode string) (bool, error) {
 	if ctx.msg == nil {
 		return false, nil
@@ -153,10 +153,7 @@ func validateAsImpl(ctx *bindCtx, loc, typeCode string) (bool, error) {
 		return false, fmt.Errorf("validateAs: second argument (datatype code) must be non-empty")
 	}
 	if !isValidateAsTypeCodeAllowed(tid, ctx.reg, ctx.version) {
-		return false, fmt.Errorf(
-			"validateAs: unknown HL7 datatype code %q (use a registered type from the message version or a primitive such as ST, NM, DT)",
-			tid,
-		)
+		return false, nil
 	}
 	val := msgGet(ctx, locNorm)
 	return primitive.ValidatePrimitiveType(tid, val, ctx.reg, ctx.version), nil
@@ -174,7 +171,7 @@ func matchesPatternImpl(ctx *bindCtx, loc, pattern string) (bool, error) {
 	ok, err := re.MatchString(val)
 	if err != nil {
 		// regexp2 returns an error on match timeout (50 ms ReDoS guard) or
-		// internal runtime failure. Surface it as HL7_CEL_EVAL_ERROR rather
+		// internal runtime failure. Surface it as HL7_CUSTOM_RULE_RUNTIME_ERROR rather
 		// than silently returning false (which would produce a spurious
 		// violation) or true (which would silently pass a potentially-matching field).
 		return false, fmt.Errorf("matchesPattern(%q): match failed: %w", loc, err)

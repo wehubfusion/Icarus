@@ -22,7 +22,7 @@ func resolveSeverity(code string, mode contracts.ValidationMode) contracts.Sever
 			return contracts.SeverityWarning
 		case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
 			return contracts.SeverityInfo
-		case "HL7_CEL_EVAL_ERROR":
+		case "HL7_CUSTOM_RULE_RUNTIME_ERROR":
 			return contracts.SeverityWarning
 		default:
 			return contracts.SeverityError
@@ -34,15 +34,6 @@ func resolveSeverity(code string, mode contracts.ValidationMode) contracts.Sever
 		switch code {
 		case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
 			return contracts.SeverityWarning
-		// HL7_CEL_EVAL_ERROR is intentionally NOT elevated here.
-		//
-		// Rationale (HL7 integration practice): a failed rule *evaluation* (bad regex,
-		// toDTM on non-DTM text, etc.) is not the same class as a structural/schema
-		// violation or an asserted business rule (HL7_CUSTOM_RULE_VIOLATION). Strict
-		// mode tightens segment/field conformance; CEL eval failures remain operational
-		// signals for rule authors and are surfaced as warnings so they do not reject
-		// otherwise structurally valid clinical traffic. Use schema/datatype checks or
-		// guarded rules (valued/validateAs) when bad data must hard-fail.
 		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_NOT_USED", "HL7_LENGTH",
 			"HL7_UNEXPECTED_SEGMENT":
 			return contracts.SeverityError
@@ -52,7 +43,7 @@ func resolveSeverity(code string, mode contracts.ValidationMode) contracts.Sever
 	case contracts.ValidationModeLenient:
 		switch code {
 		case "HL7_MISSING_REQUIRED", "HL7_MESSAGE_TYPE_MISMATCH", "HL7_REPETITION_VIOLATION",
-			"HL7_DATATYPE", "HL7_NOT_USED", "HL7_CEL_EVAL_ERROR":
+			"HL7_DATATYPE", "HL7_NOT_USED", "HL7_CUSTOM_RULE_RUNTIME_ERROR":
 			return contracts.SeverityWarning
 		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_LENGTH",
 			"HL7_UNEXPECTED_SEGMENT", "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
@@ -211,7 +202,10 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 				errMsg = fmt.Sprintf("%s: %s", e.RuleName, errMsg)
 			}
 			sev := bucketize(&all, contracts.ValidationError{
-				Path: path, Message: errMsg, Code: "HL7_CEL_EVAL_ERROR",
+				Path:     path,
+				Message:  errMsg,
+				Code:     "HL7_CUSTOM_RULE_RUNTIME_ERROR",
+				Severity: celRuntimeIssueSeverity(e.RuleSeverity),
 			}, mode)
 			if !opts.CollectAllErrors && sev == contracts.SeverityError {
 				errs, warns, infos := splitBuckets(all)
@@ -236,4 +230,13 @@ func celSeverity(s string) contracts.Severity {
 	default:
 		return contracts.SeverityError
 	}
+}
+
+// celRuntimeIssueSeverity maps a rule's severity for HL7_CUSTOM_RULE_RUNTIME_ERROR.
+// Empty severity defers to resolveSeverity (WARNING in NORMAL mode).
+func celRuntimeIssueSeverity(ruleSeverity string) contracts.Severity {
+	if strings.TrimSpace(ruleSeverity) == "" {
+		return ""
+	}
+	return celSeverity(ruleSeverity)
 }

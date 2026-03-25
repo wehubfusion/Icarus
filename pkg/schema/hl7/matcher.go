@@ -177,6 +177,27 @@ func matchSegments(msg *Message, msgIdx int, schemaSegs []HL7SegmentDef, result 
 
 		minRep, maxRep := segmentRep(def.Usage, def.Rpt)
 
+		// Required schema position: the next segment is not this definition.
+		// If the segment cannot match any *later* schema node, consume it as unexpected
+		// so we can resync. If it can (e.g. PV1 while PID is missing), leave msgIdx
+		// unchanged so the later definition can match it after we emit MISSING_REQUIRED.
+		for minRep > 0 && msgIdx < len(msg.Segments) && msg.Segments[msgIdx].Name != def.Name {
+			if isZSegment(msg.Segments[msgIdx].Name) {
+				msgIdx++
+				continue
+			}
+			block := msg.Segments[msgIdx].Name
+			if segmentNameInLaterDefs(schemaSegs, si, block) {
+				break
+			}
+			errs = append(errs, ValidationError{
+				Path:    segmentPathAt(msg, msgIdx),
+				Message: "unexpected segment; not in schema order",
+				Code:    "HL7_UNEXPECTED_SEGMENT",
+			})
+			msgIdx++
+		}
+
 		available := 0
 		for tmpIdx := msgIdx; tmpIdx < len(msg.Segments) && msg.Segments[tmpIdx].Name == def.Name; tmpIdx++ {
 			available++
@@ -284,3 +305,47 @@ func derefSegmentDefs(pts []*HL7SegmentDef) []HL7SegmentDef {
 }
 
 func trim(s string) string { return strings.TrimSpace(s) }
+
+// segmentNameInLaterDefs reports whether name appears as a leaf segment in schemaSegs
+// strictly after index afterIdx (groups are searched recursively).
+func segmentNameInLaterDefs(schemaSegs []HL7SegmentDef, afterIdx int, name string) bool {
+	for i := afterIdx + 1; i < len(schemaSegs); i++ {
+		if segmentDefContainsName(&schemaSegs[i], name) {
+			return true
+		}
+	}
+	return false
+}
+
+func segmentDefContainsName(def *HL7SegmentDef, name string) bool {
+	if def == nil {
+		return false
+	}
+	if def.IsGroup {
+		for _, child := range derefSegmentDefs(def.Segments) {
+			if segmentDefContainsName(&child, name) {
+				return true
+			}
+		}
+		return false
+	}
+	return def.Name == name
+}
+
+// segmentPathAt returns a path like "OBX" or "OBX[2]" for the segment at msgIdx (1-based index per name).
+func segmentPathAt(msg *Message, msgIdx int) string {
+	if msg == nil || msgIdx < 0 || msgIdx >= len(msg.Segments) {
+		return "segment"
+	}
+	name := msg.Segments[msgIdx].Name
+	n := 0
+	for i := 0; i <= msgIdx; i++ {
+		if msg.Segments[i].Name == name {
+			n++
+		}
+	}
+	if n <= 1 {
+		return name
+	}
+	return fmt.Sprintf("%s[%d]", name, n)
+}

@@ -105,7 +105,7 @@ Resolved via the datatype registry (`pkg/schema/hl7/datatypes`). Each component 
 ### VARIES
 
 Fields typed `VARIES` (e.g. OBX-5) are validated as `ST` (free-text) because the runtime type is declared in a sibling field (e.g. OBX-2) which is not available at static validation time.  
-For correct per-message type enforcement, use a CEL rule:
+For correct per-message type enforcement, use a CEL rule. If the sibling type code is unknown, `validateAs` returns false (failed assertion / `HL7_CUSTOM_RULE_VIOLATION`), not a runtime error.
 
 ```json
 { "assert": "validateAs('OBX-5', msg('OBX-2'))" }
@@ -159,13 +159,13 @@ The `tableId` field is parsed and stored but not validated — terminology/value
 
 ### CEL custom rules
 - `HL7_CUSTOM_RULE_VIOLATION` — a CEL `assert`/`require`/`forbid` rule evaluated to false
-- `HL7_CEL_EVAL_ERROR` — a CEL rule could not finish evaluating (e.g. invalid regex in `matchesPattern`, non-DTM text passed to `toDTM`). This is **not** the same as a failed assertion; see [CEL eval errors vs rule violations](#cel-eval-errors-vs-rule-violations).
+- `HL7_CUSTOM_RULE_RUNTIME_ERROR` — a CEL rule could not finish evaluating (e.g. invalid regex in `matchesPattern`, non-DTM text passed to `toDTM`, invalid `validateAs` location). Severity follows the rule’s `severity` field, defaulting to **WARNING** when omitted. This is **not** the same as a failed assertion; see [CEL runtime errors vs rule violations](#cel-runtime-errors-vs-rule-violations).
 
 ---
 
 ## Severity by mode
 
-`STRICT` promotes several structural / field HL7 codes from WARNING to ERROR so unexpected segments, length, version mismatch, etc. surface as hard failures. **`HL7_CEL_EVAL_ERROR` is never promoted:** it stays **WARNING** in STRICT, NORMAL, and LENIENT, so expression runtime issues do not invalidate an otherwise structurally valid message the same way a missing required segment does.
+`STRICT` promotes several structural / field HL7 codes from WARNING to ERROR so unexpected segments, length, version mismatch, etc. surface as hard failures. **`HL7_CUSTOM_RULE_RUNTIME_ERROR`** uses the rule’s configured severity (default WARNING when omitted); it is not part of that structural promotion table.
 
 | Code | STRICT | NORMAL | LENIENT |
 |------|--------|--------|---------|
@@ -186,19 +186,21 @@ The `tableId` field is parsed and stored but not validated — terminology/value
 | HL7_EXTRA_COMPONENT | WARNING | INFO | INFO |
 | HL7_EXTRA_SUBCOMPONENT | WARNING | INFO | INFO |
 | HL7_CUSTOM_RULE_VIOLATION | per rule severity | per rule severity | per rule severity |
-| HL7_CEL_EVAL_ERROR | WARNING | WARNING | WARNING |
+| HL7_CUSTOM_RULE_RUNTIME_ERROR | per rule severity (default WARNING) | per rule severity (default WARNING) | per rule severity (default WARNING) |
 
 ---
 
-## CEL eval errors vs rule violations
+## CEL runtime errors vs rule violations
 
-| | `HL7_CUSTOM_RULE_VIOLATION` | `HL7_CEL_EVAL_ERROR` |
-|---|------------------------------|----------------------|
+| | `HL7_CUSTOM_RULE_VIOLATION` | `HL7_CUSTOM_RULE_RUNTIME_ERROR` |
+|---|------------------------------|----------------------------------|
 | **Meaning** | The rule **ran**; the check failed (assert false, require missing, forbid present). | The rule **did not complete** (helper threw / could not parse input). |
-| **Typical path** | HL7 location from `errorPath`, e.g. `OBX[2]-5`, `PID[1]-8`. | Rule location: `rule[<id>].assert` or `rule[<id>].when` (engine could not map a single field). |
-| **Severity** | From the rule’s `severity` field (ERROR / WARNING / INFO). | Always bucketed as **WARNING** (all modes). |
+| **Typical path** | HL7 location from `errorPath`, e.g. `OBX[2]-5`, `PID[1]-8`. | HL7 path when known, else `rule[<id>].assert` / `rule[<id>].when`. |
+| **Severity** | From the rule’s `severity` field (ERROR / WARNING / INFO). | Same — from the rule’s `severity` field; **WARNING** if omitted. |
 
-If bad data must **hard-fail** validation, prefer schema/datatype checks or guarded rules (`valued('X') && validateAs('X', 'DT')`) before `toDTM`, so failures become `HL7_DATATYPE` or `HL7_CUSTOM_RULE_VIOLATION`, not eval errors.
+`validateAs` with an **unknown** datatype code evaluates to **false** (assertion failure → `HL7_CUSTOM_RULE_VIOLATION`), not a runtime error. Invalid **location** (e.g. first argument is a field value) still produces `HL7_CUSTOM_RULE_RUNTIME_ERROR`.
+
+If bad data must **hard-fail** validation, prefer schema/datatype checks or guarded rules (`valued('X') && validateAs('X', 'DT')`) before `toDTM`, so failures become `HL7_DATATYPE` or `HL7_CUSTOM_RULE_VIOLATION`, not runtime errors.
 
 ---
 
@@ -230,12 +232,12 @@ The iterator infers iteration scope from quoted HL7 location literals in `when` 
 |----------|-----------|-------------|
 | `msg(loc)` | `string → string` | Returns the field value at the given HL7 location for the current scope instance |
 | `valued(loc)` | `string → bool` | True if the field at `loc` is non-empty and not `"\"\""` |
-| `validateAs(loc, typeCode)` | `string, string → bool` | Validates the field at `loc` against the given HL7 primitive type code (e.g. `"NM"`, `"DT"`); `typeCode` can be a literal or `msg('OBX-2')` |
+| `validateAs(loc, typeCode)` | `string, string → bool` | Validates the field at `loc` against the given HL7 primitive type code (e.g. `"NM"`, `"DT"`); `typeCode` can be a literal or `msg('OBX-2')`. Unknown codes return **false** (failed assertion), not a runtime error. |
 | `matchesPattern(val, pattern)` | `string, string → bool` | RE2/Perl-compatible regex match with 50 ms ReDoS timeout; warns on empty input or timeout |
 | `toDTM(loc)` | `string → timestamp` | Parses the HL7 DTM/TS value at `loc` into a CEL `timestamp`; warns on empty or invalid input |
 | `toNumber(loc)` | `string → double` | Parses the value at `loc` as a float64; warns on empty or non-numeric input |
 
-When a helper cannot complete (invalid regex, unparseable `toDTM`/`toNumber` input, etc.), the engine emits **`HL7_CEL_EVAL_ERROR`** at **WARNING** severity in **all** modes (including STRICT). That keeps “rule engine could not run” separate from structural HL7 errors and from **`HL7_CUSTOM_RULE_VIOLATION`** (rule ran and failed).
+When a helper cannot complete (invalid regex, unparseable `toDTM`/`toNumber` input, etc.), the engine emits **`HL7_CUSTOM_RULE_RUNTIME_ERROR`** with severity from the rule (default **WARNING**). That keeps “rule engine could not run” separate from structural HL7 errors and from **`HL7_CUSTOM_RULE_VIOLATION`** (rule ran and failed).
 
 ### Example rules
 
@@ -289,7 +291,7 @@ When a helper cannot complete (invalid regex, unparseable `toDTM`/`toNumber` inp
 | `StrictValidation` | Deprecated; use `Mode: ValidationModeStrict`. When effective, same as STRICT below. |
 | `Mode` | `STRICT`, `NORMAL` (default), or `LENIENT` — controls severity bucketing |
 
-**STRICT and `Process` errors:** When `Mode` is `STRICT` and `ProcessResult.Valid` is `false` (any ERROR-severity issue), `Process` also returns a non-nil Go error (`StrictProcessError`) while still populating `Errors` / `Warnings` / `Infos`. Warnings alone (including `HL7_CEL_EVAL_ERROR`) do not set `Valid` to false.
+**STRICT and `Process` errors:** When `Mode` is `STRICT` and `ProcessResult.Valid` is `false` (any ERROR-severity issue), `Process` also returns a non-nil Go error (`StrictProcessError`) while still populating `Errors` / `Warnings` / `Infos`. Warnings alone (including `HL7_CUSTOM_RULE_RUNTIME_ERROR` at WARNING) do not set `Valid` to false.
 
 ---
 

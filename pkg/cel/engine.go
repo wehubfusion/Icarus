@@ -82,18 +82,18 @@ func (e *Engine) EvaluateRules(rules []CompiledRule, iter ScopeIterator) ([]Viol
 			// context). This replaces the deprecated celgo.Functions() ProgramOption.
 			boundEnv, err := e.env.Extend(iter.EnvOptionsAt(cr.Rule, i)...)
 			if err != nil {
-				evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, RuleName: cr.Rule.Name, Expr: "bind", Err: err, Path: iter.ErrorPath(cr.Rule, i)})
+				evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, RuleName: cr.Rule.Name, Expr: "bind", Err: err, Path: iter.ErrorPath(cr.Rule, i), RuleSeverity: cr.Rule.Severity})
 				continue
 			}
 			if cr.WhenAst != nil {
 				whenPrg, err := boundEnv.Program(cr.WhenAst)
 				if err != nil {
-					evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, RuleName: cr.Rule.Name, Expr: "when", Err: err, Path: iter.ErrorPath(cr.Rule, i)})
+					evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, RuleName: cr.Rule.Name, Expr: "when", Err: err, Path: iter.ErrorPath(cr.Rule, i), RuleSeverity: cr.Rule.Severity})
 					continue
 				}
 				ok, err := e.evalBool(whenPrg)
 				if err != nil {
-					evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, RuleName: cr.Rule.Name, Expr: "when", Err: err, Path: iter.ErrorPath(cr.Rule, i)})
+					evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, RuleName: cr.Rule.Name, Expr: "when", Err: err, Path: iter.ErrorPath(cr.Rule, i), RuleSeverity: cr.Rule.Severity})
 					continue
 				}
 				if !ok {
@@ -102,12 +102,12 @@ func (e *Engine) EvaluateRules(rules []CompiledRule, iter ScopeIterator) ([]Viol
 			}
 			assertPrg, err := boundEnv.Program(cr.AssertAst)
 			if err != nil {
-				evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, RuleName: cr.Rule.Name, Expr: "assert", Err: err, Path: iter.ErrorPath(cr.Rule, i)})
+				evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, RuleName: cr.Rule.Name, Expr: "assert", Err: err, Path: iter.ErrorPath(cr.Rule, i), RuleSeverity: cr.Rule.Severity})
 				continue
 			}
 			ok, err := e.evalBool(assertPrg)
 			if err != nil {
-				evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, RuleName: cr.Rule.Name, Expr: "assert", Err: err, Path: iter.ErrorPath(cr.Rule, i)})
+				evalErrs = append(evalErrs, EvalError{RuleID: cr.Rule.ID, RuleName: cr.Rule.Name, Expr: "assert", Err: err, Path: iter.ErrorPath(cr.Rule, i), RuleSeverity: cr.Rule.Severity})
 				continue
 			}
 			if ok {

@@ -243,7 +243,7 @@ func TestHL7SchemaProcessor_Type(t *testing.T) {
 	}
 }
 
-func TestHL7StrictMode_CELEvalError_StaysWarning(t *testing.T) {
+func TestHL7StrictMode_CELRuntimeError_UsesRuleSeverity(t *testing.T) {
 	proc := NewHL7SchemaProcessor()
 	schemaDef := []byte(`{
 		"segments": [
@@ -280,28 +280,54 @@ func TestHL7StrictMode_CELEvalError_StaysWarning(t *testing.T) {
 		Mode:             contracts.ValidationModeStrict,
 		CollectAllErrors: true,
 	})
-	if err != nil {
-		t.Fatalf("strict mode: CEL eval failure must not force Process error when message is otherwise valid: %v", err)
+	if err == nil {
+		t.Fatal("expected non-nil error in strict mode when rule severity is ERROR and runtime error is present")
 	}
 	if result == nil {
 		t.Fatal("Process must return a non-nil result")
 	}
-	if !result.Valid {
-		t.Fatalf("expected valid:true (CEL eval issues are warnings, not errors); errors=%v", result.Errors)
+	if result.Valid {
+		t.Fatalf("expected valid:false; errors=%v", result.Errors)
 	}
 	var found bool
-	for _, e := range result.Warnings {
-		if e.Code == "HL7_CEL_EVAL_ERROR" {
+	for _, e := range result.Errors {
+		if e.Code == "HL7_CUSTOM_RULE_RUNTIME_ERROR" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected HL7_CEL_EVAL_ERROR in Warnings, got errors=%v warnings=%v", result.Errors, result.Warnings)
+		t.Fatalf("expected HL7_CUSTOM_RULE_RUNTIME_ERROR in Errors, got errors=%v warnings=%v", result.Errors, result.Warnings)
 	}
-	for _, e := range result.Errors {
-		if e.Code == "HL7_CEL_EVAL_ERROR" {
-			t.Fatalf("HL7_CEL_EVAL_ERROR must not appear in Errors in strict mode; got %v", result.Errors)
+}
+
+func TestMatchMessage_MissingRequired_WithBlockingSegment(t *testing.T) {
+	def := []byte(`{
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": []},
+			{"name": "PID", "usage": "R", "rpt": "1", "fields": []},
+			{"name": "PV1", "usage": "R", "rpt": "1", "fields": []}
+		]
+	}`)
+	compiled, _ := ParseHL7Schema(def)
+	// PID missing; GT1 appears where PID was expected — should report unexpected GT1 and missing PID/PV1.
+	msg, _ := ParseMessage([]byte("MSH|^~\\&|A|B|C|D|20250101120000||ADT^A01|1|P|2.5\rGT1|1\rPV1|1"))
+	match := MatchMessage(msg, &CompiledHL7Schema{Schema: compiled})
+	var unexpected, missing int
+	for _, e := range match.Errors {
+		switch e.Code {
+		case "HL7_UNEXPECTED_SEGMENT":
+			if e.Path == "GT1" {
+				unexpected++
+			}
+		case "HL7_MISSING_REQUIRED":
+			missing++
 		}
+	}
+	if unexpected != 1 {
+		t.Errorf("expected 1 HL7_UNEXPECTED_SEGMENT for GT1, got errors: %v", match.Errors)
+	}
+	if missing < 1 {
+		t.Errorf("expected at least one HL7_MISSING_REQUIRED, got errors: %v", match.Errors)
 	}
 }

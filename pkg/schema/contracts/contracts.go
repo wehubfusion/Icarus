@@ -106,8 +106,9 @@ func StrictProcessError(result *ProcessResult, mode ValidationMode) error {
 // Use Mode to control severity classification (where implemented) and fail-on-invalid:
 //   - ValidationModeStrict:  invalid result returns a Go error via StrictProcessError
 //     in addition to a populated ProcessResult. HL7 elevates several issue codes to
-//     ERROR; HL7_CEL_EVAL_ERROR stays WARNING (rule engine could not evaluate), distinct
-//     from HL7_CUSTOM_RULE_VIOLATION (rule evaluated and failed).
+//     ERROR. HL7_CUSTOM_RULE_RUNTIME_ERROR uses each rule's configured severity (default
+//     WARNING when the rule omits severity), distinct from HL7_CUSTOM_RULE_VIOLATION
+//     (rule evaluated and failed).
 //   - ValidationModeNormal:  invalid result is in the payload only (err == nil).
 //   - ValidationModeLenient: invalid result is in the payload only (err == nil); HL7 downgrades codes.
 //
@@ -127,8 +128,9 @@ type ProcessOptions struct {
 // ProcessResult contains the result of schema processing.
 //
 // Valid is false when Errors contains at least one issue (ERROR severity).
-// Warnings and infos do not affect Valid. For HL7, HL7_CEL_EVAL_ERROR is
-// bucketed as WARNING, so it does not set Valid to false by itself.
+// Warnings and infos do not affect Valid. For HL7, HL7_CUSTOM_RULE_RUNTIME_ERROR
+// defaults to WARNING when a rule omits severity; if the rule sets severity to ERROR,
+// the issue is an error and affects Valid.
 type ProcessResult struct {
 	Valid    bool              `json:"valid"`
 	Data     []byte            `json:"data"`

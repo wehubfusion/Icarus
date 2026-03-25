@@ -28,7 +28,7 @@ HL7 results are severity-bucketed into three slices:
 - `ProcessResult.Warnings` — WARNING severity issues
 - `ProcessResult.Infos` — INFO severity issues
 
-The bucket a code lands in depends on `ProcessOptions.Mode` (STRICT / NORMAL / LENIENT). For HL7, see `pkg/schema/hl7/README.md` for the full mapping, including **`HL7_CEL_EVAL_ERROR`** (always WARNING, even in STRICT).
+The bucket a code lands in depends on `ProcessOptions.Mode` (STRICT / NORMAL / LENIENT). For HL7, see `pkg/schema/hl7/README.md` for the full mapping, including **`HL7_CUSTOM_RULE_RUNTIME_ERROR`** (defaults to WARNING when the rule omits severity; otherwise follows the rule).
 
 ## Schema formats
 

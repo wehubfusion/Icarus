@@ -29,11 +29,12 @@ type Violation struct {
 
 // EvalError is a failure during binding or CEL expression evaluation.
 type EvalError struct {
-	RuleID   string
-	RuleName string
-	Expr     string // "bind", "when", or "assert"
-	Err      error
-	Path     string
+	RuleID       string
+	RuleName     string
+	Expr         string // "bind", "when", or "assert"
+	Err          error
+	Path         string
+	RuleSeverity string // rule-configured severity used to bucket runtime errors
 }
 
 // ScopeIterator supplies per-instance bindings and error paths for evaluation.
