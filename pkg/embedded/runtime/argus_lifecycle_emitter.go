@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	argusemitter "github.com/wehubfusion/Argus/pkg/emitter"
 	"go.uber.org/zap"
@@ -33,12 +34,15 @@ func NewArgusEmbeddedNodeLifecycleEmitter(
 }
 
 // EmitNodeStartEvent emits a node.started event with input payload for an embedded node.
-func (e *ArgusEmbeddedNodeLifecycleEmitter) EmitNodeStartEvent(ctx context.Context, info EmbeddedNodeIOInfo) {
-	if e == nil || e.nodeStartEmitter == nil {
-		return
+func (e *ArgusEmbeddedNodeLifecycleEmitter) EmitNodeStartEvent(ctx context.Context, info EmbeddedNodeIOInfo) error {
+	if e == nil {
+		return fmt.Errorf("lifecycle emitter is nil")
+	}
+	if e.nodeStartEmitter == nil {
+		return fmt.Errorf("nodeStartEmitter is nil")
 	}
 	if !hasRequiredIDs(info.WorkflowID, info.RunID, info.ClientID, info.EmbeddedNodeID) {
-		return
+		return fmt.Errorf("missing required IDs for node start event")
 	}
 	// Emit a start event even when input is empty; this allows timeline visibility.
 	// Empty input is normalized to {} so downstream can later backfill with real input.
@@ -48,10 +52,9 @@ func (e *ArgusEmbeddedNodeLifecycleEmitter) EmitNodeStartEvent(ctx context.Conte
 	}
 	jsonBytes, err := json.Marshal(input)
 	if err != nil {
-		e.logger.Warn("failed to marshal embedded node input", zap.String("node_id", info.EmbeddedNodeID), zap.Error(err))
-		return
+		return fmt.Errorf("marshal embedded node input for %s: %w", info.EmbeddedNodeID, err)
 	}
-	_ = e.nodeStartEmitter.EmitNodeStart(ctx, argusemitter.NodeStartEmitParams{
+	if err := e.nodeStartEmitter.EmitNodeStart(ctx, argusemitter.NodeStartEmitParams{
 		ClientID:   info.ClientID,
 		ProjectID:  info.ProjectID,
 		WorkflowID: info.WorkflowID,
@@ -59,25 +62,31 @@ func (e *ArgusEmbeddedNodeLifecycleEmitter) EmitNodeStartEvent(ctx context.Conte
 		NodeID:     info.EmbeddedNodeID,
 		Label:      info.Label,
 		Input:      jsonBytes,
-	})
+	}); err != nil {
+		return fmt.Errorf("emit NodeStart for %s: %w", info.EmbeddedNodeID, err)
+	}
+	return nil
 }
 
 // EmitNodeEndEvent emits a terminal node event with output payload for either parent or embedded node.
-func (e *ArgusEmbeddedNodeLifecycleEmitter) EmitNodeEndEvent(ctx context.Context, info EmbeddedNodeIOInfo) {
-	if e == nil || e.nodeEndEmitter == nil {
-		return
+func (e *ArgusEmbeddedNodeLifecycleEmitter) EmitNodeEndEvent(ctx context.Context, info EmbeddedNodeIOInfo) error {
+	if e == nil {
+		return fmt.Errorf("lifecycle emitter is nil")
+	}
+	if e.nodeEndEmitter == nil {
+		return fmt.Errorf("nodeEndEmitter is nil")
 	}
 	nodeID := info.EmbeddedNodeID
 	if nodeID == "" {
 		nodeID = info.ParentNodeID
 	}
 	if !hasRequiredIDs(info.WorkflowID, info.RunID, info.ClientID, nodeID) {
-		return
+		return fmt.Errorf("missing required IDs for node end event")
 	}
 	if info.Data == nil {
-		return
+		return fmt.Errorf("node end event has nil data")
 	}
-	_ = e.nodeEndEmitter.EmitNodeEnd(ctx, argusemitter.NodeEndEmitParams{
+	if err := e.nodeEndEmitter.EmitNodeEnd(ctx, argusemitter.NodeEndEmitParams{
 		ClientID:     info.ClientID,
 		ProjectID:    info.ProjectID,
 		WorkflowID:   info.WorkflowID,
@@ -87,7 +96,10 @@ func (e *ArgusEmbeddedNodeLifecycleEmitter) EmitNodeEndEvent(ctx context.Context
 		Output:       info.Data,
 		HasError:     info.HasError,
 		ErrorMessage: info.ErrorMessage,
-	})
+	}); err != nil {
+		return fmt.Errorf("emit NodeEnd for %s: %w", nodeID, err)
+	}
+	return nil
 }
 
 func hasRequiredIDs(workflowID, runID, clientID, nodeID string) bool {

@@ -196,12 +196,12 @@ type ExecutionUnit struct {
 type EmbeddedNodeLifecycleEmitter interface {
 	// EmitNodeStartEvent is called immediately before an embedded node processes.
 	// Emits lifecycle input on node.started.
-	EmitNodeStartEvent(ctx context.Context, info EmbeddedNodeIOInfo)
+	EmitNodeStartEvent(ctx context.Context, info EmbeddedNodeIOInfo) error
 
 	// EmitNodeEndEvent is called when a node output is available.
 	// It is used for both parent and embedded node terminal events.
 	// Emits lifecycle output on node.ended.
-	EmitNodeEndEvent(ctx context.Context, info EmbeddedNodeIOInfo)
+	EmitNodeEndEvent(ctx context.Context, info EmbeddedNodeIOInfo) error
 }
 
 // EmbeddedNodeStartInfo carries contextual information about an embedded node
@@ -291,10 +291,8 @@ func NewIteratedOutput(shared map[string]interface{}, items []map[string]interfa
 	result := make(StandardUnitOutput)
 
 	// Add shared (non-iterated) data
-	if shared != nil {
-		for k, v := range shared {
-			result[k] = v
-		}
+	for k, v := range shared {
+		result[k] = v
 	}
 
 	// Add indexed items

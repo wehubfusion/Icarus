@@ -183,29 +183,6 @@ func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 		Field{Key: "embedded_count", Value: len(unit.EmbeddedNodes)},
 	)
 
-	// Emit parent terminal lifecycle output payload (for Athena observation).
-	if p.config.LifecycleEmitter != nil && len(unit.EmbeddedNodes) > 0 {
-		info := EmbeddedNodeIOInfo{
-			WorkflowID:   unit.WorkflowId,
-			RunID:        unit.RunId,
-			ClientID:     unit.ClientId,
-			ProjectID:    unit.ProjectId,
-			ParentNodeID: unit.NodeId,
-			Label:        unit.Label,
-			Data:         parentOutput,
-		}
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					p.logger.Error("parent node end-event lifecycle emitter panic recovered",
-						Field{Key: "parent_node_id", Value: unit.NodeId},
-					)
-				}
-			}()
-			p.config.LifecycleEmitter.EmitNodeEndEvent(ctx, info)
-		}()
-	}
-
 	// Invariant: callers (plugins) must handle len(EmbeddedNodes)==0 themselves and never
 	// invoke ProcessEmbeddedNodes in that case. Reaching here indicates a contract violation.
 	if len(unit.EmbeddedNodes) == 0 {
