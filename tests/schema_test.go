@@ -813,8 +813,8 @@ func TestSchemaEngine(t *testing.T) {
 			},
 		)
 
-		if err != nil {
-			t.Errorf("Process should not return a Go error for validation findings; got: %v", err)
+		if err == nil {
+			t.Fatal("Expected non-nil Go error in STRICT mode when validation findings produce ERROR-severity issues")
 		}
 		if result == nil {
 			t.Fatal("Expected non-nil result")
@@ -1822,8 +1822,8 @@ func TestProcessWithSchemaStopOnFirstError(t *testing.T) {
 			Mode:          schema.ValidationModeStrict,
 		},
 	)
-	if err != nil {
-		t.Fatalf("Process should not return a Go error for validation findings; got: %v", err)
+	if err == nil {
+		t.Fatalf("Expected non-nil Go error in STRICT mode when validation findings produce ERROR-severity issues")
 	}
 	if result == nil {
 		t.Fatal("Expected non-nil result")
@@ -1906,14 +1906,110 @@ func TestProcessWithSchemaCollectAllErrors(t *testing.T) {
 			CollectAllErrors: true,
 		},
 	)
-	if err != nil {
-		t.Fatalf("Process should not return a Go error for validation findings; got: %v", err)
+	if err == nil {
+		t.Fatalf("Expected non-nil Go error in STRICT mode when validation findings produce ERROR-severity issues")
 	}
 	if result == nil {
 		t.Fatal("Expected non-nil result")
 	}
 	if len(result.Errors) != 3 {
 		t.Errorf("Expected 3 errors when CollectAllErrors true, got %d", len(result.Errors))
+	}
+}
+
+func TestStrictMode_ReturnsGoErrorAndPreservesResultErrors(t *testing.T) {
+	schemaJSON := `{
+		"type": "OBJECT",
+		"properties": {
+			"email": {
+				"type": "STRING",
+				"required": true,
+				"validation": {
+					"format": "email"
+				}
+			}
+		}
+	}`
+	inputData := `{
+		"email": "not-an-email"
+	}`
+
+	engine := schema.NewEngine()
+	result, err := engine.ProcessWithSchema(
+		[]byte(inputData),
+		[]byte(schemaJSON),
+		schema.ProcessOptions{
+			ApplyDefaults:    false,
+			StructureData:    false,
+			Mode:             schema.ValidationModeStrict,
+			CollectAllErrors: true,
+		},
+	)
+
+	if err == nil {
+		t.Fatal("expected non-nil Go error in STRICT mode")
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Valid {
+		t.Fatal("expected result.Valid=false in STRICT mode when errors are present")
+	}
+	if len(result.Errors) == 0 {
+		t.Fatal("expected at least one error in result.Errors")
+	}
+	// StrictProcessError.ErrorMessage is derived from ValidationResult.Errors.
+	if !strings.Contains(err.Error(), result.Errors[0].Path) {
+		t.Fatalf("expected err message to include first error path %q; err=%q", result.Errors[0].Path, err.Error())
+	}
+	if !strings.Contains(err.Error(), result.Errors[0].Message) {
+		t.Fatalf("expected err message to include first error message %q; err=%q", result.Errors[0].Message, err.Error())
+	}
+}
+
+func TestProcessHL7WithSchemaStrict_ReturnsGoErrorOnVersionMismatch(t *testing.T) {
+	hl7Schema := `{
+		"messageType": "ADT_A01",
+		"version": "2.8",
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": [
+				{"position": "MSH.1", "dataType": "ST", "usage": "R", "rpt": "1"},
+				{"position": "MSH.2", "dataType": "ST", "usage": "R", "rpt": "1"},
+				{"position": "MSH.9", "dataType": "MSG", "usage": "R", "rpt": "1"},
+				{"position": "MSH.12", "dataType": "ST", "usage": "R", "rpt": "1"}
+			]},
+			{"name": "PID", "usage": "R", "rpt": "1", "fields": [
+				{"position": "PID.3", "dataType": "CX", "usage": "R", "rpt": "1"}
+			]}
+		]
+	}`
+	// MSH-12 says 2.5, schema expects 2.8.
+	msgVersionMismatch := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5\rPID|||12345^^^NHS^NH"
+
+	engine := schema.NewEngine()
+	res, err := engine.ProcessHL7WithSchema([]byte(msgVersionMismatch), []byte(hl7Schema), schema.ProcessOptions{
+		CollectAllErrors: true,
+		Mode:             schema.ValidationModeStrict,
+	})
+
+	if err == nil {
+		t.Fatal("expected non-nil Go error in STRICT mode for HL7 version mismatch")
+	}
+	if res == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if res.Valid {
+		t.Fatal("expected res.Valid=false in STRICT when errors are present")
+	}
+	var found bool
+	for _, e := range res.Errors {
+		if e.Code == "HL7_VERSION_MISMATCH" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected HL7_VERSION_MISMATCH in res.Errors; errors=%v", res.Errors)
 	}
 }
 
@@ -2356,8 +2452,8 @@ func TestProcessHL7WithSchema_ModeBucketing(t *testing.T) {
 			CollectAllErrors: true,
 			Mode:             schema.ValidationModeStrict,
 		})
-		if err != nil {
-			t.Fatalf("did not expect err when using Mode=STRICT (Mode=STRICT also returns an error); err=%v", err)
+		if err == nil {
+			t.Fatalf("expected non-nil Go error in STRICT mode when validation findings produce ERROR-severity issues")
 		}
 		if res.Valid {
 			t.Fatalf("expected valid=false in STRICT when Errors are present; errors=%v warnings=%v infos=%v", res.Errors, res.Warnings, res.Infos)
