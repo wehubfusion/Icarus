@@ -1281,7 +1281,7 @@ func (sp *SubflowProcessor) emitEmbeddedNodeStart(ctx context.Context, config Em
 				sp.logger.Debug("emit embedded node input panic recovered", Field{Key: "node_id", Value: config.NodeId})
 			}
 		}()
-		sp.lifecycleEmitter.EmitNodeStartEvent(ctx, EmbeddedNodeIOInfo{
+		if err := sp.lifecycleEmitter.EmitNodeStartEvent(ctx, EmbeddedNodeIOInfo{
 			WorkflowID:     sp.workflowID,
 			RunID:          sp.runID,
 			ClientID:       sp.clientID,
@@ -1290,7 +1290,12 @@ func (sp *SubflowProcessor) emitEmbeddedNodeStart(ctx context.Context, config Em
 			EmbeddedNodeID: config.NodeId,
 			Label:          config.Label,
 			Data:           input,
-		})
+		}); err != nil {
+			sp.logger.Error("failed to emit embedded node start lifecycle event",
+				Field{Key: "node_id", Value: config.NodeId},
+				Field{Key: "error", Value: err.Error()},
+			)
+		}
 	}()
 }
 
@@ -1304,7 +1309,7 @@ func (sp *SubflowProcessor) emitEmbeddedNodeEnd(ctx context.Context, config Embe
 				sp.logger.Debug("emit embedded node output panic recovered", Field{Key: "node_id", Value: config.NodeId})
 			}
 		}()
-		sp.lifecycleEmitter.EmitNodeEndEvent(ctx, EmbeddedNodeIOInfo{
+		if err := sp.lifecycleEmitter.EmitNodeEndEvent(ctx, EmbeddedNodeIOInfo{
 			WorkflowID:     sp.workflowID,
 			RunID:          sp.runID,
 			ClientID:       sp.clientID,
@@ -1315,7 +1320,12 @@ func (sp *SubflowProcessor) emitEmbeddedNodeEnd(ctx context.Context, config Embe
 			Data:           output,
 			HasError:       hasError,
 			ErrorMessage:   errorMessage,
-		})
+		}); err != nil {
+			sp.logger.Error("failed to emit embedded node end lifecycle event",
+				Field{Key: "node_id", Value: config.NodeId},
+				Field{Key: "error", Value: err.Error()},
+			)
+		}
 	}()
 }
 
