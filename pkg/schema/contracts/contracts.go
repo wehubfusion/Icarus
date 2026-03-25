@@ -71,16 +71,66 @@ func (r *ValidationResult) ErrorMessage() string {
 	return msg
 }
 
+// EffectiveMode returns opts.Mode when it is STRICT, NORMAL, or LENIENT; otherwise NORMAL.
+func EffectiveMode(opts ProcessOptions) ValidationMode {
+	if opts.Mode != "" {
+		m := ValidationMode(strings.ToUpper(strings.TrimSpace(string(opts.Mode))))
+		switch m {
+		case ValidationModeStrict, ValidationModeNormal, ValidationModeLenient:
+			return m
+		}
+	}
+	return ValidationModeNormal
+}
+
+// StrictProcessError returns a non-nil error when mode is STRICT and the result is invalid
+// (Valid is false). The populated ProcessResult is still returned alongside this error.
+func StrictProcessError(result *ProcessResult, mode ValidationMode) error {
+	if mode != ValidationModeStrict || result == nil || result.Valid {
+		return nil
+	}
+	vr := &ValidationResult{Valid: false, Errors: result.Errors}
+	msg := vr.ErrorMessage()
+	if msg == "" {
+		msg = "schema validation failed"
+	}
+	nw, ni := len(result.Warnings), len(result.Infos)
+	if nw > 0 || ni > 0 {
+		msg = fmt.Sprintf("%s (also %d warning(s), %d info finding(s))", msg, nw, ni)
+	}
+	return fmt.Errorf("%s", msg)
+}
+
 // ProcessOptions controls schema processing behavior.
+//
+// Use Mode to control severity classification (where implemented) and fail-on-invalid:
+//   - ValidationModeStrict:  invalid result returns a Go error via StrictProcessError
+//     in addition to a populated ProcessResult. HL7 elevates several issue codes to
+//     ERROR. HL7_CUSTOM_RULE_RUNTIME_ERROR uses each rule's configured severity (default
+//     WARNING when the rule omits severity), distinct from HL7_CUSTOM_RULE_VIOLATION
+//     (rule evaluated and failed).
+//   - ValidationModeNormal:  invalid result is in the payload only (err == nil).
+//   - ValidationModeLenient: invalid result is in the payload only (err == nil); HL7 downgrades codes.
+//
+// Deprecated: StrictValidation is no longer used by any processor and will be removed in a
+// future release. Set Mode: ValidationModeStrict instead.
 type ProcessOptions struct {
 	ApplyDefaults    bool
 	StructureData    bool
-	StrictValidation bool
 	Mode             ValidationMode
 	CollectAllErrors bool
+
+	// Deprecated: use Mode: ValidationModeStrict instead. Kept for JSON/config
+	// backward-compatibility only; processors no longer inspect this field.
+	StrictValidation bool `json:"strict_validation,omitempty"`
 }
 
-// ProcessResult contains the result of schema processing
+// ProcessResult contains the result of schema processing.
+//
+// Valid is false when Errors contains at least one issue (ERROR severity).
+// Warnings and infos do not affect Valid. For HL7, HL7_CUSTOM_RULE_RUNTIME_ERROR
+// defaults to WARNING when a rule omits severity; if the rule sets severity to ERROR,
+// the issue is an error and affects Valid.
 type ProcessResult struct {
 	Valid    bool              `json:"valid"`
 	Data     []byte            `json:"data"`

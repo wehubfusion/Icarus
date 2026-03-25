@@ -16,13 +16,37 @@ func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool, reg *
 	if msg != nil {
 		version = strings.TrimSpace(msg.Get("MSH-12"))
 	}
+
+	// Count how many times each segment name appears in match.Matched so we can
+	// include an instance suffix (e.g. "DG1[2]-6") whenever a segment repeats.
+	// A single-occurrence segment keeps the plain name ("DG1-6") for backward compat.
+	segCount := make(map[string]int)
+	for _, m := range match.Matched {
+		if m.Segment != nil {
+			segCount[m.Segment.Name]++
+		}
+	}
+	segInstance := make(map[string]int) // running per-name counter during iteration
+
 	for _, m := range match.Matched {
 		if m.Segment == nil || m.SchemaDef == nil {
 			continue
 		}
+		name := m.Segment.Name
+		segInstance[name]++
+		instance := segInstance[name]
+		total := segCount[name]
+
+		// segPrefix produces "SEG" for single-occurrence segments and "SEG[N]" for
+		// repeated ones, matching the path style used by CEL violation paths.
+		segPrefix := name
+		if total > 1 {
+			segPrefix = fmt.Sprintf("%s[%d]", name, instance)
+		}
+
 		for fi := range m.SchemaDef.Fields {
 			fdef := &m.SchemaDef.Fields[fi]
-			fieldErrs := validateField(m.Segment, fdef, m.Segment.Name, msg, reg, version)
+			fieldErrs := validateField(m.Segment, fdef, segPrefix, msg, reg, version)
 			for _, e := range fieldErrs {
 				errs = append(errs, e)
 				if !collectAll {
@@ -43,7 +67,7 @@ func ValidateMatchResult(match MatchResult, msg *Message, collectAll bool, reg *
 				continue
 			}
 			errs = append(errs, ValidationError{
-				Path:    fmt.Sprintf("%s-%d", m.Segment.Name, fn),
+				Path:    fmt.Sprintf("%s-%d", segPrefix, fn),
 				Message: "segment has more fields than schema allows",
 				Code:    "HL7_EXTRA_FIELD",
 			})
@@ -119,7 +143,8 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 	isMSH2 := segName == "MSH" && fieldNum == 2
 	if fdef.Length > 0 && !isMSH2 {
 		for ri, rep := range f.Repetitions {
-			val := rep.String()
+			// Use message-specific delimiters when joining components, not the default '^'.
+			val := truncateAtMarker(repetitionStringWithDelimiters(rep, msg), msg)
 			if utf8.RuneCountInString(val) > fdef.Length {
 				p := path
 				if len(f.Repetitions) > 1 {
@@ -131,11 +156,19 @@ func validateField(seg *Segment, fdef *HL7FieldDef, segName string, msg *Message
 			}
 		}
 	}
-	// tableId/value-set validation requires an external terminology service and is not implemented.
+	// TODO(terminology): fdef.TableID carries the HL7 table identifier (e.g. "0076", "0085").
+	// Value-set validation against these tables requires an external terminology service.
+	// When that service is available, add a check here:
+	//   if fdef.TableID != nil && !terminology.IsInTable(*fdef.TableID, fieldRawValue) { … }
 
 	effectiveType := fdef.DataType
 	if strings.ToUpper(fdef.DataType) == "VARIES" {
-		// VARIES resolution is intentionally disabled for now; validate as a plain string.
+		// KNOWN LIMITATION: VARIES fields (e.g. OBX-5) carry a runtime type declared
+		// in a sibling field (e.g. OBX-2). Resolving that at validation time requires
+		// passing the live message into schema validation, which is not yet done.
+		// Until then, VARIES is treated as ST (free-text string) so at least length
+		// checks still apply. Use CEL validateAs('OBX-5', msg('OBX-2')) for
+		// proper per-message type enforcement.
 		effectiveType = "ST"
 	}
 	for ri, rep := range f.Repetitions {
@@ -152,12 +185,35 @@ func parseFieldNumberFromPosition(position string) int {
 	position = strings.TrimSpace(position)
 	for _, sep := range []string{"-", "."} {
 		if i := strings.LastIndex(position, sep); i >= 0 && i+1 < len(position) {
-			n, _ := strconv.Atoi(strings.TrimSpace(position[i+1:]))
+			tail := strings.TrimSpace(position[i+1:])
+			// Compound forms like "PID-3.1" have a component suffix after the field
+			// number. Strip it so Atoi sees just "3", not "3.1" (which would fail).
+			if dot := strings.IndexByte(tail, '.'); dot >= 0 {
+				tail = tail[:dot]
+			}
+			n, err := strconv.Atoi(tail)
+			if err != nil || n <= 0 {
+				continue // try next separator
+			}
 			return n
 		}
 	}
 	n, _ := strconv.Atoi(position)
 	return n
+}
+
+// truncateAtMarker removes content at and after the truncation delimiter from val.
+// This implements the HL7 v2.7+ rule: content after '#' (or the configured truncation
+// character) was intentionally shortened by the sender and must not be counted for
+// length-conformance checks. If no truncation delimiter is configured, val is returned as-is.
+func truncateAtMarker(val string, msg *Message) string {
+	if msg == nil || msg.Delimiters.Truncation == 0 {
+		return val
+	}
+	if idx := strings.IndexByte(val, msg.Delimiters.Truncation); idx >= 0 {
+		return val[:idx]
+	}
+	return val
 }
 
 func parseComponentNumberFromPosition(position string) int {

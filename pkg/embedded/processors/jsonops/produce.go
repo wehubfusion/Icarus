@@ -63,9 +63,8 @@ func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) ru
 		dataToProcess,
 		cfg.Schema,
 		schema.ProcessOptions{
-			ApplyDefaults:    false, // Never apply defaults on produce
-			StructureData:    cfg.GetStructureData(),
-			StrictValidation: cfg.GetStrictValidation(),
+			ApplyDefaults: false, // Never apply defaults on produce
+			StructureData: cfg.GetStructureData(),
 		},
 	)
 	if err != nil {
@@ -78,12 +77,11 @@ func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) ru
 		))
 	}
 
-	// Check validation result
+	// When strict_validation is enabled, surface any validation failures as errors.
 	if !result.Valid && cfg.GetStrictValidation() {
-		// Convert schema.ValidationError to strings
 		errorMessages := make([]string, len(result.Errors))
-		for i, err := range result.Errors {
-			errorMessages[i] = fmt.Sprintf("%s: %s", err.Path, err.Message)
+		for i, e := range result.Errors {
+			errorMessages[i] = fmt.Sprintf("%s: %s", e.Path, e.Message)
 		}
 		return runtime.ErrorOutput(NewValidationError(
 			n.NodeId(),

@@ -4,14 +4,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/wehubfusion/Icarus/pkg/schema/hl7/primitive"
 )
 
 // ValidationError represents a single HL7 validation error (Path, Message, Code).
-type ValidationError struct {
-	Path    string
-	Message string
-	Code    string
-}
+// It is aliased to the primitive validation error to avoid duplicated types.
+type ValidationError = primitive.FieldError
 
 // MatchedSegment pairs a message segment with its schema definition for validation.
 type MatchedSegment struct {
@@ -81,9 +80,20 @@ func computeReserve(laterSegs []HL7SegmentDef, segName string) int {
 	return reserve
 }
 
+// maxMatchDepth is the hard limit on group nesting during message-to-schema matching.
+// Schemas are already validated against maxHL7RecursionDepth (20). This guard is a
+// secondary safety net against crafted schemas or unexpected recursion.
+const maxMatchDepth = 32
+
 // MatchMessage matches message segments against the schema; Z-segments not in schema are skipped.
 func MatchMessage(msg *Message, compiled *CompiledHL7Schema) MatchResult {
 	var result MatchResult
+	if msg == nil {
+		result.Errors = append(result.Errors, ValidationError{
+			Path: "message", Message: "nil message", Code: "HL7_INVALID_MESSAGE",
+		})
+		return result
+	}
 	if compiled == nil || compiled.Schema == nil {
 		result.Errors = append(result.Errors, ValidationError{
 			Path: "message", Message: "no schema", Code: "HL7_INVALID_SCHEMA",
@@ -116,6 +126,13 @@ func MatchMessage(msg *Message, compiled *CompiledHL7Schema) MatchResult {
 
 // matchSegments matches a message segment stream to a schema segment list.
 func matchSegments(msg *Message, msgIdx int, schemaSegs []HL7SegmentDef, result *MatchResult, depth int) (int, []ValidationError) {
+	if depth > maxMatchDepth {
+		return msgIdx, []ValidationError{{
+			Path:    "schema",
+			Message: fmt.Sprintf("segment group nesting exceeds maximum depth (%d)", maxMatchDepth),
+			Code:    "HL7_INVALID_SCHEMA",
+		}}
+	}
 	var errs []ValidationError
 	for si := range schemaSegs {
 		def := &schemaSegs[si]
@@ -159,6 +176,27 @@ func matchSegments(msg *Message, msgIdx int, schemaSegs []HL7SegmentDef, result 
 		}
 
 		minRep, maxRep := segmentRep(def.Usage, def.Rpt)
+
+		// Required schema position: the next segment is not this definition.
+		// If the segment cannot match any *later* schema node, consume it as unexpected
+		// so we can resync. If it can (e.g. PV1 while PID is missing), leave msgIdx
+		// unchanged so the later definition can match it after we emit MISSING_REQUIRED.
+		for minRep > 0 && msgIdx < len(msg.Segments) && msg.Segments[msgIdx].Name != def.Name {
+			if isZSegment(msg.Segments[msgIdx].Name) {
+				msgIdx++
+				continue
+			}
+			block := msg.Segments[msgIdx].Name
+			if segmentNameInLaterDefs(schemaSegs, si, block) {
+				break
+			}
+			errs = append(errs, ValidationError{
+				Path:    segmentPathAt(msg, msgIdx),
+				Message: "unexpected segment; not in schema order",
+				Code:    "HL7_UNEXPECTED_SEGMENT",
+			})
+			msgIdx++
+		}
 
 		available := 0
 		for tmpIdx := msgIdx; tmpIdx < len(msg.Segments) && msg.Segments[tmpIdx].Name == def.Name; tmpIdx++ {
@@ -211,6 +249,12 @@ func matchSegments(msg *Message, msgIdx int, schemaSegs []HL7SegmentDef, result 
 	return msgIdx, errs
 }
 
+// isRequired returns true only for R (Required). RE, O, C, B, X, and W are not treated
+// as required here:
+//   - RE (Required but may be Empty): absence is allowed; treated like Optional.
+//   - C  (Conditional): presence depends on another element value. The predicate is
+//     implementation-guide specific and cannot be evaluated statically.
+//     Use CEL rules (e.g. when/assert) to enforce conditional presence.
 func isRequired(usage string) bool {
 	u := strings.ToUpper(strings.TrimSpace(usage))
 	return u == UsageRequired
@@ -260,17 +304,48 @@ func derefSegmentDefs(pts []*HL7SegmentDef) []HL7SegmentDef {
 	return out
 }
 
-func trim(s string) string {
-	if s == "" {
-		return ""
+func trim(s string) string { return strings.TrimSpace(s) }
+
+// segmentNameInLaterDefs reports whether name appears as a leaf segment in schemaSegs
+// strictly after index afterIdx (groups are searched recursively).
+func segmentNameInLaterDefs(schemaSegs []HL7SegmentDef, afterIdx int, name string) bool {
+	for i := afterIdx + 1; i < len(schemaSegs); i++ {
+		if segmentDefContainsName(&schemaSegs[i], name) {
+			return true
+		}
 	}
-	start := 0
-	for start < len(s) && (s[start] == ' ' || s[start] == '\t') {
-		start++
+	return false
+}
+
+func segmentDefContainsName(def *HL7SegmentDef, name string) bool {
+	if def == nil {
+		return false
 	}
-	end := len(s)
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
-		end--
+	if def.IsGroup {
+		for _, child := range derefSegmentDefs(def.Segments) {
+			if segmentDefContainsName(&child, name) {
+				return true
+			}
+		}
+		return false
 	}
-	return s[start:end]
+	return def.Name == name
+}
+
+// segmentPathAt returns a path like "OBX" or "OBX[2]" for the segment at msgIdx (1-based index per name).
+func segmentPathAt(msg *Message, msgIdx int) string {
+	if msg == nil || msgIdx < 0 || msgIdx >= len(msg.Segments) {
+		return "segment"
+	}
+	name := msg.Segments[msgIdx].Name
+	n := 0
+	for i := 0; i <= msgIdx; i++ {
+		if msg.Segments[i].Name == name {
+			n++
+		}
+	}
+	if n <= 1 {
+		return name
+	}
+	return fmt.Sprintf("%s[%d]", name, n)
 }

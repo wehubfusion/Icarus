@@ -76,9 +76,8 @@ func (n *JsonOpsNode) executeParse(input runtime.ProcessInput, cfg *Config) runt
 		dataToValidate,
 		cfg.Schema,
 		schema.ProcessOptions{
-			ApplyDefaults:    cfg.GetApplyDefaults(),
-			StructureData:    cfg.GetStructureData(),
-			StrictValidation: cfg.GetStrictValidation(),
+			ApplyDefaults: cfg.GetApplyDefaults(),
+			StructureData: cfg.GetStructureData(),
 		},
 	)
 	if err != nil {

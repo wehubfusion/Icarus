@@ -25,8 +25,10 @@ type Config struct {
 	// Default: false for parse, true for produce
 	StructureData *bool `json:"structure_data,omitempty"`
 
-	// StrictValidation fails immediately on validation errors
-	// Default: false for parse, true for produce
+	// StrictValidation maps to Mode=STRICT when true, making the processor
+	// return a Go error (in addition to the result payload) when validation fails.
+	// Deprecated: prefer setting the Mode field directly in ProcessOptions.
+	// Default: false for parse, true for produce.
 	StrictValidation *bool `json:"strict_validation,omitempty"`
 
 	// Pretty formats the JSON before base64 encoding (produce action only)
@@ -77,11 +79,12 @@ func (c *Config) GetStructureData() bool {
 	return c.Action == "produce"
 }
 
-// GetStrictValidation returns the strict_validation value with action-specific defaults
+// GetStrictValidation returns whether strict (fail-on-invalid) mode should be used.
+// Callers should convert the result to Mode: ValidationModeStrict in ProcessOptions.
 func (c *Config) GetStrictValidation() bool {
 	if c.StrictValidation != nil {
 		return *c.StrictValidation
 	}
-	// Default to false for parse (lenient), true for produce (ensure valid output)
+	// Default: false for parse (lenient), true for produce (ensure valid output)
 	return c.Action == "produce"
 }

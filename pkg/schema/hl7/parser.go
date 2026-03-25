@@ -11,11 +11,27 @@ var (
 	ErrEmptyMessage      = errors.New("hl7: empty message")
 	ErrInvalidMSH        = errors.New("hl7: message must start with MSH segment")
 	ErrInvalidDelimiters = errors.New("hl7: invalid or missing delimiters in MSH segment")
+	ErrMessageTooLarge   = errors.New("hl7: message exceeds maximum allowed size")
+	ErrTooManySegments   = errors.New("hl7: message contains too many segments")
+)
+
+const (
+	// maxMessageBytes is the hard size limit for a single HL7 v2 message.
+	// Real-world HL7 v2 messages are rarely larger than a few hundred KB; 10 MB is a
+	// generous upper bound that still prevents unbounded memory allocation on malformed input.
+	maxMessageBytes = 10 * 1024 * 1024 // 10 MB
+
+	// maxSegments is the maximum number of segments allowed in a single message.
+	// This prevents a degenerate input from creating millions of Segment structs.
+	maxSegments = 5_000
 )
 
 var bomUTF8 = []byte{0xEF, 0xBB, 0xBF}
 
 func Tokenize(raw []byte) (Delimiters, []string, error) {
+	if len(raw) > maxMessageBytes {
+		return Delimiters{}, nil, ErrMessageTooLarge
+	}
 	s := string(raw)
 	s = strings.ReplaceAll(s, "\r\n", "\r")
 	s = strings.ReplaceAll(s, "\n", "\r")
@@ -24,11 +40,7 @@ func Tokenize(raw []byte) (Delimiters, []string, error) {
 	}
 	s = strings.TrimLeft(s, " \t\r\n")
 	for len(s) > 0 && (s[len(s)-1] == '\r' || s[len(s)-1] == '\n' || s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-		if s[len(s)-1] == '\r' || s[len(s)-1] == '\n' {
-			s = s[:len(s)-1]
-		} else {
-			break
-		}
+		s = s[:len(s)-1]
 	}
 	if len(s) == 0 {
 		return Delimiters{}, nil, ErrEmptyMessage
@@ -62,6 +74,9 @@ func ParseMessage(raw []byte) (*Message, error) {
 
 // ParseMessageWithDelimiters builds a Message from already-tokenized delimiters and segment strings.
 func ParseMessageWithDelimiters(d Delimiters, segStrs []string) (*Message, error) {
+	if len(segStrs) > maxSegments {
+		return nil, ErrTooManySegments
+	}
 	msg := &Message{Delimiters: d}
 	for _, segStr := range segStrs {
 		seg, err := parseSegment(segStr, d)
@@ -276,7 +291,11 @@ func decodeEscapeSequence(seq string, d Delimiters) (string, bool) {
 		return string(d.Escape), true
 	case ".br", ".sp":
 		return "\n", true
-	case ".ce", ".sk", ".fi", ".nf", ".in", ".ti", "H", "N", "C", "M":
+	case ".ce", ".sk", ".fi", ".nf", ".in", ".ti", "H", "N":
+		// Formatting hints (highlight on/off, etc.) — strip to empty.
+		return "", true
+	case "C", "M":
+		// Single-char \C\ / \M\ charset markers with no identifier — strip.
 		return "", true
 	default:
 		if len(seq) >= 2 && (seq[0] == 'X' || seq[0] == 'x') {
@@ -292,6 +311,18 @@ func decodeEscapeSequence(seq string, d Delimiters) (string, bool) {
 			if strings.HasPrefix(seq, ".in") {
 				return "", true
 			}
+		}
+		// \Cxxx\ and \Mxxx\ introduce character-set switches. We do not have
+		// charset support, so the escape sequence is preserved verbatim in the
+		// output rather than being stripped. Callers that need proper charset
+		// handling should detect the leading 'C'/'M' and process accordingly.
+		if len(seq) >= 2 && (seq[0] == 'C' || seq[0] == 'M') {
+			return string(d.Escape) + seq + string(d.Escape), true
+		}
+		// \Zxxx\ are vendor/site-defined custom escape sequences (HL7 §2.7).
+		// They have no standard interpretation, so they are preserved verbatim.
+		if len(seq) >= 2 && (seq[0] == 'Z' || seq[0] == 'z') {
+			return string(d.Escape) + seq + string(d.Escape), true
 		}
 	}
 	return "", false

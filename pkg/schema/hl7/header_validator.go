@@ -5,6 +5,21 @@ import (
 	"strings"
 )
 
+// versionsMatch returns true when a and b refer to the same HL7 version.
+// Trailing ".0" segments are stripped before comparing so that "2.5" and
+// "2.5.0" are treated as equivalent, while "2.5" and "2.5.1" are not.
+// Comparison is case-insensitive.
+func versionsMatch(a, b string) bool {
+	return strings.EqualFold(normalizeVersion(a), normalizeVersion(b))
+}
+
+func normalizeVersion(v string) string {
+	for strings.HasSuffix(v, ".0") {
+		v = strings.TrimSuffix(v, ".0")
+	}
+	return v
+}
+
 // ValidateMessageTypeAndVersion checks MSH-9 and MSH-12 against schema messageType and version.
 // Enforcement is lenient: if schema.MessageType or schema.Version is empty, the corresponding check is skipped.
 func ValidateMessageTypeAndVersion(msg *Message, schema *HL7Schema) []ValidationError {
@@ -34,7 +49,7 @@ func ValidateMessageTypeAndVersion(msg *Message, schema *HL7Schema) []Validation
 	if schema.Version != "" {
 		want := strings.TrimSpace(schema.Version)
 		got := strings.TrimSpace(msg.Get("MSH-12"))
-		if want != got {
+		if !versionsMatch(want, got) {
 			errs = append(errs, ValidationError{
 				Path: "MSH-12", Message: fmt.Sprintf("version must be %q, got %q", want, got), Code: "HL7_VERSION_MISMATCH",
 			})

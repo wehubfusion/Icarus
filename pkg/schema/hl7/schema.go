@@ -7,13 +7,27 @@ import (
 	"regexp"
 	"strings"
 
+	icel "github.com/wehubfusion/Icarus/pkg/cel"
+	celhl7 "github.com/wehubfusion/Icarus/pkg/cel/hl7"
 	"github.com/wehubfusion/Icarus/pkg/schema/hl7/datatypes"
 )
 
-// CompiledHL7Schema holds a validated HL7 schema for use by the processor.
+// CompiledHL7Schema holds a validated HL7 schema ready for message processing.
+//
+// Schema and Registry carry the structural definition and datatype validation
+// data. CELValidation is non-nil only when the schema declares custom CEL rules.
 type CompiledHL7Schema struct {
-	Schema   *HL7Schema
-	Registry *datatypes.Registry
+	Schema        *HL7Schema
+	Registry      *datatypes.Registry
+	CELValidation *CompiledCELValidation // nil when no CEL rules are defined
+}
+
+// CompiledCELValidation bundles the compiled CEL engine and rule set together.
+// Keeping it separate from CompiledHL7Schema makes the CEL dependency opt-in
+// and easier to replace or disable independently.
+type CompiledCELValidation struct {
+	Engine *icel.Engine
+	Rules  []icel.CompiledRule
 }
 
 // SchemaType returns the format identifier for the schema engine registry.
@@ -44,9 +58,10 @@ var (
 
 // HL7Schema represents an HL7 message definition.
 type HL7Schema struct {
-	MessageType       string          `json:"messageType"`
-	Version           string          `json:"version,omitempty"`
-	Segments          []HL7SegmentDef `json:"segments"`
+	MessageType       string            `json:"messageType"`
+	Version           string            `json:"version,omitempty"`
+	Segments          []HL7SegmentDef   `json:"segments"`
+	Rules             []celhl7.CELRule  `json:"rules,omitempty"`
 }
 
 // HL7SegmentDef represents a segment or segment group.
@@ -83,6 +98,9 @@ func (h *HL7Schema) Validate() error {
 		if err := h.validateSegment(&h.Segments[i], 0, fmt.Sprintf("segments[%d]", i)); err != nil {
 			return err
 		}
+	}
+	if err := celhl7.ValidateCELRuleMetadata(h.Rules); err != nil {
+		return fmt.Errorf("CEL rules: %w", err)
 	}
 	return nil
 }

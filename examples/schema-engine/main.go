@@ -22,7 +22,7 @@ func main() {
 	jsonRes, err := engine.ProcessWithSchema(jsonInput, jsonSchema, schema.ProcessOptions{
 		ApplyDefaults:    true,
 		StructureData:    true,
-		StrictValidation: true,
+		Mode:             schema.ValidationModeStrict,
 		CollectAllErrors: true,
 	})
 	if err != nil {
@@ -43,7 +43,7 @@ func main() {
 		{"Name":"Carol","Age":"not-a-number"}
 	]`)
 	csvRes, err := engine.ProcessCSVWithSchema(csvRows, csvSchema, schema.ProcessOptions{
-		StrictValidation: false,
+		Mode:             schema.ValidationModeNormal,
 		CollectAllErrors: true,
 	})
 	if err != nil {
