@@ -1,6 +1,10 @@
 package httpclient
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 // HeaderItem represents a key-value header pair.
 type HeaderItem struct {
@@ -8,11 +12,60 @@ type HeaderItem struct {
 	Value string `json:"value"`
 }
 
+type BindableText struct {
+	Source   string `json:"source"`
+	Value    string `json:"value"`
+	InputKey string `json:"inputKey"`
+}
+
+type BindableObject struct {
+	Source   string      `json:"source"`
+	Value    interface{} `json:"value"`
+	InputKey string      `json:"inputKey"`
+}
+
+// ManualInput represents either a legacy key/value header entry or a dynamic header input selector.
+// - Legacy: {"key":"X-Foo","value":"bar"}
+// - Dynamic: {"name":"X-Foo"}
+type ManualInput struct {
+	Name  string `json:"name,omitempty"`
+	Key   string `json:"key,omitempty"`
+	Value string `json:"value,omitempty"`
+}
+
+func (m *ManualInput) UnmarshalJSON(data []byte) error {
+	// Try dynamic form first.
+	var dynamic struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &dynamic); err == nil && dynamic.Name != "" {
+		m.Name = dynamic.Name
+		return nil
+	}
+
+	// Fall back to legacy key/value.
+	var legacy HeaderItem
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	m.Key = legacy.Key
+	m.Value = legacy.Value
+	return nil
+}
+
 // Config defines the configuration for the HTTP client processor.
 type Config struct {
-	Label        string       `json:"label"`
-	ConnectionID string       `json:"connection_id"`
-	ManualInputs []HeaderItem `json:"manual_inputs"`
+	Label        string `json:"label"`
+	ConnectionID string `json:"connection_id"`
+
+	// URL is optional for backward compatibility; when omitted, URL is assumed to come from connection.
+	URL *BindableText `json:"url,omitempty"`
+	// Method is required when URL comes from config or input; it is ignored when URL comes from connection.
+	Method string `json:"method,omitempty"`
+	// Headers is optional; when omitted, legacy manual_inputs key/value entries are treated as static headers.
+	Headers *BindableObject `json:"headers,omitempty"`
+
+	ManualInputs []ManualInput `json:"manual_inputs,omitempty"`
 	// Connection is populated by Elysium enrichment (connection_id -> connection details from Nyx).
 	// Contains: url, method, auth_type, bearer_token, basic_username, basic_password,
 	// api_key_header, api_key_value, custom_headers, etc.
@@ -32,6 +85,21 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	if v, ok := raw["connection_id"]; ok {
 		_ = json.Unmarshal(v, &c.ConnectionID)
 	}
+	if v, ok := raw["url"]; ok {
+		var url BindableText
+		if err := json.Unmarshal(v, &url); err == nil {
+			c.URL = &url
+		}
+	}
+	if v, ok := raw["method"]; ok {
+		_ = json.Unmarshal(v, &c.Method)
+	}
+	if v, ok := raw["headers"]; ok {
+		var headers BindableObject
+		if err := json.Unmarshal(v, &headers); err == nil {
+			c.Headers = &headers
+		}
+	}
 	if v, ok := raw["manual_inputs"]; ok {
 		_ = json.Unmarshal(v, &c.ManualInputs)
 	}
@@ -47,20 +115,45 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 
 // Validate checks if the configuration is valid.
 func (c *Config) Validate(nodeID string) error {
-	if c.Connection == nil {
-		if c.ConnectionID == "" {
-			return NewConfigError(nodeID, "connection_id", "connection_id is required", nil)
-		}
-		return NewConfigError(nodeID, "connection", "connection was not enriched (connection_id present but connection missing); ensure Elysium enrichment runs before processing", nil)
+	urlSource := "connection"
+	if c.URL != nil && strings.TrimSpace(c.URL.Source) != "" {
+		urlSource = strings.TrimSpace(c.URL.Source)
 	}
 
-	urlVal, ok := c.Connection["url"]
-	if !ok || urlVal == nil {
-		return NewConfigError(nodeID, "connection.url", "connection must contain url", nil)
-	}
-	urlStr, ok := urlVal.(string)
-	if !ok || urlStr == "" {
-		return NewConfigError(nodeID, "connection.url", "connection url must be a non-empty string", nil)
+	switch urlSource {
+	case "connection":
+		if c.Connection == nil {
+			if c.ConnectionID == "" {
+				return NewConfigError(nodeID, "connection_id", "connection_id is required when url.source=connection", nil)
+			}
+			return NewConfigError(nodeID, "connection", "connection was not enriched (connection_id present but connection missing); ensure Elysium enrichment runs before processing", nil)
+		}
+
+		urlVal, ok := c.Connection["url"]
+		if !ok || urlVal == nil {
+			return NewConfigError(nodeID, "connection.url", "connection must contain url", nil)
+		}
+		urlStr, ok := urlVal.(string)
+		if !ok || strings.TrimSpace(urlStr) == "" {
+			return NewConfigError(nodeID, "connection.url", "connection url must be a non-empty string", nil)
+		}
+	case "config":
+		if c.URL == nil || strings.TrimSpace(c.URL.Value) == "" {
+			return NewConfigError(nodeID, "url.value", "url.value is required when url.source=config", nil)
+		}
+		if strings.TrimSpace(c.Method) == "" {
+			return NewConfigError(nodeID, "method", "method is required when url.source=config", nil)
+		}
+	case "input":
+		// URL value comes from runtime input; validate method requirement here.
+		if c.URL != nil && c.URL.InputKey != "" && c.URL.InputKey != "url" {
+			return NewConfigError(nodeID, "url.inputKey", fmt.Sprintf("url.inputKey must be \"url\" (got %q)", c.URL.InputKey), nil)
+		}
+		if strings.TrimSpace(c.Method) == "" {
+			return NewConfigError(nodeID, "method", "method is required when url.source=input", nil)
+		}
+	default:
+		return NewConfigError(nodeID, "url.source", fmt.Sprintf("unsupported url.source %q", urlSource), nil)
 	}
 
 	return nil

@@ -193,3 +193,225 @@ func TestProcess_BearerAuth(t *testing.T) {
 		t.Fatalf("process failed: %v", output.Error)
 	}
 }
+
+func TestProcess_URLFromInput_OverridesConnection(t *testing.T) {
+	inputServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.String() != "/" {
+			// sanity: still hitting our server
+		}
+		if r.Method != http.MethodGet {
+			t.Errorf("method: got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`ok`))
+	}))
+	defer inputServer.Close()
+
+	otherServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("should not have used connection url")
+	}))
+	defer otherServer.Close()
+
+	cfg := map[string]interface{}{
+		"label": "test",
+		"url":   map[string]interface{}{"source": "input", "inputKey": "url"},
+		"method": "GET",
+		"connection": map[string]interface{}{
+			"url":    otherServer.URL,
+			"method": "POST",
+		},
+	}
+	rawCfg, _ := json.Marshal(cfg)
+
+	node := createTestNode(t, "node1")
+	input := runtime.ProcessInput{
+		Ctx:       context.Background(),
+		Data:      map[string]interface{}{"url": inputServer.URL},
+		RawConfig: rawCfg,
+		NodeId:    "node1",
+	}
+	output := node.Process(input)
+	if output.Error != nil {
+		t.Fatalf("process failed: %v", output.Error)
+	}
+}
+
+func TestProcess_URLFromInput_Missing_Fails(t *testing.T) {
+	cfg := map[string]interface{}{
+		"label": "test",
+		"url":   map[string]interface{}{"source": "input", "inputKey": "url"},
+		"method": "GET",
+	}
+	rawCfg, _ := json.Marshal(cfg)
+
+	node := createTestNode(t, "node1")
+	input := runtime.ProcessInput{
+		Ctx:       context.Background(),
+		Data:      map[string]interface{}{},
+		RawConfig: rawCfg,
+		NodeId:    "node1",
+	}
+	output := node.Process(input)
+	if output.Error == nil {
+		t.Fatal("expected error when url.source=input but input url missing")
+	}
+}
+
+func TestProcess_URLFromConfig_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method: got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	cfg := map[string]interface{}{
+		"label": "test",
+		"url":   map[string]interface{}{"source": "config", "value": server.URL},
+		"method": "POST",
+	}
+	rawCfg, _ := json.Marshal(cfg)
+
+	node := createTestNode(t, "node1")
+	input := runtime.ProcessInput{
+		Ctx:       context.Background(),
+		Data:      map[string]interface{}{},
+		RawConfig: rawCfg,
+		NodeId:    "node1",
+	}
+	output := node.Process(input)
+	if output.Error != nil {
+		t.Fatalf("process failed: %v", output.Error)
+	}
+}
+
+func TestProcess_URLFromConfig_MissingMethod_Fails(t *testing.T) {
+	cfg := map[string]interface{}{
+		"label": "test",
+		"url":   map[string]interface{}{"source": "config", "value": "https://example.com"},
+	}
+	rawCfg, _ := json.Marshal(cfg)
+
+	node := createTestNode(t, "node1")
+	input := runtime.ProcessInput{
+		Ctx:       context.Background(),
+		Data:      map[string]interface{}{},
+		RawConfig: rawCfg,
+		NodeId:    "node1",
+	}
+	output := node.Process(input)
+	if output.Error == nil {
+		t.Fatal("expected error when url.source=config but method missing")
+	}
+}
+
+func TestProcess_HeadersFromInput_DynamicKeys(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if v := r.Header.Get("X-Test"); v != "abc" {
+			t.Errorf("X-Test header: got %q", v)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	cfg := map[string]interface{}{
+		"label":   "test",
+		"url":     map[string]interface{}{"source": "config", "value": server.URL},
+		"method":  "GET",
+		"headers": map[string]interface{}{"source": "input", "inputKey": "manual_inputs"},
+		"manual_inputs": []map[string]string{
+			{"name": "X-Test"},
+		},
+	}
+	rawCfg, _ := json.Marshal(cfg)
+
+	node := createTestNode(t, "node1")
+	input := runtime.ProcessInput{
+		Ctx:       context.Background(),
+		Data:      map[string]interface{}{"X-Test": "abc"},
+		RawConfig: rawCfg,
+		NodeId:    "node1",
+	}
+	output := node.Process(input)
+	if output.Error != nil {
+		t.Fatalf("process failed: %v", output.Error)
+	}
+}
+
+func TestProcess_HeadersMerge_InputOverridesConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if v := r.Header.Get("X-Test"); v != "from-input" {
+			t.Errorf("X-Test header: got %q", v)
+		}
+		if v := r.Header.Get("X-Only"); v != "cfg" {
+			t.Errorf("X-Only header: got %q", v)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	cfg := map[string]interface{}{
+		"label":  "test",
+		"url":    map[string]interface{}{"source": "config", "value": server.URL},
+		"method": "GET",
+		"headers": map[string]interface{}{
+			"source": "merge",
+			"value": map[string]interface{}{
+				"X-Test": "from-config",
+				"X-Only": "cfg",
+			},
+		},
+		"manual_inputs": []map[string]string{
+			{"name": "X-Test"},
+		},
+	}
+	rawCfg, _ := json.Marshal(cfg)
+
+	node := createTestNode(t, "node1")
+	input := runtime.ProcessInput{
+		Ctx:       context.Background(),
+		Data:      map[string]interface{}{"X-Test": "from-input"},
+		RawConfig: rawCfg,
+		NodeId:    "node1",
+	}
+	output := node.Process(input)
+	if output.Error != nil {
+		t.Fatalf("process failed: %v", output.Error)
+	}
+}
+
+func TestProcess_ConfigHeaders_AsArray(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if v := r.Header.Get("X-Arr"); v != "1" {
+			t.Errorf("X-Arr header: got %q", v)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	cfg := map[string]interface{}{
+		"label":  "test",
+		"url":    map[string]interface{}{"source": "config", "value": server.URL},
+		"method": "GET",
+		"headers": map[string]interface{}{
+			"source": "config",
+			"value": []map[string]string{
+				{"key": "X-Arr", "value": "1"},
+			},
+		},
+	}
+	rawCfg, _ := json.Marshal(cfg)
+
+	node := createTestNode(t, "node1")
+	input := runtime.ProcessInput{
+		Ctx:       context.Background(),
+		Data:      map[string]interface{}{},
+		RawConfig: rawCfg,
+		NodeId:    "node1",
+	}
+	output := node.Process(input)
+	if output.Error != nil {
+		t.Fatalf("process failed: %v", output.Error)
+	}
+}

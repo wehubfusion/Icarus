@@ -70,19 +70,17 @@ func (n *HTTPClientNode) Process(input runtime.ProcessInput) runtime.ProcessOutp
 }
 
 func (n *HTTPClientNode) buildRequest(ctx context.Context, cfg *Config, data map[string]interface{}) (*http.Request, error) {
-	conn := cfg.Connection
-	urlStr, _ := conn["url"].(string)
+	urlStr, usingConnection, conn, err := n.resolveURL(cfg, data)
+	if err != nil {
+		return nil, err
+	}
 
-	method := getString(conn, "method", "POST")
+	method, err := n.resolveMethod(cfg, data, usingConnection, conn)
+	if err != nil {
+		return nil, err
+	}
+
 	payloadBytes := n.extractPayload(data)
-	if len(payloadBytes) == 0 && (method == "GET" || method == "HEAD") {
-		method = "GET"
-	} else if len(payloadBytes) > 0 && method == "" {
-		method = "POST"
-	}
-	if method == "" {
-		method = "POST"
-	}
 
 	var body io.Reader
 	if len(payloadBytes) > 0 && method != "GET" && method != "HEAD" {
@@ -94,17 +92,207 @@ func (n *HTTPClientNode) buildRequest(ctx context.Context, cfg *Config, data map
 		return nil, NewConfigError(n.NodeId(), "url", "invalid URL: "+err.Error(), err)
 	}
 
-	// Apply headers from manual_inputs (node config)
-	for _, h := range cfg.ManualInputs {
-		if h.Key != "" {
-			req.Header.Set(h.Key, h.Value)
+	if err := n.applyHeaders(req, cfg, data); err != nil {
+		return nil, err
+	}
+
+	// Apply auth only when using connection
+	if usingConnection {
+		n.applyAuth(req, conn)
+	}
+
+	return req, nil
+}
+
+func (n *HTTPClientNode) resolveURL(
+	cfg *Config,
+	data map[string]interface{},
+) (urlStr string, usingConnection bool, conn map[string]interface{}, err error) {
+	urlSource := "connection"
+	if cfg.URL != nil && strings.TrimSpace(cfg.URL.Source) != "" {
+		urlSource = strings.TrimSpace(cfg.URL.Source)
+	}
+
+	switch urlSource {
+	case "connection":
+		conn = cfg.Connection
+		urlStr, _ = conn["url"].(string)
+		if strings.TrimSpace(urlStr) == "" {
+			return "", true, conn, NewConfigError(n.NodeId(), "connection.url", "connection url must be a non-empty string", nil)
+		}
+		return urlStr, true, conn, nil
+	case "config":
+		if cfg.URL == nil || strings.TrimSpace(cfg.URL.Value) == "" {
+			return "", false, nil, NewConfigError(n.NodeId(), "url.value", "url.value is required when url.source=config", nil)
+		}
+		return strings.TrimSpace(cfg.URL.Value), false, nil, nil
+	case "input":
+		if data == nil {
+			return "", false, nil, NewConfigError(n.NodeId(), "url", "url is required in input when url.source=input", nil)
+		}
+		v, ok := data["url"]
+		if !ok || v == nil {
+			return "", false, nil, NewConfigError(n.NodeId(), "url", "url is required in input when url.source=input", nil)
+		}
+		s, ok := v.(string)
+		if !ok || strings.TrimSpace(s) == "" {
+			return "", false, nil, NewConfigError(n.NodeId(), "url", "input url must be a non-empty string when url.source=input", nil)
+		}
+		return strings.TrimSpace(s), false, nil, nil
+	default:
+		return "", false, nil, NewConfigError(n.NodeId(), "url.source", fmt.Sprintf("unsupported url.source %q", urlSource), nil)
+	}
+}
+
+func (n *HTTPClientNode) resolveMethod(
+	cfg *Config,
+	_ map[string]interface{},
+	usingConnection bool,
+	conn map[string]interface{},
+) (string, error) {
+	if usingConnection {
+		method := strings.ToUpper(strings.TrimSpace(getString(conn, "method", "POST")))
+		if method == "" {
+			return "POST", nil
+		}
+		return method, nil
+	}
+
+	method := strings.ToUpper(strings.TrimSpace(cfg.Method))
+	if method == "" {
+		return "", NewConfigError(n.NodeId(), "method", "method is required when url.source is config or input", nil)
+	}
+	return method, nil
+}
+
+func (n *HTTPClientNode) applyHeaders(req *http.Request, cfg *Config, data map[string]interface{}) error {
+	headersSource := "config"
+	if cfg.Headers != nil && strings.TrimSpace(cfg.Headers.Source) != "" {
+		headersSource = strings.TrimSpace(cfg.Headers.Source)
+	}
+
+	configHeaders, err := parseConfigHeaders(n.NodeId(), cfg)
+	if err != nil {
+		return err
+	}
+
+	inputHeaders, err := buildInputHeaders(n.NodeId(), cfg, data, headersSource)
+	if err != nil {
+		return err
+	}
+
+	final := make(map[string]string)
+	switch headersSource {
+	case "config":
+		for k, v := range configHeaders {
+			final[k] = v
+		}
+	case "input":
+		for k, v := range inputHeaders {
+			final[k] = v
+		}
+	case "merge":
+		for k, v := range configHeaders {
+			final[k] = v
+		}
+		for k, v := range inputHeaders {
+			final[k] = v
+		}
+	default:
+		return NewConfigError(n.NodeId(), "headers.source", fmt.Sprintf("unsupported headers.source %q", headersSource), nil)
+	}
+
+	for k, v := range final {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
+	return nil
+}
+
+func parseConfigHeaders(nodeID string, cfg *Config) (map[string]string, error) {
+	// Prefer explicit headers.value when present; otherwise fall back to legacy manual_inputs key/value entries.
+	var value interface{}
+	if cfg.Headers != nil && cfg.Headers.Value != nil {
+		value = cfg.Headers.Value
+	} else {
+		legacy := make([]HeaderItem, 0)
+		for _, mi := range cfg.ManualInputs {
+			if strings.TrimSpace(mi.Key) != "" {
+				legacy = append(legacy, HeaderItem{Key: mi.Key, Value: mi.Value})
+			}
+		}
+		if len(legacy) > 0 {
+			value = legacy
 		}
 	}
 
-	// Apply auth
-	n.applyAuth(req, conn)
+	result := make(map[string]string)
+	if value == nil {
+		return result, nil
+	}
 
-	return req, nil
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for k, raw := range v {
+			s, ok := raw.(string)
+			if !ok {
+				return nil, NewConfigError(nodeID, "headers.value", fmt.Sprintf("header %q must be a string value", k), nil)
+			}
+			result[k] = s
+		}
+		return result, nil
+	case []interface{}:
+		for _, item := range v {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			k, _ := m["key"].(string)
+			val, _ := m["value"].(string)
+			if strings.TrimSpace(k) != "" {
+				result[k] = val
+			}
+		}
+		return result, nil
+	case []HeaderItem:
+		for _, h := range v {
+			if strings.TrimSpace(h.Key) != "" {
+				result[h.Key] = h.Value
+			}
+		}
+		return result, nil
+	default:
+		// Handle json.Unmarshal decoding into map[string]any or []any; any other type is unexpected.
+		return nil, NewConfigError(nodeID, "headers.value", fmt.Sprintf("unsupported headers.value type %T", value), nil)
+	}
+}
+
+func buildInputHeaders(nodeID string, cfg *Config, data map[string]interface{}, headersSource string) (map[string]string, error) {
+	result := make(map[string]string)
+	if headersSource != "input" && headersSource != "merge" {
+		return result, nil
+	}
+	for _, mi := range cfg.ManualInputs {
+		name := strings.TrimSpace(mi.Name)
+		if name == "" {
+			continue
+		}
+		if data == nil {
+			return nil, NewConfigError(nodeID, "manual_inputs", fmt.Sprintf("header %q is required in input but input is empty", name), nil)
+		}
+		raw, ok := data[name]
+		if !ok || raw == nil {
+			return nil, NewConfigError(nodeID, "manual_inputs", fmt.Sprintf("header %q is required in input", name), nil)
+		}
+		s, ok := raw.(string)
+		if !ok {
+			return nil, NewConfigError(nodeID, "manual_inputs", fmt.Sprintf("header %q must be a string", name), nil)
+		}
+		result[name] = s
+	}
+	return result, nil
 }
 
 func (n *HTTPClientNode) applyAuth(req *http.Request, conn map[string]interface{}) {
