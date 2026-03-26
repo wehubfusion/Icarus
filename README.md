@@ -1594,7 +1594,7 @@ result, err := engine.ProcessCSVWithSchema(
   schema.ProcessOptions{
     ApplyDefaults:    true,  // fill missing defaults
     StructureData:    true,  // drop columns not in schema
-    StrictValidation: true,  // fail fast on validation errors
+    Mode:             schema.ValidationModeStrict,  // fail fast on validation errors
   },
 )
 ```

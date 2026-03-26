@@ -56,9 +56,8 @@ The bucket a code lands in depends on `ProcessOptions.Mode` (STRICT / NORMAL / L
 |--------|------|-----|-----|-------------|
 | `ApplyDefaults` | ✓ | ✓ | — | Fill in default values from the schema |
 | `StructureData` | ✓ | ✓ | — | Reshape data to match schema structure; remove undeclared keys |
-| `StrictValidation` | ✓ | ✓ | ✓ | Deprecated; prefer `Mode`. When set, behaves like `Mode=STRICT` where supported. |
 | `CollectAllErrors` | ✓ | ✓ | ✓ | Collect every issue (true) or stop at the first error-severity issue (false) |
-| `Mode` | — | — | ✓ | `STRICT` / `NORMAL` / `LENIENT` — controls HL7 severity buckets (see `hl7/README.md`) |
+| `Mode` | ✓ | ✓ | ✓ | `STRICT` / `NORMAL` / `LENIENT` — controls fail-on-invalid (STRICT) and, for HL7, severity bucketing (see `hl7/README.md`) |
 
 ## ProcessResult
 
