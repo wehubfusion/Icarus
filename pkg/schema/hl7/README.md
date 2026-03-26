@@ -288,7 +288,6 @@ When a helper cannot complete (invalid regex, unparseable `toDTM`/`toNumber` inp
 | Option | Effect on HL7 |
 |--------|---------------|
 | `CollectAllErrors` | `true` = collect all issues; `false` = stop after the first error-severity issue |
-| `StrictValidation` | Deprecated; use `Mode: ValidationModeStrict`. When effective, same as STRICT below. |
 | `Mode` | `STRICT`, `NORMAL` (default), or `LENIENT` — controls severity bucketing |
 
 **STRICT and `Process` errors:** When `Mode` is `STRICT` and `ProcessResult.Valid` is `false` (any ERROR-severity issue), `Process` also returns a non-nil Go error (`StrictProcessError`) while still populating `Errors` / `Warnings` / `Infos`. Warnings alone (including `HL7_CUSTOM_RULE_RUNTIME_ERROR` at WARNING) do not set `Valid` to false.

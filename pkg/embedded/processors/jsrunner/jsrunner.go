@@ -248,6 +248,11 @@ func (n *JSRunnerNode) validateInput(input runtime.ProcessInput, cfg *Config) (m
 	// Create schema engine
 	engine := schema.NewEngine()
 
+	mode := schema.ValidationModeNormal
+	if cfg.StrictValidation {
+		mode = schema.ValidationModeStrict
+	}
+
 	// Process with schema (structure and validate)
 	schemaResult, err := engine.ProcessWithSchema(
 		inputJSON,
@@ -255,7 +260,7 @@ func (n *JSRunnerNode) validateInput(input runtime.ProcessInput, cfg *Config) (m
 		schema.ProcessOptions{
 			ApplyDefaults:    cfg.ApplySchemaDefaults,
 			StructureData:    cfg.StructureData,
-			StrictValidation: cfg.StrictValidation,
+			Mode:             mode,
 		},
 	)
 	if err != nil {
@@ -321,6 +326,11 @@ func (n *JSRunnerNode) validateOutput(result map[string]interface{}, cfg *Config
 	// Create schema engine
 	engine := schema.NewEngine()
 
+	mode := schema.ValidationModeNormal
+	if cfg.StrictValidation {
+		mode = schema.ValidationModeStrict
+	}
+
 	// Process with schema (structure and validate)
 	schemaResult, err := engine.ProcessWithSchema(
 		resultJSON,
@@ -328,7 +338,7 @@ func (n *JSRunnerNode) validateOutput(result map[string]interface{}, cfg *Config
 		schema.ProcessOptions{
 			ApplyDefaults:    cfg.ApplySchemaDefaults,
 			StructureData:    cfg.StructureData,
-			StrictValidation: cfg.StrictValidation,
+			Mode:             mode,
 		},
 	)
 	if err != nil {

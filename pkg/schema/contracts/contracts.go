@@ -106,23 +106,15 @@ func StrictProcessError(result *ProcessResult, mode ValidationMode) error {
 // Use Mode to control severity classification (where implemented) and fail-on-invalid:
 //   - ValidationModeStrict:  invalid result returns a Go error via StrictProcessError
 //     in addition to a populated ProcessResult. HL7 elevates several issue codes to
-//     ERROR. HL7_CUSTOM_RULE_RUNTIME_ERROR uses each rule's configured severity (default
-//     WARNING when the rule omits severity), distinct from HL7_CUSTOM_RULE_VIOLATION
-//     (rule evaluated and failed).
+//     ERROR.
 //   - ValidationModeNormal:  invalid result is in the payload only (err == nil).
 //   - ValidationModeLenient: invalid result is in the payload only (err == nil); HL7 downgrades codes.
 //
-// Deprecated: StrictValidation is no longer used by any processor and will be removed in a
-// future release. Set Mode: ValidationModeStrict instead.
 type ProcessOptions struct {
 	ApplyDefaults    bool
 	StructureData    bool
 	Mode             ValidationMode
 	CollectAllErrors bool
-
-	// Deprecated: use Mode: ValidationModeStrict instead. Kept for JSON/config
-	// backward-compatibility only; processors no longer inspect this field.
-	StrictValidation bool `json:"strict_validation,omitempty"`
 }
 
 // ProcessResult contains the result of schema processing.
