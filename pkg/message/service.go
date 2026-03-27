@@ -659,6 +659,10 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 	if executionTimeMs > 0 {
 		resultMsg.WithExecutionTime(executionTimeMs)
 	}
+	eventsJSON := resultMessage.Metadata["events"]
+	if eventsJSON != "" {
+		resultMsg.WithEvents(json.RawMessage(eventsJSON))
+	}
 
 	// Respect resolver's decision - use whatever it returned (blob or inline)
 	if resultMessage.Payload.BlobReference != nil {

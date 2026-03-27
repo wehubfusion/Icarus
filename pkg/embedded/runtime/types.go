@@ -278,6 +278,11 @@ type EmbeddedNodeIOInfo struct {
 //   - Nested iteration: "nodeId-/path[0][1][2]" (e.g., "abc-/chapter[0][0][0]")
 type StandardUnitOutput map[string]interface{}
 
+// EventOutputs represents a lightweight subset of StandardUnitOutput used by
+// workflow schedulers to evaluate event-trigger conditions without requiring
+// full inline payload materialization.
+type EventOutputs map[string]interface{}
+
 // NewSingleOutput creates output for non-iterated processing
 func NewSingleOutput(data map[string]interface{}) StandardUnitOutput {
 	if data == nil {

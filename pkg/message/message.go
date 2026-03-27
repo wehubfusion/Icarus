@@ -494,6 +494,7 @@ type ResultMessage struct {
 	// Result data - one of these will be populated based on result size
 	InlineResult  json.RawMessage `json:"inline_result,omitempty"`  // Full result data for small results (<1.5MB)
 	BlobReference *BlobReference  `json:"blob_reference,omitempty"` // Blob reference for large results (>1.5MB)
+	Events        json.RawMessage `json:"events,omitempty"`         // Lightweight event outputs used for trigger evaluation
 
 	// Error information (only present when status is "failed")
 	Error *ResultError `json:"error,omitempty"`
@@ -554,6 +555,13 @@ func (r *ResultMessage) WithBlobReference(blobRef *BlobReference) *ResultMessage
 	return r
 }
 
+// WithEvents sets lightweight event outputs for trigger evaluation
+func (r *ResultMessage) WithEvents(events json.RawMessage) *ResultMessage {
+	r.Events = events
+	r.UpdatedAt = time.Now().Format(time.RFC3339)
+	return r
+}
+
 // WithError sets the error information
 func (r *ResultMessage) WithError(err *ResultError) *ResultMessage {
 	r.Error = err
@@ -603,6 +611,11 @@ func (r *ResultMessage) HasInlineResult() bool {
 // HasBlobReference returns true if the result is stored in blob storage
 func (r *ResultMessage) HasBlobReference() bool {
 	return r.BlobReference != nil && r.BlobReference.URL != ""
+}
+
+// HasEvents returns true if lightweight events payload is present
+func (r *ResultMessage) HasEvents() bool {
+	return len(r.Events) > 0
 }
 
 // IsSuccess returns true if the execution was successful
