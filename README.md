@@ -845,8 +845,10 @@ cfg.WorkerPool.NumWorkers = 16
 processor := embedded.NewEmbeddedProcessor(registry, cfg)
 
 // Process embedded nodes with the configured worker pool
-results, err := processor.ProcessEmbeddedNodes(ctx, msg, parentOutput)
+results, events, err := processor.ProcessEmbeddedNodes(ctx, parentOutput, unit, priorUnitOutputs)
 ```
+
+`events` is a lightweight flat-map subset of embedded output intended for event-trigger evaluation when full results are blob-backed.
 
 **Mid-flow iteration concurrency**: When an embedded node produces an array and a downstream node iterates over it, single-level iterations can run concurrently. Set `cfg.NestedIteration.IterationConcurrency` > 0 (e.g. `cfg.NestedIteration.IterationConcurrency = 2`) to enable. Nested iterations always run sequentially for correctness.
 

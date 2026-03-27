@@ -330,11 +330,22 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 // filterNodesByIterationDepth filters nodes to only process those whose mapping depth
 // matches the current iteration stack depth, or that consume from the current iteration
 // source (so they run inside the loop even when their path has no "//").
-func (sp *SubflowProcessor) filterNodesByIterationDepth(nodeIndices []int, currentStackDepth int, iterStack *IterationStack) []int {
+func (sp *SubflowProcessor) filterNodesByIterationDepth(
+	nodeIndices []int,
+	currentStackDepth int,
+	iterStack *IterationStack,
+	store *NodeOutputStore,
+) []int {
 	var filtered []int
 
 	for _, idx := range nodeIndices {
 		config := sp.nodeConfigs[idx]
+
+		// After iteration unwinds back to root, do not re-run iterate-only downstream
+		// embedded consumers outside iteration context.
+		if currentStackDepth == 0 && sp.isIterateOnlyFromEmbedded(config) {
+			continue
+		}
 
 		// Get the expected iteration depth for this node by counting array markers in mappings
 		expectedDepth := sp.getNodeIterationDepth(config)
@@ -353,11 +364,58 @@ func (sp *SubflowProcessor) filterNodesByIterationDepth(nodeIndices []int, curre
 			ctx := iterStack.GetContextForDepth(currentStackDepth - 1)
 			if ctx != nil && sp.nodeConsumesFrom(config, ctx.SourceNodeId) {
 				filtered = append(filtered, idx)
+				continue
 			}
+		}
+
+		// Keep iterate:true downstream nodes inside the active iteration when their source
+		// output has already been produced for the current context. This handles chains
+		// like: iterate producer -> iterate consumer with plain endpoint (e.g. "/url").
+		if currentStackDepth >= 1 && iterStack != nil && store != nil &&
+			sp.hasIterateMappingFromContextOutput(config, iterStack, store) {
+			filtered = append(filtered, idx)
+			continue
 		}
 	}
 
 	return filtered
+}
+
+func (sp *SubflowProcessor) hasIterateMappingFromContextOutput(
+	config EmbeddedNodeConfig,
+	iterStack *IterationStack,
+	store *NodeOutputStore,
+) bool {
+	for _, m := range config.GetIterateMappings() {
+		if m.SourceNodeId == "" {
+			continue
+		}
+
+		if sourceOut := store.GetOutputAtContext(m.SourceNodeId, iterStack); sourceOut != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (sp *SubflowProcessor) isIterateOnlyFromEmbedded(config EmbeddedNodeConfig) bool {
+	mappings := config.GetFieldMappings()
+	if len(mappings) == 0 {
+		return false
+	}
+
+	for _, m := range mappings {
+		// If any mapping is non-iterated, it can legitimately run at root level.
+		if !m.Iterate {
+			return false
+		}
+		// If any mapping comes from parent node, keep parent-level iteration behavior.
+		if m.SourceNodeId == sp.parentNodeId {
+			return false
+		}
+	}
+
+	return true
 }
 
 // nodeConsumesFrom returns true if the node has any field mapping from the given source node.
@@ -386,6 +444,34 @@ func (sp *SubflowProcessor) getNodeIterationDepth(config EmbeddedNodeConfig) int
 	}
 
 	return maxDepth
+}
+
+// isConsumedByIteration returns true when all of the node's iterate-flagged field
+// mappings target iterCtx.SourceNodeId and their source path contains iterCtx.ArrayPath
+// as an array segment (marked with //). Such nodes are fully handled inside the nested
+// iteration loop, so they must not also run at the outer stack depth.
+func (sp *SubflowProcessor) isConsumedByIteration(config EmbeddedNodeConfig, iterCtx *NestedIterationContext) bool {
+	iterMappings := config.GetIterateMappings()
+	if len(iterMappings) == 0 {
+		return false
+	}
+	for _, m := range iterMappings {
+		if m.SourceNodeId != iterCtx.SourceNodeId {
+			return false
+		}
+		segments := ParseNestedArrayPath(m.SourceEndpoint)
+		found := false
+		for _, seg := range segments {
+			if seg.IsArray && seg.Path == iterCtx.ArrayPath {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // processDepthLevelsRecursive processes depth levels starting from startDepth using DFS.
@@ -458,9 +544,24 @@ func (sp *SubflowProcessor) processDepthLevelsRecursive(
 			itemIndex = current.CurrentIndex
 		}
 
+		// When a nested iteration was just expanded, exclude nodes whose iterate
+		// mappings are fully handled by that iteration. Without this, such nodes
+		// would run twice: once correctly inside the nested loop and again here at
+		// the outer depth level via the expectedDepth == currentStackDepth check.
+		candidateIndices := nodeIndices
+		if newIterCtx != nil {
+			filtered := nodeIndices[:0:0]
+			for _, idx := range nodeIndices {
+				if !sp.isConsumedByIteration(sp.nodeConfigs[idx], newIterCtx) {
+					filtered = append(filtered, idx)
+				}
+			}
+			candidateIndices = filtered
+		}
+
 		// Filter nodes by iteration depth - only process nodes whose iteration depth matches current stack depth,
 		// or nodes that consume from the current iteration source (so they run inside the loop)
-		filteredNodeIndices := sp.filterNodesByIterationDepth(nodeIndices, currentStackDepth, iterStack)
+		filteredNodeIndices := sp.filterNodesByIterationDepth(candidateIndices, currentStackDepth, iterStack, store)
 
 		if len(filteredNodeIndices) == 0 {
 			continue // No nodes match this iteration depth
@@ -1696,7 +1797,7 @@ func (sp *SubflowProcessor) extractNestedValueFromSource(
 }
 
 // shouldSkipNodeForItem checks event triggers for a specific item, and skips when
-// all default-section sources have error-only output.
+// all default-section sources are either absent from the store or have error-only output.
 // Handles three cases for events:
 // 1. Event source is the iteration source -> check current item
 // 2. Event source in itemStore -> check value
@@ -1740,7 +1841,11 @@ func (sp *SubflowProcessor) shouldSkipNodeForItem(
 		}
 	}
 
-	// Skip if this node only consumes default (success) section and all such sources have error-only output
+	// Skip if this node only consumes the default (success) section and every such source
+	// is either absent from the store (never ran for this iteration item) or produced
+	// error-only output. A missing source is treated as "no valid output" rather than
+	// a reason to keep running: if the upstream node was skipped (e.g. because an
+	// NHS-type-check gate filtered it out), this node should also be skipped.
 	defaultMappings := config.GetDefaultSectionFieldMappings()
 	if len(defaultMappings) == 0 || len(defaultMappings) != len(config.GetFieldMappings()) {
 		return false
@@ -1753,10 +1858,12 @@ func (sp *SubflowProcessor) shouldSkipNodeForItem(
 		seen[m.SourceNodeId] = true
 		sourceOut, ok := itemStore.GetOutput(m.SourceNodeId, -1)
 		if !ok {
-			return false
+			// Source was never stored for this iteration item — treat as absent,
+			// not as a signal to keep running.
+			continue
 		}
 		if !IsErrorOnlyOutput(sourceOut) {
-			return false
+			return false // At least one source has valid output — do not skip.
 		}
 	}
 	return true

@@ -176,7 +176,7 @@ func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 	parentOutput map[string]interface{},
 	unit ExecutionUnit,
 	priorUnitOutputs map[string]map[string]interface{},
-) (StandardUnitOutput, error) {
+) (StandardUnitOutput, EventOutputs, error) {
 	p.logger.Debug("processing embedded nodes",
 		Field{Key: "unit_id", Value: unit.NodeId},
 		Field{Key: "unit_label", Value: unit.Label},
@@ -186,7 +186,11 @@ func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 	// Invariant: callers (plugins) must handle len(EmbeddedNodes)==0 themselves and never
 	// invoke ProcessEmbeddedNodes in that case. Reaching here indicates a contract violation.
 	if len(unit.EmbeddedNodes) == 0 {
-		return p.flattenParentOnly(parentOutput, unit.NodeId)
+		output, err := p.flattenParentOnly(parentOutput, unit.NodeId)
+		if err != nil {
+			return nil, nil, err
+		}
+		return output, make(EventOutputs), nil
 	}
 
 	// Analyze iteration context from field mappings
@@ -196,11 +200,47 @@ func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 		p.logger.Debug("processing with array iteration",
 			Field{Key: "array_path", Value: iterCtx.ArrayPath},
 		)
-		return p.processWithConcurrency(ctx, parentOutput, unit, iterCtx, priorUnitOutputs)
+		output, err := p.processWithConcurrency(ctx, parentOutput, unit, iterCtx, priorUnitOutputs)
+		if err != nil {
+			return nil, nil, err
+		}
+		return output, extractEventOutputs(output, unit.NodeId), nil
 	}
 
 	p.logger.Debug("processing single object")
-	return p.processSingleObject(ctx, parentOutput, unit, priorUnitOutputs)
+	output, err := p.processSingleObject(ctx, parentOutput, unit, priorUnitOutputs)
+	if err != nil {
+		return nil, nil, err
+	}
+	return output, extractEventOutputs(output, unit.NodeId), nil
+}
+
+// extractEventOutputs keeps embedded-node outputs (and parent error flags) so
+// schedulers can evaluate event triggers even when full unit output is blob-backed.
+func extractEventOutputs(stdOut StandardUnitOutput, parentNodeID string) EventOutputs {
+	events := make(EventOutputs)
+	if len(stdOut) == 0 {
+		return events
+	}
+
+	parentErrorKey := parentNodeID + "-/" + ErrorOutputKeyError
+	parentErrorDescriptionKey := parentNodeID + "-/" + ErrorOutputKeyDescription
+
+	for key, value := range stdOut {
+		sepIdx := strings.Index(key, "-/")
+		if sepIdx <= 0 {
+			continue
+		}
+		sourceNodeID := key[:sepIdx]
+		if sourceNodeID != parentNodeID {
+			events[key] = value
+			continue
+		}
+		if key == parentErrorKey || key == parentErrorDescriptionKey {
+			events[key] = value
+		}
+	}
+	return events
 }
 
 // analyzeIterationContext determines if parent-level array iteration is needed.
