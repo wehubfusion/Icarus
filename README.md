@@ -14,7 +14,7 @@ A clean, future-proof Go SDK for messaging over NATS JetStream with idiomatic pa
   - Message Publishing (JetStream-backed persistence)
   - Pull-based consumers (batch message processing)
   - Concurrent message processing with worker pools (Runner)
-- **Runner Framework**: Built-in concurrent message processing with configurable worker pools, batch processing, and automatic success/error callback reporting
+- **Runner Framework**: Built-in concurrent message processing with configurable worker pools, batch processing, and automatic success/error callback reporting; optional `ProcessFailureObserver` after every successful `ReportError`
 - **Distributed Tracing**: Integrated OpenTelemetry tracing support with Jaeger and OTLP exporters for observability
 - **Callback Reporting**: Automatic success and error reporting to result streams with proper message acknowledgment
 - **Robust Error Handling**: SDK-specific errors with proper error wrapping
@@ -283,7 +283,7 @@ tracingConfig := tracing.JaegerConfig("my-service")
 cfg := runner.DefaultConfig()
 cfg.WorkerCount = 5 // or rely on env: ICARUS_RUNNER_WORKERS / _WORKER_MULTIPLIER
 
-// Create runner
+// Create runner. Optional: append runner.WithProcessFailureObserver(obs) as extra arguments.
 runner, err := runner.NewRunner(
     client,           // Connected Icarus client
     &MyProcessor{},   // Processor implementation
@@ -363,6 +363,26 @@ The Runner automatically reports processing results:
 **Success Callbacks**: Published to the "result" subject when processing succeeds
 **Error Callbacks**: Published to the "result" subject when processing fails
 **Message Acknowledgment**: Source messages are properly ack'd/nack'd based on processing outcome
+
+### Process failure observer (optional)
+
+After a **successful** publish via `ReportError`, the runner invokes a `ProcessFailureObserver` you register with `runner.WithProcessFailureObserver`, for **every** failed `processErr` (including errors `ReportError` classifies as transient for JetStream retry semantics). Observers should be **idempotent** or tolerate duplicates: the same message may fail and redeliver, triggering `ReportError` and the observer again.
+
+#### Argus `node.ended` observer (`pkg/runner/argus`)
+
+For services that report workflow node completion to Argus, `github.com/wehubfusion/Icarus/pkg/runner/argus` provides `NewProcessFailureObserver(emitter argusemitter.NodeEndEmitter, logger *zap.Logger) runner.ProcessFailureObserver`. After `ReportError`, it emits Argus `node.ended` for failed processor runs. When message metadata includes `embed_failed_node_id` and `embed_root_cause` (set by trigger embedded-failure handling), the observer skips re-emitting the parent, the failing embedded node, and downstream embedded nodes that never ran; otherwise it emits the parent and embedded nodes as failed using the process error text.
+
+```go
+import (
+    argusemitter "github.com/wehubfusion/Argus/pkg/emitter"
+    "github.com/wehubfusion/Icarus/pkg/runner"
+    runnerargus "github.com/wehubfusion/Icarus/pkg/runner/argus"
+    "go.uber.org/zap"
+)
+
+// obs := runnerargus.NewProcessFailureObserver(nodeEndEmitter, logger)
+// runner.NewRunner(..., runner.WithProcessFailureObserver(obs))
+```
 
 ### Stream and Consumer Setup
 
@@ -862,6 +882,7 @@ The embedded processor has been modularized into focused runtime packages to sim
 - `pkg/embedded/runtime/mapping`: field mapping engine and path utilities bridging into `pathutil`.
 - `pkg/embedded/runtime/errors`: standardized error categorization and retry hints reused by output wrappers.
 - `pkg/embedded/runtime/logging`: lightweight logger interface and structured field helpers used across runtime components.
+- **Embedded hard failures**: when an embedded node fails without a downstream error listener, the subflow emits `node.ended` for that node and returns `*runtime.EmbeddedNodeFailureError` (wraps `FailedNodeID`, `FailedNodeLabel`, and `Cause`). **Observation**: Argus `node.started` for embedded nodes is emitted only when that node is about to execute (resolved input), not for all embedded nodes in advance—so downstream embedded nodes that never run do not appear in observation stores and are not coerced to empty-error `failed` on `run.ended`.
 - `pkg/embedded/processors/registry`: consolidated helper that wires up all built-in executors (formerly `pkg/embedded/all`).
 
 Import paths that previously referenced `github.com/wehubfusion/Icarus/pkg/embedded` continue to work unchanged because the top-level package re-exports the runtime APIs.

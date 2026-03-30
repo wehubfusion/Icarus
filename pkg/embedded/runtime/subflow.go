@@ -257,13 +257,10 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 	default:
 	}
 
-	// Emit node.started (without input) for all embedded nodes before subflow processing.
-	// This gives timeline visibility early; input will be backfilled when each node runs.
-	if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" {
-		for _, config := range sp.nodeConfigs {
-			sp.emitEmbeddedNodeStart(ctx, config, nil)
-		}
-	}
+	// Do not emit node.started for all embedded nodes up front. Doing so materializes every
+	// downstream embedded node as "running" in observation stores; a later run.ended then
+	// coerces never-executed nodes to failed with empty error. node.started is emitted only
+	// when each node is actually about to run (see processNodesAtDepth / processSingleNodeAtDepth).
 
 	// Initialize iteration stack (empty = root level)
 	iterStack := NewIterationStack()
@@ -1176,9 +1173,18 @@ func (sp *SubflowProcessor) processDepthLevelParallel(
 					return
 				}
 				if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" {
+					errorOut := map[string]interface{}{
+						ErrorOutputKeyError:       true,
+						ErrorOutputKeyDescription: out.Error.Error(),
+					}
+					sp.emitEmbeddedNodeEnd(ctx, config, errorOut, true, out.Error.Error())
 					sp.emitEmbeddedNodeEndedOnce(ctx, config, true, out.Error.Error())
 				}
-				result.err = fmt.Errorf("node %s failed: %w", config.Label, out.Error)
+				result.err = &EmbeddedNodeFailureError{
+					FailedNodeID:    config.NodeId,
+					FailedNodeLabel: config.Label,
+					Cause:           out.Error,
+				}
 				resultChan <- result
 				return
 			}
@@ -1335,9 +1341,18 @@ func (sp *SubflowProcessor) processSingleNodeAtDepth(
 			return nil
 		}
 		if sp.lifecycleEmitter != nil && sp.clientID != "" && sp.workflowID != "" && sp.runID != "" {
+			errorOut := map[string]interface{}{
+				ErrorOutputKeyError:       true,
+				ErrorOutputKeyDescription: out.Error.Error(),
+			}
+			sp.emitEmbeddedNodeEnd(ctx, config, errorOut, true, out.Error.Error())
 			sp.emitEmbeddedNodeEndedOnce(ctx, config, true, out.Error.Error())
 		}
-		return fmt.Errorf("node %s failed: %w", config.Label, out.Error)
+		return &EmbeddedNodeFailureError{
+			FailedNodeID:    config.NodeId,
+			FailedNodeLabel: config.Label,
+			Cause:           out.Error,
+		}
 	}
 
 	if out.Skipped {

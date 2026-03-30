@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	nats "github.com/nats-io/nats.go"
 	"github.com/wehubfusion/Icarus/pkg/client"
+	sdkerrors "github.com/wehubfusion/Icarus/pkg/errors"
 	"github.com/wehubfusion/Icarus/pkg/message"
 	"github.com/wehubfusion/Icarus/pkg/runner"
 	"go.uber.org/zap"
@@ -556,5 +558,113 @@ func TestRunnerRunEmptyMessages(t *testing.T) {
 	// Processor should not be called since there are no messages
 	if mockProc.getCallCount() != 0 {
 		t.Errorf("Expected processor to not be called, got %d calls", mockProc.getCallCount())
+	}
+}
+
+func TestRunnerProcessFailureObserverPermanentError(t *testing.T) {
+	var observerCalls atomic.Int32
+	mockClient := newMockClient()
+	testMsg := message.NewWorkflowMessage("wf-1", "run-1").
+		WithMetadata("execution_id", "wf-1-node-1-123").
+		WithMetadata("client_id", "client-1").
+		WithNode("parent-node", map[string]interface{}{}).
+		WithPayload(`{}`)
+	mockClient.addMessage(testMsg)
+
+	mockProc := &mockProcessor{
+		processFunc: func(ctx context.Context, msg *message.Message) (message.Message, error) {
+			return message.Message{}, sdkerrors.NewBadRequestError("boom", "BOOM", nil)
+		},
+	}
+
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 30*time.Second, createTestLogger(), nil, nil,
+		runner.WithProcessFailureObserver(func(ctx context.Context, msg *message.Message, processErr error) error {
+			observerCalls.Add(1)
+			return nil
+		}))
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = r.Run(ctx)
+	time.Sleep(150 * time.Millisecond)
+
+	if mockProc.getCallCount() != 1 {
+		t.Fatalf("expected processor called once, got %d", mockProc.getCallCount())
+	}
+	if observerCalls.Load() != 1 {
+		t.Fatalf("expected process failure observer once, got %d", observerCalls.Load())
+	}
+}
+
+func TestRunnerProcessFailureObserverInternalError(t *testing.T) {
+	var observerCalls atomic.Int32
+	mockClient := newMockClient()
+	testMsg := message.NewWorkflowMessage("wf-1", "run-1").
+		WithMetadata("execution_id", "wf-1-node-1-123").
+		WithMetadata("client_id", "client-1").
+		WithNode("parent-node", map[string]interface{}{}).
+		WithPayload(`{}`)
+	mockClient.addMessage(testMsg)
+
+	mockProc := &mockProcessor{
+		processFunc: func(ctx context.Context, msg *message.Message) (message.Message, error) {
+			return message.Message{}, sdkerrors.NewInternalError("", "internal", "INT", nil)
+		},
+	}
+
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 30*time.Second, createTestLogger(), nil, nil,
+		runner.WithProcessFailureObserver(func(ctx context.Context, msg *message.Message, processErr error) error {
+			observerCalls.Add(1)
+			return nil
+		}))
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = r.Run(ctx)
+	time.Sleep(150 * time.Millisecond)
+
+	if observerCalls.Load() != 1 {
+		t.Fatalf("expected process failure observer once after ReportError, got %d", observerCalls.Load())
+	}
+}
+
+func TestRunnerProcessFailureObserverPlainError(t *testing.T) {
+	var observerCalls atomic.Int32
+	mockClient := newMockClient()
+	testMsg := message.NewWorkflowMessage("wf-1", "run-1").
+		WithMetadata("execution_id", "wf-1-node-1-123").
+		WithMetadata("client_id", "client-1").
+		WithNode("parent-node", map[string]interface{}{}).
+		WithPayload(`{}`)
+	mockClient.addMessage(testMsg)
+
+	mockProc := &mockProcessor{
+		processFunc: func(ctx context.Context, msg *message.Message) (message.Message, error) {
+			return message.Message{}, errors.New("plain failure")
+		},
+	}
+
+	r, err := runner.NewRunner(mockClient.Client, mockProc, "test-stream", "test-consumer", 1, 30*time.Second, createTestLogger(), nil, nil,
+		runner.WithProcessFailureObserver(func(ctx context.Context, msg *message.Message, processErr error) error {
+			observerCalls.Add(1)
+			return nil
+		}))
+	if err != nil {
+		t.Fatalf("NewRunner failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = r.Run(ctx)
+	time.Sleep(150 * time.Millisecond)
+
+	if observerCalls.Load() != 1 {
+		t.Fatalf("expected process failure observer once for non-AppError after ReportError, got %d", observerCalls.Load())
 	}
 }

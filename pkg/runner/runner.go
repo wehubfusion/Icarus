@@ -29,21 +29,39 @@ type Processor interface {
 	Process(ctx context.Context, msg *message.Message) (message message.Message, err error)
 }
 
+// ProcessFailureObserver is called after ReportError successfully publishes a failed result,
+// for every processing error regardless of transient vs permanent classification in ReportError.
+// Use it for side effects such as observation (e.g. Argus node.ended). Implementations should be
+// idempotent or tolerate duplicate invocations when JetStream redelivers the same message.
+// Return errors only for logging; the runner does not retry observation.
+type ProcessFailureObserver func(ctx context.Context, msg *message.Message, processErr error) error
+
+// RunnerOption configures a Runner at construction time.
+type RunnerOption func(*Runner)
+
+// WithProcessFailureObserver registers an observer invoked after every successful ReportError.
+func WithProcessFailureObserver(obs ProcessFailureObserver) RunnerOption {
+	return func(r *Runner) {
+		r.processFailureObserver = obs
+	}
+}
+
 // Runner manages concurrent message processing from a NATS JetStream consumer.
 // It pulls messages in batches and dispatches them through an internal worker pool for processing,
 // with automatic success and error reporting to the "result" subject.
 type Runner struct {
-	client          *client.Client
-	processor       Processor
-	stream          string
-	consumer        string
-	batchSize       int
-	logger          *zap.Logger
-	processTimeout  time.Duration
-	tracer          trace.Tracer
-	tracingShutdown func(context.Context) error
-	config          Config
-	jobChan         chan *message.Message
+	client                 *client.Client
+	processor              Processor
+	stream                 string
+	consumer               string
+	batchSize              int
+	logger                 *zap.Logger
+	processTimeout         time.Duration
+	tracer                 trace.Tracer
+	tracingShutdown        func(context.Context) error
+	config                 Config
+	jobChan                chan *message.Message
+	processFailureObserver ProcessFailureObserver
 }
 
 // Config controls runner worker pool behavior.
@@ -125,8 +143,9 @@ func getEnvInt(key string, defaultValue int) int {
 // logger is the zap logger instance for structured logging.
 // tracingConfig is optional - if nil, no tracing will be set up. If provided, tracing will be automatically configured and cleaned up.
 // cfg controls worker pool sizing; if nil, DefaultConfig() is used.
+// opts apply additional configuration (e.g. WithProcessFailureObserver).
 // Returns an error if any of the parameters are invalid.
-func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, processTimeout time.Duration, logger *zap.Logger, tracingConfig *TracingConfig, cfg *Config) (*Runner, error) {
+func NewRunner(client *client.Client, processor Processor, stream, consumer string, batchSize int, processTimeout time.Duration, logger *zap.Logger, tracingConfig *TracingConfig, cfg *Config, opts ...RunnerOption) (*Runner, error) {
 	if client == nil {
 		return nil, errors.New("client cannot be nil")
 	}
@@ -189,6 +208,12 @@ func NewRunner(client *client.Client, processor Processor, stream, consumer stri
 			logger.Info("Tracing setup complete",
 				zap.String("service", tracingConfig.ServiceName),
 				zap.String("endpoint", tracingConfig.OTLPEndpoint))
+		}
+	}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt(runner)
 		}
 	}
 
@@ -490,6 +515,21 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 				r.logger.Error("Error naking message after processing failure",
 					zap.Error(nakErr))
 			}
+		}
+
+		if r.processFailureObserver != nil {
+			obsCtx, obsCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if obsErr := r.processFailureObserver(obsCtx, msg, processErr); obsErr != nil {
+				r.logger.Error("process failure observer failed after ReportError",
+					zap.String("workflowID", workflowID),
+					zap.String("runID", runID),
+					zap.Error(obsErr))
+			}
+			obsCancel()
+		} else {
+			r.logger.Error("process failure observer not set, skipping",
+				zap.String("workflowID", workflowID),
+				zap.String("runID", runID))
 		}
 
 		return processErr
