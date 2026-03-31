@@ -470,13 +470,23 @@ func (s *MessageService) PullMessages(ctx context.Context, stream, consumer stri
 		for _, natsMsg := range natsMessages {
 			msg, err := FromNATSMsg(natsMsg)
 			if err != nil {
-				// Nak malformed messages
+				deliverCount := ""
+				if md, mdErr := natsMsg.Metadata(); mdErr == nil && md != nil {
+					deliverCount = strconv.FormatUint(md.NumDelivered, 10)
+				}
+				s.logger.Warn("Dropping malformed pulled message; NAK for redelivery",
+					zap.String("stream", stream),
+					zap.String("consumer", consumer),
+					zap.String("subject", natsMsg.Subject),
+					zap.String("jetstream_deliver_count", deliverCount),
+					zap.Error(err))
 				_ = natsMsg.Nak()
 				continue
 			}
 			// Do NOT acknowledge - let the application handle acknowledgment
 			// Store the NATS message reference in the Message for later acknowledgment
 			msg.natsMsg = natsMsg
+			AttachJetStreamMetadata(msg, natsMsg)
 			messages = append(messages, msg)
 		}
 
@@ -548,8 +558,9 @@ func (s *MessageService) PublishResult(ctx context.Context, resultMsg *ResultMes
 
 	// Retry logic for critical result publishing
 	var publishErr error
+	var pubAck *nats.PubAck
 	for attempt := 1; attempt <= s.publishMaxRetries; attempt++ {
-		_, publishErr = s.js.Publish(s.resultSubject, data)
+		pubAck, publishErr = s.js.Publish(s.resultSubject, data)
 		if publishErr == nil {
 			break
 		}
@@ -575,12 +586,20 @@ func (s *MessageService) PublishResult(ctx context.Context, resultMsg *ResultMes
 		return sdkerrors.NewInternalError("", "failed to publish result after retries", "PUBLISH_FAILED", publishErr)
 	}
 
+	seq := uint64(0)
+	stream := ""
+	if pubAck != nil {
+		seq = pubAck.Sequence
+		stream = pubAck.Stream
+	}
 	s.logger.Info("Successfully published result message",
 		zap.String("execution_id", resultMsg.ExecutionID),
 		zap.String("workflow_id", resultMsg.WorkflowID),
 		zap.String("node_id", resultMsg.NodeID),
 		zap.String("status", resultMsg.Status),
-		zap.String("subject", s.resultSubject))
+		zap.String("subject", s.resultSubject),
+		zap.String("jetstream_stream", stream),
+		zap.Uint64("jetstream_stream_sequence", seq))
 
 	return nil
 }
@@ -728,9 +747,23 @@ func (s *MessageService) ReportSuccess(ctx context.Context, resultMessage Messag
 
 	// Acknowledge the source message
 	if msg != nil {
+		reportSuccessTotalMs := time.Since(startTime).Milliseconds()
+		s.logger.Info("JetStream source message ack after successful result publish",
+			zap.String("workflow_id", workflowID),
+			zap.String("run_id", runID),
+			zap.String("execution_id", executionID),
+			zap.String("node_id", nodeID),
+			zap.String("jetstream_deliver_count", jetStreamDeliverCountStr(msg)),
+			zap.Int64("report_success_total_ms", reportSuccessTotalMs),
+			zap.Duration("publish_duration", publishDuration))
 		if err := msg.Ack(); err != nil {
-			s.logger.Error("Failed to acknowledge source message",
+			s.logger.Error("Failed to acknowledge source message after successful result publish (may cause redelivery/duplicate results)",
+				zap.String("workflow_id", workflowID),
+				zap.String("run_id", runID),
 				zap.String("execution_id", executionID),
+				zap.String("node_id", nodeID),
+				zap.String("jetstream_deliver_count", jetStreamDeliverCountStr(msg)),
+				zap.String("jetstream_source_ack_action", "ack_after_success_result_publish_failed"),
 				zap.Error(err))
 			return fmt.Errorf("failed to acknowledge: %w", err)
 		}
@@ -762,7 +795,9 @@ func (s *MessageService) ReportError(ctx context.Context, executionID, workflowI
 	}
 
 	if executionID == "" {
-		s.logger.Warn("Missing executionID for error report")
+		s.logger.Warn("Missing executionID for error report",
+			zap.String("jetstream_deliver_count", jetStreamDeliverCountStr(msg)),
+			zap.String("jetstream_source_ack_action", "nak_missing_execution_id"))
 		if msg != nil {
 			_ = msg.Nak()
 		}
@@ -771,7 +806,9 @@ func (s *MessageService) ReportError(ctx context.Context, executionID, workflowI
 	if workflowID == "" || runID == "" {
 		s.logger.Warn("Missing workflow_id or run_id for error report",
 			zap.String("workflow_id", workflowID),
-			zap.String("run_id", runID))
+			zap.String("run_id", runID),
+			zap.String("jetstream_deliver_count", jetStreamDeliverCountStr(msg)),
+			zap.String("jetstream_source_ack_action", "nak_missing_workflow_context"))
 		if msg != nil {
 			_ = msg.Nak()
 		}
@@ -851,6 +888,13 @@ func (s *MessageService) ReportError(ctx context.Context, executionID, workflowI
 			zap.Error(err))
 		if msg != nil {
 			_ = msg.Nak()
+			s.logger.Info("JetStream source message disposition after error result publish FAILED",
+				zap.String("execution_id", executionID),
+				zap.String("workflow_id", workflowID),
+				zap.String("run_id", runID),
+				zap.String("correlation_id", correlationID),
+				zap.String("jetstream_deliver_count", jetStreamDeliverCountStr(msg)),
+				zap.String("jetstream_source_ack_action", "nak_error_result_publish_failed"))
 		}
 		return fmt.Errorf("failed to publish error result: %w", err)
 	}
@@ -862,14 +906,55 @@ func (s *MessageService) ReportError(ctx context.Context, executionID, workflowI
 
 	// Ack/Nak based on error type
 	if msg != nil {
+		ackAction := "ack_permanent_suppress_redelivery"
 		if isTransient {
-			_ = msg.Nak() // Retry transient errors
+			ackAction = "nak_transient_redelivery"
+			if nakErr := msg.Nak(); nakErr != nil {
+				s.logger.Warn("Failed to NAK source message after error result publish (redelivery semantics may be broken)",
+					zap.String("execution_id", executionID),
+					zap.String("workflow_id", workflowID),
+					zap.String("run_id", runID),
+					zap.String("correlation_id", correlationID),
+					zap.String("jetstream_deliver_count", jetStreamDeliverCountStr(msg)),
+					zap.String("jetstream_source_ack_action", "nak_transient_redelivery_failed"),
+					zap.Error(nakErr))
+			}
 		} else {
-			_ = msg.Ack() // Don't retry permanent errors
+			if ackErr := msg.Ack(); ackErr != nil {
+				s.logger.Warn("Failed to ACK source message after permanent error result publish (may cause redelivery)",
+					zap.String("execution_id", executionID),
+					zap.String("workflow_id", workflowID),
+					zap.String("run_id", runID),
+					zap.String("correlation_id", correlationID),
+					zap.String("jetstream_deliver_count", jetStreamDeliverCountStr(msg)),
+					zap.String("jetstream_source_ack_action", "ack_permanent_suppress_redelivery_failed"),
+					zap.Error(ackErr))
+			}
 		}
+		s.logger.Info("JetStream source message disposition after error result publish",
+			zap.String("execution_id", executionID),
+			zap.String("workflow_id", workflowID),
+			zap.String("run_id", runID),
+			zap.String("correlation_id", correlationID),
+			zap.String("node_id", nodeID),
+			zap.String("jetstream_deliver_count", jetStreamDeliverCountStr(msg)),
+			zap.String("jetstream_source_ack_action", ackAction),
+			zap.Bool("is_transient", isTransient),
+			zap.String("error_code", errorCode))
 	}
 
 	return nil
+}
+
+// jetStreamDeliverCountStr returns JetStream NumDelivered for grep-friendly diagnostics, or "".
+func jetStreamDeliverCountStr(msg *nats.Msg) string {
+	if msg == nil {
+		return ""
+	}
+	if md, err := msg.Metadata(); err == nil && md != nil {
+		return strconv.FormatUint(md.NumDelivered, 10)
+	}
+	return ""
 }
 
 // ExtractNodeIDFromExecutionID extracts the base nodeID from a compound executionID.

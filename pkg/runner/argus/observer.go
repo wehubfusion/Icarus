@@ -84,7 +84,8 @@ func NewProcessFailureObserver(emitter argusemitter.NodeEndEmitter, logger *zap.
 			projectID = msg.Metadata["project_id"]
 		}
 		if clientID == "" {
-			logger.Debug("runner process failure observation skipped: missing client_id")
+			logger.Warn("runner process failure: node.ended NOT emitted — client_id missing from message metadata (node will stay 'running' in Athena; Hermes trigger-sync may hang waiting for manifest match)",
+				zap.String("process_error", processErr.Error()))
 			return nil
 		}
 		workflowID, runID := "", ""
@@ -93,7 +94,10 @@ func NewProcessFailureObserver(emitter argusemitter.NodeEndEmitter, logger *zap.
 			runID = msg.Workflow.RunID
 		}
 		if workflowID == "" || runID == "" {
-			logger.Debug("runner process failure observation skipped: missing workflow or run id")
+			logger.Warn("runner process failure: node.ended NOT emitted — workflow_id or run_id missing from message (node will stay 'running' in Athena; Hermes trigger-sync may hang)",
+				zap.String("workflow_id", workflowID),
+				zap.String("run_id", runID),
+				zap.String("process_error", processErr.Error()))
 			return nil
 		}
 		parentID := ""
@@ -104,7 +108,10 @@ func NewProcessFailureObserver(emitter argusemitter.NodeEndEmitter, logger *zap.
 			parentID = msg.Payload.NodeID
 		}
 		if parentID == "" {
-			logger.Debug("runner process failure observation skipped: missing parent node id")
+			logger.Warn("runner process failure: node.ended NOT emitted — parent node_id missing from message (node will stay 'running' in Athena)",
+				zap.String("workflow_id", workflowID),
+				zap.String("run_id", runID),
+				zap.String("process_error", processErr.Error()))
 			return nil
 		}
 		parentLabel := parentLabelFromMessage(msg)

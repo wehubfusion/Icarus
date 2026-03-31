@@ -310,11 +310,27 @@ func (r *Runner) Run(ctx context.Context) error {
 				backoffDelay = 100 * time.Millisecond
 
 				// Dispatch messages via worker pool
-				for _, msg := range messages {
+				batchLen := len(messages)
+				for i, msg := range messages {
 					select {
 					case <-ctx.Done():
 						return // Context cancelled, stop sending messages
 					default:
+						if msg.Metadata == nil {
+							msg.Metadata = make(map[string]string)
+						}
+						if _, ok := msg.Metadata[message.MetaIcarusEnqueueUnixMs]; !ok {
+							msg.WithMetadata(message.MetaIcarusEnqueueUnixMs, fmt.Sprintf("%d", time.Now().UnixMilli()))
+						}
+						r.logger.Info("Runner dispatching pulled message to job queue",
+							zap.String("stream", r.stream),
+							zap.String("consumer", r.consumer),
+							zap.Int("batch_index", i),
+							zap.Int("batch_len", batchLen),
+							zap.Int("job_queue_depth", len(r.jobChan)),
+							zap.Int("job_queue_cap", cap(r.jobChan)),
+							zap.Int("worker_count", r.config.WorkerCount),
+							zap.Int("batch_size_config", r.batchSize))
 						dispatchMessage(msg)
 					}
 				}
@@ -382,6 +398,35 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 		correlationID = fmt.Sprintf("%s-%s", workflowID, runID)
 		msg.CorrelationID = correlationID
 	}
+
+	executionID := ""
+	nodeID := ""
+	if msg.Payload != nil {
+		executionID = msg.Payload.ExecutionID
+		nodeID = msg.Payload.NodeID
+	}
+	jetstreamDeliver := ""
+	if msg.Metadata != nil {
+		jetstreamDeliver = msg.Metadata[message.MetaJetStreamDeliverCount]
+	}
+	queueWaitMs := int64(0)
+	if msg.Metadata != nil {
+		if s := msg.Metadata[message.MetaIcarusEnqueueUnixMs]; s != "" {
+			if ms, err := strconv.ParseInt(s, 10, 64); err == nil {
+				queueWaitMs = time.Now().UnixMilli() - ms
+			}
+		}
+	}
+	r.logger.Info("Runner processMessage start",
+		zap.String("stream", r.stream),
+		zap.String("consumer", r.consumer),
+		zap.String("workflow_id", workflowID),
+		zap.String("run_id", runID),
+		zap.String("correlation_id", correlationID),
+		zap.String("execution_id", executionID),
+		zap.String("node_id", nodeID),
+		zap.String("jetstream_deliver_count", jetstreamDeliver),
+		zap.Int64("queue_wait_ms", queueWaitMs))
 
 	// Start tracing span for message processing
 	ctx, span := r.tracer.Start(ctx, "runner.processMessage",
@@ -465,11 +510,39 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 		processSpan.RecordError(processErr)
 		processSpan.SetStatus(codes.Error, processErr.Error())
 
+		// Explicitly detect process-timeout vs parent-shutdown vs regular errors so callers
+		// can distinguish "Icarus processTimeout hit" from a genuine plugin error.
+		if processCtx.Err() == context.DeadlineExceeded {
+			r.logger.Warn("Process timeout exceeded for message (processCtx deadline exceeded — Icarus processTimeout config; node.ended will be emitted via ProcessFailureObserver if client_id is set)",
+				zap.Duration("processingTime", processingTime),
+				zap.Duration("process_timeout_config", r.processTimeout),
+				zap.String("workflowID", workflowID),
+				zap.String("runID", runID),
+				zap.String("correlationID", correlationID),
+				zap.String("execution_id", executionID),
+				zap.String("node_id", nodeID),
+				zap.String("jetstream_deliver_count", jetstreamDeliver),
+				zap.String("grep_hint", "If Temporal run.Get is blocked, FHIR/HL7 workflow may be stuck; check Temporal for workflow_id"))
+		} else if ctx.Err() != nil {
+			r.logger.Warn("Process cancelled by parent context (runner shutting down?)",
+				zap.Duration("processingTime", processingTime),
+				zap.String("workflowID", workflowID),
+				zap.String("runID", runID),
+				zap.String("correlationID", correlationID),
+				zap.String("execution_id", executionID),
+				zap.String("node_id", nodeID),
+				zap.String("jetstream_deliver_count", jetstreamDeliver),
+				zap.Error(ctx.Err()))
+		}
+
 		r.logger.Error("Error processing message",
 			zap.Duration("processingTime", processingTime),
 			zap.String("workflowID", workflowID),
 			zap.String("runID", runID),
 			zap.String("correlationID", correlationID),
+			zap.String("execution_id", executionID),
+			zap.String("node_id", nodeID),
+			zap.String("jetstream_deliver_count", jetstreamDeliver),
 			zap.Error(processErr))
 
 		// Report error if we have workflow information
@@ -511,6 +584,11 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 			}
 		} else {
 			// If we don't have workflow info, still nak the message since processing failed
+			r.logger.Warn("Runner: processing failed without workflow/run_id on message — NAK for redelivery",
+				zap.String("execution_id", executionID),
+				zap.String("node_id", nodeID),
+				zap.String("jetstream_deliver_count", jetstreamDeliver),
+				zap.String("correlation_id", correlationID))
 			if nakErr := msg.Nak(); nakErr != nil {
 				r.logger.Error("Error naking message after processing failure",
 					zap.Error(nakErr))
@@ -566,10 +644,15 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 		span.SetAttributes(attribute.String("result.message.output.destination_type", resultMessage.Output.DestinationType))
 	}
 
+	jetstreamDeliverEnd := ""
+	if msg.Metadata != nil {
+		jetstreamDeliverEnd = msg.Metadata[message.MetaJetStreamDeliverCount]
+	}
 	r.logger.Info("Successfully processed message",
 		zap.String("workflowID", workflowID),
 		zap.String("runID", runID),
 		zap.String("correlationID", correlationID),
+		zap.String("jetstream_deliver_count", jetstreamDeliverEnd),
 		zap.Duration("processingTime", processingTime))
 	// Report success if we have workflow information
 	// Use a longer timeout for large blob uploads (10 minutes to handle very large files)
@@ -621,6 +704,11 @@ func (r *Runner) processMessage(ctx context.Context, msg *message.Message) error
 		}
 	} else {
 		// If we don't have workflow info, still ack the message since processing succeeded
+		r.logger.Warn("Runner: processed message success without workflow/run_id — direct Ack (no result publish to Zeus)",
+			zap.String("jetstream_deliver_count", jetstreamDeliverEnd),
+			zap.String("correlation_id", correlationID),
+			zap.String("execution_id", executionID),
+			zap.String("node_id", nodeID))
 		if ackErr := msg.Ack(); ackErr != nil {
 			r.logger.Error("Error acking message after successful processing",
 				zap.Error(ackErr))
