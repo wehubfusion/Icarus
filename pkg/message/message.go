@@ -3,9 +3,21 @@ package message
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/nats-io/nats.go"
+)
+
+// Metadata keys for JetStream pull diagnostics (set by MessageService.PullMessages).
+// Used by runners and services (e.g. Elysium) for grep-friendly correlation with redelivery / AckWait.
+const (
+	MetaJetStreamDeliverCount = "jetstream_deliver_count"
+	MetaJetStreamStreamSeq    = "jetstream_stream_seq"
+	MetaJetStreamConsumerSeq  = "jetstream_consumer_seq"
+	MetaJetStreamNumPending   = "jetstream_num_pending"
+	// MetaIcarusEnqueueUnixMs is set by the runner when a message is placed on the internal job queue (ms since epoch).
+	MetaIcarusEnqueueUnixMs = "icarus_enqueue_unix_ms"
 )
 
 // Workflow represents workflow execution information
@@ -378,6 +390,25 @@ func (m *Message) Term() error {
 // Returns nil if this message was not created from a NATS message.
 func (m *Message) GetNATSMsg() *nats.Msg {
 	return m.natsMsg
+}
+
+// AttachJetStreamMetadata copies JetStream MsgMetadata into msg.Metadata for logging and correlation.
+// Non-JetStream messages are a no-op.
+func AttachJetStreamMetadata(m *Message, natsMsg *nats.Msg) {
+	if m == nil || natsMsg == nil {
+		return
+	}
+	meta, err := natsMsg.Metadata()
+	if err != nil || meta == nil {
+		return
+	}
+	if m.Metadata == nil {
+		m.Metadata = make(map[string]string)
+	}
+	m.Metadata[MetaJetStreamDeliverCount] = strconv.FormatUint(meta.NumDelivered, 10)
+	m.Metadata[MetaJetStreamStreamSeq] = strconv.FormatUint(meta.Sequence.Stream, 10)
+	m.Metadata[MetaJetStreamConsumerSeq] = strconv.FormatUint(meta.Sequence.Consumer, 10)
+	m.Metadata[MetaJetStreamNumPending] = strconv.FormatUint(meta.NumPending, 10)
 }
 
 // ValidateEmbeddedNodes validates the embedded nodes structure
