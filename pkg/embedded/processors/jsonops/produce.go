@@ -58,6 +58,11 @@ func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) ru
 		))
 	}
 
+	mode := schema.ValidationModeNormal
+	if cfg.GetStrictValidation() {
+		mode = schema.ValidationModeStrict
+	}
+
 	// Process with schema (no defaults on produce, structure and validate)
 	result, err := engine.ProcessWithSchema(
 		dataToProcess,
@@ -65,6 +70,7 @@ func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) ru
 		schema.ProcessOptions{
 			ApplyDefaults: false, // Never apply defaults on produce
 			StructureData: cfg.GetStructureData(),
+			Mode:          mode,
 		},
 	)
 	if err != nil {

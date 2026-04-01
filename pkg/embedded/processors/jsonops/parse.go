@@ -71,6 +71,11 @@ func (n *JsonOpsNode) executeParse(input runtime.ProcessInput, cfg *Config) runt
 	// Create schema engine
 	engine := schema.NewEngine()
 
+	mode := schema.ValidationModeNormal
+	if cfg.GetStrictValidation() {
+		mode = schema.ValidationModeStrict
+	}
+
 	// Process with schema
 	result, err := engine.ProcessWithSchema(
 		dataToValidate,
@@ -78,6 +83,7 @@ func (n *JsonOpsNode) executeParse(input runtime.ProcessInput, cfg *Config) runt
 		schema.ProcessOptions{
 			ApplyDefaults: cfg.GetApplyDefaults(),
 			StructureData: cfg.GetStructureData(),
+			Mode:          mode,
 		},
 	)
 	if err != nil {
