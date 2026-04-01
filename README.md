@@ -1340,6 +1340,7 @@ The JSRunner processor executes JavaScript code with schema-aware capabilities, 
 **Key Features:**
 
 - **Schema-Aware Processing**: Access input schemas directly in JavaScript for meta-programming
+- **Strict by Default**: When `inputSchema` / `outputSchema` is provided, schema validation defaults to **strict**. Set `"strict_validation": false` explicitly to allow invalid data to pass without failing the node.
 - **Raw Byte Output**: Always returns raw bytes for efficient processing
 - **VM Pooling**: Reuses JavaScript VMs for performance
 - **Configurable Security**: Multiple security levels (strict, standard, permissive)
@@ -1457,6 +1458,12 @@ The JSONOps processor provides schema-driven JSON data validation and transforma
 - **parse**: Validate and structure incoming JSON data against a schema
 - **produce**: Validate and encode JSON data to base64 output
 
+**Strict Validation (default behavior):**
+
+- `strict_validation` defaults to **true** for both `parse` and `produce`.
+- When strict validation is enabled, any schema validation failure (type mismatch, required missing, invalid format, etc.) returns a node error.
+- To opt into lenient behavior, set `"strict_validation": false` explicitly.
+
 **Configuration:**
 
 ```go
@@ -1464,13 +1471,13 @@ import "github.com/wehubfusion/Icarus/pkg/embedded/processors/jsonops"
 
 // Parse operation - validate and structure incoming data
 config := jsonops.Config{
-    Operation: "parse",
+    Action:   "parse",
     SchemaID:  "user-input-schema",
 }
 
 // Produce operation - validate and encode output
 config := jsonops.Config{
-    Operation: "produce",
+    Action:   "produce",
     SchemaID:  "api-output-schema",
 }
 ```
