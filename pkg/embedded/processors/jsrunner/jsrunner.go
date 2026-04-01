@@ -249,7 +249,7 @@ func (n *JSRunnerNode) validateInput(input runtime.ProcessInput, cfg *Config) (m
 	engine := schema.NewEngine()
 
 	mode := schema.ValidationModeNormal
-	if cfg.StrictValidation {
+	if cfg.GetStrictValidation() {
 		mode = schema.ValidationModeStrict
 	}
 
@@ -327,7 +327,7 @@ func (n *JSRunnerNode) validateOutput(result map[string]interface{}, cfg *Config
 	engine := schema.NewEngine()
 
 	mode := schema.ValidationModeNormal
-	if cfg.StrictValidation {
+	if cfg.GetStrictValidation() {
 		mode = schema.ValidationModeStrict
 	}
 

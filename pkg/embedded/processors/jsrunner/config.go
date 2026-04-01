@@ -50,8 +50,9 @@ type Config struct {
 	// StructureData specifies whether to structure data according to schema
 	StructureData bool `json:"structure_data,omitempty"`
 
-	// StrictValidation specifies whether to use strict schema validation
-	StrictValidation bool `json:"strict_validation,omitempty"`
+	// StrictValidation specifies whether to use strict schema validation.
+	// Default: true. Set explicitly to false to allow invalid data to pass through.
+	StrictValidation *bool `json:"strict_validation,omitempty"`
 
 	// MaxStackDepth is the maximum call stack depth
 	MaxStackDepth int `json:"max_stack_depth,omitempty"`
@@ -90,6 +91,15 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("max_stack_depth must be positive")
 	}
 	return nil
+}
+
+// GetStrictValidation returns whether strict schema validation mode should be used.
+// Defaults to true when not explicitly configured.
+func (c *Config) GetStrictValidation() bool {
+	if c.StrictValidation != nil {
+		return *c.StrictValidation
+	}
+	return true
 }
 
 // HasInputSchema returns true if an input schema is configured

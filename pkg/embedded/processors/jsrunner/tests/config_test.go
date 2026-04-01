@@ -10,6 +10,25 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/embedded/runtime"
 )
 
+func TestConfigStrictValidationDefault(t *testing.T) {
+	cfg := jsrunner.Config{}
+	if !cfg.GetStrictValidation() {
+		t.Fatalf("expected default strict_validation to be true, got false")
+	}
+
+	strictFalse := false
+	cfgLenient := jsrunner.Config{StrictValidation: &strictFalse}
+	if cfgLenient.GetStrictValidation() {
+		t.Fatalf("expected strict_validation false when explicitly set to false")
+	}
+
+	strictTrue := true
+	cfgStrict := jsrunner.Config{StrictValidation: &strictTrue}
+	if !cfgStrict.GetStrictValidation() {
+		t.Fatalf("expected strict_validation true when explicitly set to true")
+	}
+}
+
 func TestConfigApplyDefaults(t *testing.T) {
 	cfg := jsrunner.Config{}
 	cfg.ApplyDefaults()
@@ -143,6 +162,7 @@ func TestProcess_InputSchemaValidationError(t *testing.T) {
 		t.Fatalf("failed to create node: %v", err)
 	}
 
+	strictTrue := true
 	// Config with input schema that requires a string field
 	rawConfig, _ := json.Marshal(jsrunner.Config{
 		Script:  "({ output: input.value })",
@@ -156,7 +176,7 @@ func TestProcess_InputSchemaValidationError(t *testing.T) {
 			},
 			"required": []interface{}{"value"},
 		},
-		StrictValidation: true,
+		StrictValidation: &strictTrue,
 	})
 
 	// Input data with wrong type (number instead of string)

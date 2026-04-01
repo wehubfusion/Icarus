@@ -38,8 +38,8 @@ func TestConfigDefaults(t *testing.T) {
 	if cfgParse.GetStructureData() {
 		t.Fatalf("parse should default structure_data false")
 	}
-	if cfgParse.GetStrictValidation() {
-		t.Fatalf("parse should default strict_validation false")
+	if !cfgParse.GetStrictValidation() {
+		t.Fatalf("parse should default strict_validation true")
 	}
 
 	cfgProduce := jsonops.Config{Action: "produce", SchemaID: "sid"}

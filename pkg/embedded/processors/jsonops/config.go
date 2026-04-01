@@ -27,8 +27,8 @@ type Config struct {
 
 	// StrictValidation maps to Mode=STRICT when true, making the processor
 	// return a Go error (in addition to the result payload) when validation fails.
-	// Deprecated: prefer setting the Mode field directly in ProcessOptions.
-	// Default: false for parse, true for produce.
+	// Default: true for both parse and produce. Set explicitly to false to allow
+	// invalid data to pass through without returning an error.
 	StrictValidation *bool `json:"strict_validation,omitempty"`
 
 	// Pretty formats the JSON before base64 encoding (produce action only)
@@ -85,6 +85,6 @@ func (c *Config) GetStrictValidation() bool {
 	if c.StrictValidation != nil {
 		return *c.StrictValidation
 	}
-	// Default: false for parse (lenient), true for produce (ensure valid output)
-	return c.Action == "produce"
+	// Default: always strict — type mismatches must be caught regardless of action.
+	return true
 }
