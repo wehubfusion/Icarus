@@ -80,7 +80,6 @@ func (c *Config) GetStructureData() bool {
 }
 
 // GetStrictValidation returns whether strict (fail-on-invalid) mode should be used.
-// Callers should convert the result to Mode: ValidationModeStrict in ProcessOptions.
 func (c *Config) GetStrictValidation() bool {
 	if c.StrictValidation != nil {
 		return *c.StrictValidation
