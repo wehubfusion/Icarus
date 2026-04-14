@@ -9,8 +9,8 @@ The `hl7` package provides parsing and validation of HL7 v2.x messages against a
 | **Parser** | Tokenizes raw message bytes (BOM strip, CRLF/LF normalisation, size + segment limits), extracts delimiters from MSH, parses segments → fields → components → subcomponents, handles HL7 escape sequences |
 | **Schema** | JSON definition of message type, version, segment/field/component structure, and optional CEL custom rules (Morpheus-compatible) |
 | **Matcher** | Matches parsed segments to the schema: order, required/optional/repeated segments, group semantics |
-| **Validator** | Field- and component-level checks: usage (R/X/W), repetition limits, length (truncation-aware), datatype, extra fields/components |
-| **Datatype engine** | Registry-driven composite type decomposition + primitive scalar validation |
+| **Validator** | Field-level checks: usage (R/X/W), repetition limits, **field** length (truncation-aware, whole wire value including `^`/`&`), datatype format, extra fields; component/subcomponent **counts** (extra component/subcomponent) but not per-component max length from the datatype tables |
+| **Datatype engine** | Registry-driven composite decomposition + primitive scalar validation; truncation delimiter stripped before format checks where values are read |
 | **CEL rules** | Optional declarative validation rules evaluated on top of structural validation |
 | **Processor** | Implements `contracts.SchemaProcessor`; orchestrates the full pipeline and returns bucketed `Errors`/`Warnings`/`Infos` |
 
@@ -99,6 +99,7 @@ Resolved via the datatype registry (`pkg/schema/hl7/datatypes`). Each component 
 - Field-level: top-level components of the field's type are iterated.
 - Nested composites (e.g. HD inside CX) are further decomposed via `flattenLeaves`.
 - Primitive components are validated against only their **first subcomponent value** — extra subcomponents produce `HL7_EXTRA_SUBCOMPONENT` but do not cause double type errors.
+- **Length:** `HL7_LENGTH` is raised only when the **whole field** (re-serialized with the message’s delimiters) exceeds the schema field `length`. Per-component / per-subcomponent max lengths from the embedded datatype JSON are **not** enforced (those limits are not user-configurable per deployment).
 
 > **`SN`, `MO`, `NR`** — These are composite types. Their components are split by the parser and each component is validated by its own scalar type. They are not validated as primitives at the field level.
 
@@ -127,7 +128,7 @@ The `tableId` field is parsed and stored but not validated — terminology/value
 | Line endings | `\r\n` and `\n` normalised to `\r` |
 | Delimiter collision | All 5–6 delimiters must be distinct; `ErrInvalidDelimiters` on clash |
 | Escape sequences | `\F\ \S\ \T\ \R\ \E\`, hex (`\X...\`), formatting hints, `\C...\` / `\M...\` (charset — preserved verbatim), `\Z...\` (vendor — preserved verbatim) |
-| Truncation delimiter | 5th encoding character (HL7 v2.7+, e.g. `#`) — stored as `Delimiters.Truncation`; applied during length validation |
+| Truncation delimiter | 5th encoding character (HL7 v2.7+, commonly `#`) — stored as `Delimiters.Truncation`; content at and after that character is ignored for **field length** and for **primitive datatype format** checks (so a value like `25#.7389` is measured/validated as `25`). If MSH-2 has only four encoding characters (typical v2.5), `Truncation` is unset and `#` in payload data is literal. |
 
 ---
 
@@ -144,7 +145,7 @@ The `tableId` field is parsed and stored but not validated — terminology/value
 
 ### Message header
 - `HL7_MESSAGE_TYPE_MISMATCH` — MSH-9 doesn't match schema `messageType`
-- `HL7_VERSION_MISMATCH` — MSH-12 doesn't match schema `version` (semantic comparison: `"2.5"` == `"2.5.0"`; leading `v`/`V` prefix is also normalised so `"v2.5.1"` == `"2.5.1"`)
+- `HL7_VERSION_MISMATCH` — MSH-12 doesn't match schema `version`. Comparison uses `versionsMatch` in `header_validator.go`: trailing `.0` segments stripped; a leading `v`/`V` is removed **only when followed by a digit** (so `"v2.5.1"` matches `"2.5.1"`, but bare `"v"` does not match a real version). Both sides must contain at least one digit after normalisation, except the reflexive empty case `""` vs `""`.
 
 ### Field / component
 - `HL7_MISSING_REQUIRED` — required field absent from segment
@@ -326,6 +327,21 @@ match := hl7.MatchMessage(msg, compiled)
 fieldErrs := hl7.ValidateMatchResult(match, msg, true, compiled.Registry)
 ```
 
+### Message model (package `message`)
+
+Nil-safe `*Message` methods: `Get`, `GetAtSegmentInstance`, `SegmentByName`, `NthSegmentByName`, and `SegmentInstanceCount` return empty / nil / zero when the receiver is nil (no panic).
+
+**Locations:** paths like `MSH-12`, `PID-3(2).1` are parsed by `LocationParts` / `parseLocation`. **Segment names are matched case-insensitively** (e.g. `pid-5` and `PID-5` both resolve PID).
+
+**Joining composite values**
+
+| API | Delimiters used |
+|-----|-----------------|
+| `Component.String()`, `Repetition.String()`, `Field.String()` | `DefaultDelimiters()` only |
+| `FormatWithDelimiters(d Delimiters)` on `Component` / `Repetition` / `Field` | The supplied `d` (use `msg.Delimiters` from a parsed message for wire-accurate `^` / `&`) |
+| `msg.Get(loc)` / `msg.GetAtSegmentInstance(...)` | `msg.Delimiters` when building multi-part field values |
+| `FieldValueOnSegment(seg, loc)` | No `Message` available — uses **default** delimiters via `effectiveDelimiters` (same idea as `String()` for isolated segment helpers) |
+
 ---
 
 ## Package layout
@@ -340,7 +356,7 @@ fieldErrs := hl7.ValidateMatchResult(match, msg, true, compiled.Registry)
 | `datatype_validator.go` | `validateDataType`, composite decomposition, `flattenLeaves`, leaf validation |
 | `header_validator.go` | MSH-9 message type and MSH-12 version comparison |
 | `processor.go` | `HL7SchemaProcessor` — full pipeline, severity bucketing, early-stop logic |
-| `message/` | `Message`, `Segment`, `Field`, `Component`, `Subcomponent`, `Delimiters`, location parsing |
+| `message/` | `Message`, `Segment`, `Field`, `Component`, `Subcomponent`, `Delimiters`, `Get` / `FormatWithDelimiters`, location parsing (see [Message model](#message-model-package-message)) |
 | `primitive/` | `ValidatePrimitive` — scalar type checks (NM, SI, DT, TM, DTM, TZ offset) |
 | `datatypes/` | `Registry` — composite datatype definitions loaded from JSON; `Lookup` by version |
 | `pkg/cel/` | Generic CEL engine (`Engine`, `InputRule`, `CompiledRule`, `ScopeIterator`) |

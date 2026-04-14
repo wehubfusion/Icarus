@@ -9,15 +9,20 @@ import (
 // Trailing ".0" segments are stripped and a leading "v"/"V" prefix is removed
 // before comparing, so "2.5", "2.5.0", "v2.5", and "V2.5.0" are all
 // treated as equivalent, while "2.5" and "2.5.1" are not.
-// Comparison is case-insensitive.
+// Comparison is case-insensitive. Nonsense strings without a digit (e.g. "v" alone)
+// never match a real version.
 func versionsMatch(a, b string) bool {
-	return strings.EqualFold(normalizeVersion(a), normalizeVersion(b))
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	na := normalizeVersion(a)
+	nb := normalizeVersion(b)
+	return strings.EqualFold(na, nb)
 }
 
 func normalizeVersion(v string) string {
 	v = strings.TrimSpace(v)
-	// Strip optional leading "v" / "V" so "v2.5.1" and "2.5.1" compare equal.
-	if len(v) > 0 && (v[0] == 'v' || v[0] == 'V') {
+	// Strip optional leading "v"/"V" only when followed by a digit (e.g. "v2.5.1", not bare "v").
+	if len(v) >= 2 && (v[0] == 'v' || v[0] == 'V') {
 		v = v[1:]
 	}
 	for strings.HasSuffix(v, ".0") {

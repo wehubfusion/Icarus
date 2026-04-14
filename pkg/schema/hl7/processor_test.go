@@ -349,6 +349,11 @@ func TestVersionsMatch(t *testing.T) {
 		{"2.5.1", "2.5.2", false},
 		{"v2.5.1", "v2.5.2", false},
 		{"2.5.1", "2.6", false},
+		{"", "", true},
+		{"", "2.5", false},
+		{"2.5", "", false},
+		{"v", "v", false},
+		{"v", "2.5", false},
 	}
 	for _, tc := range cases {
 		got := versionsMatch(tc.a, tc.b)
