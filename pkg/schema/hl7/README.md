@@ -144,14 +144,14 @@ The `tableId` field is parsed and stored but not validated — terminology/value
 
 ### Message header
 - `HL7_MESSAGE_TYPE_MISMATCH` — MSH-9 doesn't match schema `messageType`
-- `HL7_VERSION_MISMATCH` — MSH-12 doesn't match schema `version` (semantic comparison: `"2.5"` == `"2.5.0"`)
+- `HL7_VERSION_MISMATCH` — MSH-12 doesn't match schema `version` (semantic comparison: `"2.5"` == `"2.5.0"`; leading `v`/`V` prefix is also normalised so `"v2.5.1"` == `"2.5.1"`)
 
 ### Field / component
 - `HL7_MISSING_REQUIRED` — required field absent from segment
 - `HL7_REQUIRED` — required field is present but empty
 - `HL7_NOT_USED` — field with usage X or W contains a value
 - `HL7_REPETITION_VIOLATION` — field exceeds `rpt`
-- `HL7_LENGTH` — value length exceeds schema `length` (content after truncation delimiter is excluded)
+- `HL7_LENGTH` — field value length exceeds the `length` defined in the node schema (content after the truncation delimiter is excluded; component/subcomponent lengths from the embedded HL7 datatype tables are not enforced)
 - `HL7_DATATYPE` — value does not conform to its HL7 datatype (format, range, calendar)
 - `HL7_EXTRA_FIELD` — segment has more fields than the schema defines
 - `HL7_EXTRA_COMPONENT` — field has more components than the datatype allows

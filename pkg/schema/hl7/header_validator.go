@@ -6,14 +6,20 @@ import (
 )
 
 // versionsMatch returns true when a and b refer to the same HL7 version.
-// Trailing ".0" segments are stripped before comparing so that "2.5" and
-// "2.5.0" are treated as equivalent, while "2.5" and "2.5.1" are not.
+// Trailing ".0" segments are stripped and a leading "v"/"V" prefix is removed
+// before comparing, so "2.5", "2.5.0", "v2.5", and "V2.5.0" are all
+// treated as equivalent, while "2.5" and "2.5.1" are not.
 // Comparison is case-insensitive.
 func versionsMatch(a, b string) bool {
 	return strings.EqualFold(normalizeVersion(a), normalizeVersion(b))
 }
 
 func normalizeVersion(v string) string {
+	v = strings.TrimSpace(v)
+	// Strip optional leading "v" / "V" so "v2.5.1" and "2.5.1" compare equal.
+	if len(v) > 0 && (v[0] == 'v' || v[0] == 'V') {
+		v = v[1:]
+	}
 	for strings.HasSuffix(v, ".0") {
 		v = strings.TrimSuffix(v, ".0")
 	}

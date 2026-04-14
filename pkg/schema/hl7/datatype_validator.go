@@ -3,7 +3,6 @@ package hl7
 import (
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/wehubfusion/Icarus/pkg/schema/hl7/datatypes"
 	"github.com/wehubfusion/Icarus/pkg/schema/hl7/primitive"
@@ -64,15 +63,6 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 		c, ok := rep.ComponentAt(compNum)
 		if !ok {
 			continue
-		}
-
-		compVal := componentStringWithDelimiters(c, msg)
-		// Apply truncation delimiter before measuring length (HL7 v2.7+).
-		measuredVal := truncateAtMarker(compVal, msg)
-		if cdef.Length > 0 && utf8.RuneCountInString(measuredVal) > cdef.Length {
-			errs = append(errs, ValidationError{
-				Path: cPath, Message: fmt.Sprintf("length %d exceeds maximum %d", utf8.RuneCountInString(measuredVal), cdef.Length), Code: "HL7_LENGTH",
-			})
 		}
 
 		childType := strings.ToUpper(strings.TrimSpace(cdef.DataType))
@@ -162,9 +152,6 @@ func validateLeavesAgainstSubcomponents(leaves []leafDef, c Component, path stri
 		var val string
 		if subNum <= len(c.Subcomponents) {
 			val = c.Subcomponents[subNum-1].Value
-		}
-		if leaf.Length > 0 && utf8.RuneCountInString(val) > leaf.Length {
-			errs = append(errs, ValidationError{Path: sPath, Message: fmt.Sprintf("length %d exceeds maximum %d", utf8.RuneCountInString(val), leaf.Length), Code: "HL7_LENGTH"})
 		}
 		if err := primitive.ValidatePrimitive(leaf.DataType, val, sPath, leaf.Length); err != nil {
 			errs = append(errs, *err)

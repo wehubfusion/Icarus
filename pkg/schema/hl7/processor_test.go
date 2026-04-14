@@ -331,3 +331,29 @@ func TestMatchMessage_MissingRequired_WithBlockingSegment(t *testing.T) {
 		t.Errorf("expected at least one HL7_MISSING_REQUIRED, got errors: %v", match.Errors)
 	}
 }
+
+// TestVersionsMatch verifies that the normalizeVersion helper treats "v"/"V"-prefixed
+// strings and bare strings as equivalent, and that trailing ".0" segments are still
+// collapsed regardless of the presence of that prefix.
+func TestVersionsMatch(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"2.5.1", "v2.5.1", true},
+		{"v2.5.1", "2.5.1", true},
+		{"V2.5.1", "2.5.1", true},
+		{"v2.5.1", "V2.5.1", true},
+		{"2.5", "2.5.0", true},
+		{"v2.5", "2.5.0", true},
+		{"2.5.1", "2.5.2", false},
+		{"v2.5.1", "v2.5.2", false},
+		{"2.5.1", "2.6", false},
+	}
+	for _, tc := range cases {
+		got := versionsMatch(tc.a, tc.b)
+		if got != tc.want {
+			t.Errorf("versionsMatch(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
