@@ -21,7 +21,7 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 
 	// Primitive or unknown type: validate the whole repetition as a scalar.
 	if reg == nil {
-		val := repetitionStringWithDelimiters(rep, msg)
+		val := truncateAtMarker(repetitionStringWithDelimiters(rep, msg), msg)
 		if err := primitive.ValidatePrimitive(tid, val, path, length); err != nil {
 			return []ValidationError{*err}
 		}
@@ -30,7 +30,7 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 
 	def, ok := reg.Lookup(version, tid)
 	if !ok || def == nil || !def.IsComposite {
-		val := repetitionStringWithDelimiters(rep, msg)
+		val := truncateAtMarker(repetitionStringWithDelimiters(rep, msg), msg)
 		if err := primitive.ValidatePrimitive(tid, val, path, length); err != nil {
 			return []ValidationError{*err}
 		}
@@ -69,7 +69,7 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 		childDef, childIsComposite := reg.Lookup(version, childType)
 		if childIsComposite && childDef != nil && childDef.IsComposite {
 			leaves := flattenLeaves(childType, reg, version, map[string]bool{})
-			errs = append(errs, validateLeavesAgainstSubcomponents(leaves, c, cPath)...)
+			errs = append(errs, validateLeavesAgainstSubcomponents(leaves, c, cPath, msg)...)
 			continue
 		}
 
@@ -88,7 +88,9 @@ func validateDataType(typeID string, rep Repetition, path string, length int, ms
 		}
 		primitiveVal := ""
 		if len(c.Subcomponents) > 0 {
-			primitiveVal = c.Subcomponents[0].Value
+			// Strip truncation marker (v2.7+ '#') before format validation so that a
+			// sender-intentional truncation does not produce a false HL7_DATATYPE error.
+			primitiveVal = truncateAtMarker(c.Subcomponents[0].Value, msg)
 		}
 		if err := primitive.ValidatePrimitive(childType, primitiveVal, cPath, cdef.Length); err != nil {
 			errs = append(errs, *err)
@@ -129,7 +131,7 @@ func flattenLeaves(typeID string, reg *datatypes.Registry, version string, visit
 	return leaves
 }
 
-func validateLeavesAgainstSubcomponents(leaves []leafDef, c Component, path string) []ValidationError {
+func validateLeavesAgainstSubcomponents(leaves []leafDef, c Component, path string, msg *Message) []ValidationError {
 	var errs []ValidationError
 	if len(leaves) == 0 {
 		return errs
@@ -151,7 +153,9 @@ func validateLeavesAgainstSubcomponents(leaves []leafDef, c Component, path stri
 		sPath := fmt.Sprintf("%s.%d", path, subNum)
 		var val string
 		if subNum <= len(c.Subcomponents) {
-			val = c.Subcomponents[subNum-1].Value
+			// Strip truncation marker (v2.7+ '#') before format validation so that a
+			// sender-intentional truncation does not produce a false HL7_DATATYPE error.
+			val = truncateAtMarker(c.Subcomponents[subNum-1].Value, msg)
 		}
 		if err := primitive.ValidatePrimitive(leaf.DataType, val, sPath, leaf.Length); err != nil {
 			errs = append(errs, *err)
