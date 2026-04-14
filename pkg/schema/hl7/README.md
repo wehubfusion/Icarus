@@ -219,7 +219,7 @@ Rules are declared in the schema's `"rules"` array and compiled once at schema l
 | `require` | one of three | Shorthand: `valued('LOC')` — field must be non-empty |
 | `forbid` | one of three | Shorthand: `!valued('LOC')` — field must be absent/empty |
 | `when` | no | CEL boolean guard — rule is skipped when this evaluates to false |
-| `message` | no | Human-readable violation message |
+| `message` | no | Human-readable violation message; if omitted, the engine uses a default that includes the rule **name**, **id**, and **errorPath** (e.g. `Assertion failed for validation rule "…" (id: …) at PID-3.`) |
 | `errorPath` | no | HL7 location path for the violation (e.g. `OBX-5`) |
 | `severity` | no | `ERROR` (default), `WARNING`, or `INFO` |
 
