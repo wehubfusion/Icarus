@@ -116,7 +116,7 @@ func (e *Engine) EvaluateRules(rules []CompiledRule, iter ScopeIterator) ([]Viol
 			path := iter.ErrorPath(cr.Rule, i)
 			msg := strings.TrimSpace(cr.Rule.Message)
 			if msg == "" {
-					msg = defaultAssertionFailureMessage(cr.Rule)
+				msg = defaultAssertionFailureMessage(cr.Rule, path)
 			}
 			sev := strings.TrimSpace(cr.Rule.Severity)
 			if sev == "" {
@@ -136,19 +136,26 @@ func (e *Engine) EvaluateRules(rules []CompiledRule, iter ScopeIterator) ([]Viol
 
 // defaultAssertionFailureMessage builds a clear default when the rule omits "message".
 // It includes the rule display name, id, and optional HL7/error path.
-func defaultAssertionFailureMessage(rule InputRule) string {
+func defaultAssertionFailureMessage(rule InputRule, path string) string {
 	name := strings.TrimSpace(rule.Name)
 	id := strings.TrimSpace(rule.ID)
+	path = strings.TrimSpace(path)
 
 	var b strings.Builder
 	b.WriteString("Assertion failed for validation rule ")
 	switch {
 	case name != "":
 		fmt.Fprintf(&b, "%q", name)
+		if id != "" {
+			fmt.Fprintf(&b, " (id: %s)", id)
+		}
 	case id != "":
 		fmt.Fprintf(&b, "(id: %s)", id)
 	default:
 		b.WriteString("(unknown rule)")
+	}
+	if path != "" {
+		fmt.Fprintf(&b, " at %s", path)
 	}
 	b.WriteByte('.')
 	return b.String()

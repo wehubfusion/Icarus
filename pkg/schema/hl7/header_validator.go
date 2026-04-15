@@ -14,19 +14,38 @@ import (
 func versionsMatch(a, b string) bool {
 	a = strings.TrimSpace(a)
 	b = strings.TrimSpace(b)
+	// Preserve the special case: both empty means "no version constraint".
+	if a == "" && b == "" {
+		return true
+	}
 	na := normalizeVersion(a)
 	nb := normalizeVersion(b)
+	// If either side normalizes to empty (e.g. nonsense like bare "v"), never match.
+	if na == "" || nb == "" {
+		return false
+	}
 	return strings.EqualFold(na, nb)
 }
 
 func normalizeVersion(v string) string {
 	v = strings.TrimSpace(v)
 	// Strip optional leading "v"/"V" only when followed by a digit (e.g. "v2.5.1", not bare "v").
-	if len(v) >= 2 && (v[0] == 'v' || v[0] == 'V') {
+	if len(v) >= 2 && (v[0] == 'v' || v[0] == 'V') && v[1] >= '0' && v[1] <= '9' {
 		v = v[1:]
 	}
 	for strings.HasSuffix(v, ".0") {
 		v = strings.TrimSuffix(v, ".0")
+	}
+	// Treat nonsense strings without any digit as empty (e.g. "v", "version").
+	hasDigit := false
+	for i := 0; i < len(v); i++ {
+		if v[i] >= '0' && v[i] <= '9' {
+			hasDigit = true
+			break
+		}
+	}
+	if !hasDigit {
+		return ""
 	}
 	return v
 }

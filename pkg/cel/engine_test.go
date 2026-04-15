@@ -32,8 +32,8 @@ func TestDefaultAssertionFailureMessage(t *testing.T) {
 	for _, tc := range cases {
 		got := defaultAssertionFailureMessage(tc.rule, tc.path)
 		if got != tc.want {
-			t.Errorf("defaultAssertionFailureMessage(rule id=%q name=%q, path=%q) = %q, want %q",
-				tc.rule.ID, tc.rule.Name, tc.path, got, tc.want)
+			t.Errorf("defaultAssertionFailureMessage(rule id=%q name=%q) = %q, want %q",
+				tc.rule.ID, tc.rule.Name, got, tc.want)
 		}
 	}
 }

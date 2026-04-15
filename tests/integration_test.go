@@ -21,6 +21,9 @@ type integrationProcessor struct {
 }
 
 func (p *integrationProcessor) Process(ctx context.Context, msg *message.Message) (message.Message, error) {
+	if p == nil {
+		return message.Message{}, errors.New("integration processor is nil")
+	}
 	p.processedMessages = append(p.processedMessages, msg)
 
 	if p.shouldFail {
