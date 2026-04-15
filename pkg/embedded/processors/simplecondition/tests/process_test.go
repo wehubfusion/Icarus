@@ -160,3 +160,75 @@ func TestProcessMissingFieldWithIsEmptyNoWarning(t *testing.T) {
 		t.Errorf("expected output[\"true\"] when Is Empty and field missing")
 	}
 }
+
+// TestProcess_LegacyBooleanValueInRawConfig ensures RawConfig from stored workflows
+// (JSON boolean for manual_inputs.value) parses and routes like string "true".
+func TestProcess_LegacyBooleanValueInRawConfig(t *testing.T) {
+	node := createConditionNode(t, "test-condition-node")
+	raw := []byte(`{"logic_operator":"AND","manual_inputs":[{"name":"in","operator":"equals","type":"boolean","value":true}]}`)
+	input := createProcessInput(map[string]interface{}{"in": true}, raw)
+
+	output := node.Process(input)
+
+	if output.Error != nil {
+		t.Fatalf("expected no config error, got: %v", output.Error)
+	}
+	if output.Data["true"] == nil {
+		t.Fatalf("expected output[\"true\"] when in==true matches literal true")
+	}
+	if output.Data["false"] != nil {
+		t.Fatalf("expected output[\"false\"] nil, got %v", output.Data["false"])
+	}
+}
+
+// TestProcess_LegacyNumberValueInRawConfig ensures JSON number manual value unmarshals and compares.
+func TestProcess_LegacyNumberValueInRawConfig(t *testing.T) {
+	node := createConditionNode(t, "test-condition-node")
+	raw := []byte(`{"logic_operator":"AND","manual_inputs":[{"name":"n","operator":"equals","type":"number","value":42}]}`)
+	input := createProcessInput(map[string]interface{}{"n": float64(42)}, raw)
+
+	output := node.Process(input)
+
+	if output.Error != nil {
+		t.Fatalf("expected no config error, got: %v", output.Error)
+	}
+	if output.Data["true"] == nil {
+		t.Fatalf("expected output[\"true\"] when n==42")
+	}
+}
+
+func TestProcess_EventType_EqualsTrue_WhenFieldIsTrue(t *testing.T) {
+	node := createConditionNode(t, "test-condition-node")
+	raw := []byte(`{"logic_operator":"AND","manual_inputs":[{"name":"ev","operator":"equals","type":"event","value":true}]}`)
+	input := createProcessInput(map[string]interface{}{"ev": true}, raw)
+
+	output := node.Process(input)
+
+	if output.Error != nil {
+		t.Fatalf("expected no config error, got: %v", output.Error)
+	}
+	if output.Data["true"] == nil {
+		t.Fatalf("expected output[\"true\"] when ev==true and expected=true")
+	}
+	if output.Data["false"] != nil {
+		t.Fatalf("expected output[\"false\"] nil, got %v", output.Data["false"])
+	}
+}
+
+func TestProcess_EventType_IsEmpty_WhenFieldMissing(t *testing.T) {
+	node := createConditionNode(t, "test-condition-node")
+	raw := []byte(`{"logic_operator":"AND","manual_inputs":[{"name":"missing","operator":"is_empty","type":"event","value":null}]}`)
+	input := createProcessInput(map[string]interface{}{}, raw)
+
+	output := node.Process(input)
+
+	if output.Error != nil {
+		t.Fatalf("expected no error, got: %v", output.Error)
+	}
+	if _, hasWarning := output.Data["warning"]; hasWarning {
+		t.Fatalf("expected no warning for is_empty on missing event field, got %v", output.Data["warning"])
+	}
+	if output.Data["true"] == nil {
+		t.Fatalf("expected output[\"true\"] when is_empty and field missing")
+	}
+}

@@ -1,6 +1,7 @@
 package simplecondition
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 )
@@ -38,6 +39,7 @@ const (
 	DataTypeString  DataType = "string"
 	DataTypeNumber  DataType = "number"
 	DataTypeBoolean DataType = "boolean"
+	DataTypeEvent   DataType = "event"
 )
 
 // LogicOperator defines how to combine multiple conditions.
@@ -60,6 +62,49 @@ type ManualInput struct {
 	Type     DataType           `json:"type"`     // string, number, or boolean
 	Value    string             `json:"value"`    // Expected value as string (will be converted based on Type)
 	Operator ComparisonOperator `json:"operator"` // Comparison operator
+}
+
+// UnmarshalJSON accepts legacy configs where "value" is a JSON string, boolean, number, or null.
+// Stored workflow JSON often uses native JSON types; ConvertValue still parses from string.
+func (m *ManualInput) UnmarshalJSON(data []byte) error {
+	var aux struct {
+		Name     string             `json:"name"`
+		Type     DataType           `json:"type"`
+		Value    json.RawMessage    `json:"value"`
+		Operator ComparisonOperator `json:"operator"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	m.Name = aux.Name
+	m.Type = aux.Type
+	m.Operator = aux.Operator
+
+	if len(aux.Value) == 0 || string(aux.Value) == "null" {
+		m.Value = ""
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(aux.Value, &s); err == nil {
+		m.Value = s
+		return nil
+	}
+	var b bool
+	if err := json.Unmarshal(aux.Value, &b); err == nil {
+		if b {
+			m.Value = "true"
+		} else {
+			m.Value = "false"
+		}
+		return nil
+	}
+	var f float64
+	if err := json.Unmarshal(aux.Value, &f); err == nil {
+		m.Value = strconv.FormatFloat(f, 'f', -1, 64)
+		return nil
+	}
+	return fmt.Errorf("manual_inputs.value: unsupported JSON type: %s", string(aux.Value))
 }
 
 // Validate checks if the configuration is valid.
@@ -95,8 +140,8 @@ func (m *ManualInput) Validate() error {
 	if m.Type == "" {
 		return fmt.Errorf("type is required")
 	}
-	if m.Type != DataTypeString && m.Type != DataTypeNumber && m.Type != DataTypeBoolean {
-		return fmt.Errorf("invalid type '%s', must be 'string', 'number', or 'boolean'", m.Type)
+	if m.Type != DataTypeString && m.Type != DataTypeNumber && m.Type != DataTypeBoolean && m.Type != DataTypeEvent {
+		return fmt.Errorf("invalid type '%s', must be 'string', 'number', 'boolean', or 'event'", m.Type)
 	}
 	if m.Operator == "" {
 		return fmt.Errorf("operator is required")
@@ -146,7 +191,7 @@ func validateOperatorTypeCompatibility(operator ComparisonOperator, dataType Dat
 			return fmt.Errorf("operator '%s' is only supported for 'string' type, got '%s'", operator, dataType)
 		}
 	case OpIsEmpty, OpIsNotEmpty:
-		// Supported for string, number, boolean (value is ignored)
+		// Supported for string, number, boolean, event (value is ignored)
 		return nil
 	default:
 		return fmt.Errorf("unsupported operator '%s'", operator)
@@ -174,6 +219,16 @@ func (m *ManualInput) ConvertValue() (interface{}, error) {
 			return false, nil
 		default:
 			return nil, fmt.Errorf("cannot convert value '%s' to boolean (expected 'true' or 'false')", m.Value)
+		}
+	case DataTypeEvent:
+		// Treat "event" as boolean for comparison purposes.
+		switch m.Value {
+		case "true", "True", "TRUE", "1":
+			return true, nil
+		case "false", "False", "FALSE", "0":
+			return false, nil
+		default:
+			return nil, fmt.Errorf("cannot convert value '%s' to event (expected 'true' or 'false')", m.Value)
 		}
 	default:
 		return nil, fmt.Errorf("unsupported type '%s'", m.Type)
