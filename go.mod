@@ -8,7 +8,7 @@ require (
 	github.com/dlclark/regexp2 v1.11.4
 	github.com/dop251/goja v0.0.0-20251103141225-af2ceb9156d7
 	github.com/getsentry/sentry-go v0.35.3
-	github.com/google/cel-go v0.27.0
+	github.com/google/cel-go v0.28.0
 	github.com/google/uuid v1.6.0
 	github.com/nats-io/nats.go v1.46.1
 	github.com/stretchr/testify v1.11.1
