@@ -133,8 +133,8 @@ func TestProcess_UsesGenericFallbackWhenNoMessages(t *testing.T) {
 	}
 
 	errMsg := out.Error.Error()
-	if !strings.Contains(errMsg, "Error node triggered without message") {
-		t.Errorf("expected generic fallback message in error, got: %q", errMsg)
+	if !strings.Contains(errMsg, "test-label") || !strings.Contains(errMsg, "plugin-error") {
+		t.Errorf("expected fallback to include node label and plugin type, got: %q", errMsg)
 	}
 }
 

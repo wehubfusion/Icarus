@@ -42,6 +42,15 @@ func (d Delimiters) HasTruncation() bool {
 	return d.Truncation != 0
 }
 
+// effectiveDelimiters returns d when it looks parsed from a real message (field separator set),
+// otherwise default delimiters for joining in isolation (e.g. tests, FieldValueOnSegment).
+func effectiveDelimiters(d Delimiters) Delimiters {
+	if d.Field != 0 {
+		return d
+	}
+	return DefaultDelimiters()
+}
+
 // Subcomponent is the lowest level of HL7 data.
 type Subcomponent struct {
 	Value string
@@ -52,8 +61,9 @@ type Component struct {
 	Subcomponents []Subcomponent
 }
 
-// String returns the component value (subcomponents joined by default '&'). Uses default delimiters.
-func (c Component) String() string {
+// FormatWithDelimiters joins subcomponents using d's subcomponent separator (on-the-wire style).
+func (c Component) FormatWithDelimiters(d Delimiters) string {
+	d = effectiveDelimiters(d)
 	if len(c.Subcomponents) == 0 {
 		return ""
 	}
@@ -64,7 +74,13 @@ func (c Component) String() string {
 	for i, sc := range c.Subcomponents {
 		parts[i] = sc.Value
 	}
-	return strings.Join(parts, string(DefaultDelimiters().Subcomponent))
+	return strings.Join(parts, string(d.Subcomponent))
+}
+
+// String returns the component value (subcomponents joined by default '&').
+// For values from a parsed message, prefer FormatWithDelimiters(msg.Delimiters) so separators match the wire format.
+func (c Component) String() string {
+	return c.FormatWithDelimiters(DefaultDelimiters())
 }
 
 // SubcomponentAt returns subcomponent at 1-based index.
@@ -80,20 +96,26 @@ type Repetition struct {
 	Components []Component
 }
 
-// String returns the repetition value (components joined by default '^').
-func (r Repetition) String() string {
+// FormatWithDelimiters joins components using d's component separator.
+func (r Repetition) FormatWithDelimiters(d Delimiters) string {
+	d = effectiveDelimiters(d)
 	if len(r.Components) == 0 {
 		return ""
 	}
 	if len(r.Components) == 1 {
-		return r.Components[0].String()
+		return r.Components[0].FormatWithDelimiters(d)
 	}
-	d := DefaultDelimiters()
 	parts := make([]string, len(r.Components))
 	for i, c := range r.Components {
-		parts[i] = c.String()
+		parts[i] = c.FormatWithDelimiters(d)
 	}
 	return strings.Join(parts, string(d.Component))
+}
+
+// String returns the repetition value (components joined by default '^').
+// For values from a parsed message, prefer FormatWithDelimiters(msg.Delimiters).
+func (r Repetition) String() string {
+	return r.FormatWithDelimiters(DefaultDelimiters())
 }
 
 // ComponentAt returns component at 1-based index.
@@ -109,12 +131,18 @@ type Field struct {
 	Repetitions []Repetition
 }
 
-// String returns the first repetition value.
-func (f Field) String() string {
+// FormatWithDelimiters formats the first repetition using d.
+func (f Field) FormatWithDelimiters(d Delimiters) string {
 	if len(f.Repetitions) == 0 {
 		return ""
 	}
-	return f.Repetitions[0].String()
+	return f.Repetitions[0].FormatWithDelimiters(d)
+}
+
+// String returns the first repetition value (default delimiters).
+// For values from a parsed message, prefer FormatWithDelimiters(msg.Delimiters).
+func (f Field) String() string {
+	return f.FormatWithDelimiters(DefaultDelimiters())
 }
 
 // RepetitionAt returns repetition at 1-based index.
@@ -156,9 +184,14 @@ type Message struct {
 }
 
 // SegmentByName returns the first segment with the given name.
+// Name matching is case-insensitive (e.g. "pid-3" and "PID-3" both resolve PID).
 func (m *Message) SegmentByName(name string) (*Segment, int) {
+	if m == nil {
+		return nil, -1
+	}
+	want := strings.TrimSpace(name)
 	for i := range m.Segments {
-		if m.Segments[i].Name == name {
+		if strings.EqualFold(m.Segments[i].Name, want) {
 			return &m.Segments[i], i
 		}
 	}
@@ -167,17 +200,20 @@ func (m *Message) SegmentByName(name string) (*Segment, int) {
 
 // Get returns the value at HL7 location (e.g. "MSH-12", "PID-3(2).1").
 func (m *Message) Get(location string) string {
+	if m == nil {
+		return ""
+	}
 	segName, field, rep, comp, sub := parseLocation(location)
 	seg, _ := m.SegmentByName(segName)
 	if seg == nil {
 		return ""
 	}
-	return getFieldValue(seg, field, rep, comp, sub)
+	return getFieldValueDelimited(seg, field, rep, comp, sub, m.Delimiters)
 }
 
 // NthSegmentByName returns the n-th segment (1-based) with the given name, or nil.
 func (m *Message) NthSegmentByName(name string, n int) *Segment {
-	if n < 1 {
+	if m == nil || n < 1 {
 		return nil
 	}
 	want := strings.ToUpper(strings.TrimSpace(name))
@@ -195,6 +231,9 @@ func (m *Message) NthSegmentByName(name string, n int) *Segment {
 
 // SegmentInstanceCount returns how many segments with the given name appear in order.
 func (m *Message) SegmentInstanceCount(name string) int {
+	if m == nil {
+		return 0
+	}
 	want := strings.ToUpper(strings.TrimSpace(name))
 	n := 0
 	for i := range m.Segments {
@@ -209,6 +248,9 @@ func (m *Message) SegmentInstanceCount(name string) int {
 // instance is the instanceIdx1-th occurrence (1-based). If loc refers to another segment,
 // falls back to Get (first matching segment).
 func (m *Message) GetAtSegmentInstance(scopeSeg string, instanceIdx1 int, loc string) string {
+	if m == nil {
+		return ""
+	}
 	if strings.TrimSpace(scopeSeg) == "" {
 		return m.Get(loc)
 	}
@@ -221,7 +263,7 @@ func (m *Message) GetAtSegmentInstance(scopeSeg string, instanceIdx1 int, loc st
 		if seg == nil {
 			return ""
 		}
-		return getFieldValue(seg, field, rep, comp, sub)
+		return getFieldValueDelimited(seg, field, rep, comp, sub, m.Delimiters)
 	}
 	return m.Get(loc)
 }
@@ -235,10 +277,13 @@ func FieldValueOnSegment(seg *Segment, location string) string {
 	if segName == "" || !strings.EqualFold(segName, seg.Name) {
 		return ""
 	}
-	return getFieldValue(seg, field, rep, comp, sub)
+	return getFieldValueDelimited(seg, field, rep, comp, sub, Delimiters{})
 }
 
-func getFieldValue(seg *Segment, field, rep, comp, sub int) string {
+func getFieldValueDelimited(seg *Segment, field, rep, comp, sub int, d Delimiters) string {
+	if seg == nil {
+		return ""
+	}
 	f, ok := seg.FieldAt(field)
 	if !ok {
 		return ""
@@ -260,9 +305,9 @@ func getFieldValue(seg *Segment, field, rep, comp, sub int) string {
 				}
 				return sc.Value
 			}
-			return c.String()
+			return c.FormatWithDelimiters(d)
 		}
-		return r.String()
+		return r.FormatWithDelimiters(d)
 	}
 	if comp > 0 {
 		c, ok := f.ComponentAt(comp)
@@ -276,9 +321,9 @@ func getFieldValue(seg *Segment, field, rep, comp, sub int) string {
 			}
 			return sc.Value
 		}
-		return c.String()
+		return c.FormatWithDelimiters(d)
 	}
-	return f.String()
+	return f.FormatWithDelimiters(d)
 }
 
 // LocationParts parses an HL7 location (e.g. "MSH-12", "PID-3(2).1") into segment name and 1-based indices.

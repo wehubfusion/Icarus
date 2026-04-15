@@ -1504,6 +1504,9 @@ The Error processor is a control-flow node that intentionally emits an error ins
 - **default_error_message**: Fallback error message used when no runtime message is provided.
 - **message**: Optional input field populated via field mappings at runtime; when present and non-empty, it takes precedence over `default_error_message`.
 
+When neither `message` nor `default_error_message` is set, the runtime uses a default of the form:  
+`Error node "<label>" (plugin-error): no message was provided`, preferring the schema **label**, then the runtime node label, then the node id.
+
 **Behavior:**
 
 - The node always returns an error (no success data payload).

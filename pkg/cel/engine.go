@@ -113,9 +113,10 @@ func (e *Engine) EvaluateRules(rules []CompiledRule, iter ScopeIterator) ([]Viol
 			if ok {
 				continue
 			}
+			path := iter.ErrorPath(cr.Rule, i)
 			msg := strings.TrimSpace(cr.Rule.Message)
 			if msg == "" {
-				msg = "rule assertion failed"
+					msg = defaultAssertionFailureMessage(cr.Rule)
 			}
 			sev := strings.TrimSpace(cr.Rule.Severity)
 			if sev == "" {
@@ -124,13 +125,33 @@ func (e *Engine) EvaluateRules(rules []CompiledRule, iter ScopeIterator) ([]Viol
 			violations = append(violations, Violation{
 				RuleID:   cr.Rule.ID,
 				RuleName: cr.Rule.Name,
-				Path:     iter.ErrorPath(cr.Rule, i),
+				Path:     path,
 				Message:  msg,
 				Severity: sev,
 			})
 		}
 	}
 	return violations, evalErrs
+}
+
+// defaultAssertionFailureMessage builds a clear default when the rule omits "message".
+// It includes the rule display name, id, and optional HL7/error path.
+func defaultAssertionFailureMessage(rule InputRule) string {
+	name := strings.TrimSpace(rule.Name)
+	id := strings.TrimSpace(rule.ID)
+
+	var b strings.Builder
+	b.WriteString("Assertion failed for validation rule ")
+	switch {
+	case name != "":
+		fmt.Fprintf(&b, "%q", name)
+	case id != "":
+		fmt.Fprintf(&b, "(id: %s)", id)
+	default:
+		b.WriteString("(unknown rule)")
+	}
+	b.WriteByte('.')
+	return b.String()
 }
 
 func (e *Engine) evalBool(prg celgo.Program) (bool, error) {

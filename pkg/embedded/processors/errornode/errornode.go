@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/wehubfusion/Icarus/pkg/embedded/runtime"
 )
@@ -64,7 +65,7 @@ func (n *ErrorNode) Process(input runtime.ProcessInput) runtime.ProcessOutput {
 
 	message := resolveMessage(input.Data, cfg.DefaultErrorMessage)
 	if message == "" {
-		message = "Error node triggered without message"
+		message = fallbackErrorNodeMessage(cfg.Label, input.Label, input.NodeId)
 	}
 
 	baseErr := errors.New(message)
@@ -96,5 +97,21 @@ func resolveMessage(data map[string]interface{}, defaultErrorMessage string) str
 		return defaultErrorMessage
 	}
 	return ""
+}
+
+// fallbackErrorNodeMessage is used when neither input "message" nor default_error_message is set.
+// Prefer schema label, then runtime label, then node id so the error is attributable in UIs.
+func fallbackErrorNodeMessage(schemaLabel, runtimeLabel, nodeID string) string {
+	label := strings.TrimSpace(schemaLabel)
+	if label == "" {
+		label = strings.TrimSpace(runtimeLabel)
+	}
+	if label == "" {
+		label = strings.TrimSpace(nodeID)
+	}
+	if label == "" {
+		return "Error node (plugin-error): no message was provided"
+	}
+	return fmt.Sprintf("Error node %q (plugin-error): no message was provided", label)
 }
 
