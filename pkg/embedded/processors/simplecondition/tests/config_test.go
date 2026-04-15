@@ -118,6 +118,7 @@ func TestIsEmptyIsNotEmptyOperators(t *testing.T) {
 		simplecondition.DataTypeString,
 		simplecondition.DataTypeNumber,
 		simplecondition.DataTypeBoolean,
+		simplecondition.DataTypeEvent,
 	}
 	for _, op := range emptyOps {
 		for _, typ := range types {
