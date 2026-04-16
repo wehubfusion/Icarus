@@ -4,7 +4,6 @@ package argus
 
 import (
 	"context"
-	"sort"
 	"strings"
 
 	argusemitter "github.com/wehubfusion/Argus/pkg/emitter"
@@ -33,34 +32,16 @@ func parentLabelFromMessage(msg *message.Message) string {
 	return msg.Node.NodeID
 }
 
-// downstreamNeverRanEmbeddedIDs returns embedded node IDs that never ran because execution
-// stopped after failedNodeID (ordered by ExecutionOrder). No Argus events are emitted for these.
-func downstreamNeverRanEmbeddedIDs(nodes []message.EmbeddedNode, failedNodeID string) map[string]struct{} {
-	if len(nodes) == 0 || failedNodeID == "" {
-		return nil
+func embeddedNodeDepth(nodes []message.EmbeddedNode, nodeID string) (int, bool) {
+	if len(nodes) == 0 || nodeID == "" {
+		return 0, false
 	}
-	sorted := make([]message.EmbeddedNode, len(nodes))
-	copy(sorted, nodes)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].ExecutionOrder < sorted[j].ExecutionOrder
-	})
-	failedOrder := -1
-	for _, n := range sorted {
-		if n.NodeID == failedNodeID {
-			failedOrder = n.ExecutionOrder
-			break
+	for _, n := range nodes {
+		if n.NodeID == nodeID {
+			return n.Depth, true
 		}
 	}
-	if failedOrder < 0 {
-		return nil
-	}
-	out := make(map[string]struct{})
-	for _, n := range sorted {
-		if n.NodeID != "" && n.ExecutionOrder > failedOrder {
-			out[n.NodeID] = struct{}{}
-		}
-	}
-	return out
+	return 0, false
 }
 
 // NewProcessFailureObserver returns a runner.ProcessFailureObserver that emits Argus
@@ -129,61 +110,31 @@ func NewProcessFailureObserver(emitter argusemitter.NodeEndEmitter, logger *zap.
 			rootCause = errText
 		}
 
-		neverRan := downstreamNeverRanEmbeddedIDs(msg.EmbeddedNodes, failedEmbeddedID)
+		failedDepth, foundFailedDepth := embeddedNodeDepth(msg.EmbeddedNodes, failedEmbeddedID)
 		logger.Debug("runner process failure observer: metadata snapshot",
 			zap.String("workflow_id", workflowID),
 			zap.String("run_id", runID),
 			zap.String("parent_id", parentID),
 			zap.String("embed_failed_node_id", failedEmbeddedID),
 			zap.String("embed_root_cause", rootCause),
-			zap.Int("never_ran_downstream_count", len(neverRan)),
+			zap.Int("embed_failed_node_depth", failedDepth),
+			zap.Bool("embed_failed_node_depth_found", foundFailedDepth),
 			zap.Int("embedded_nodes_count", len(msg.EmbeddedNodes)),
 		)
 
-		// Structured embedded failure: parent already emitted success; failing node already got node.ended from subflow.
+		// Structured embedded failure:
+		// - Parent already emitted success.
+		// - Embedded subflow emits node.ended for all embedded nodes it processes (success or failure).
+		// - Subflow processes depths sequentially; when a node fails at depth D, no nodes at depth > D run.
+		// Therefore we must NOT re-emit node.ended for any embedded node here, otherwise we risk overwriting
+		// valid success statuses in Athena (success/failed have equal rank) and we may incorrectly mark
+		// downstream-never-ran nodes as failed.
 		if failedEmbeddedID != "" {
-			for _, en := range msg.EmbeddedNodes {
-				if en.NodeID == "" {
-					continue
-				}
-				lbl := en.Label
-				if lbl == "" {
-					lbl = en.NodeID
-				}
-				if en.NodeID == failedEmbeddedID {
-					continue
-				}
-				if _, ok := neverRan[en.NodeID]; ok {
-					// Never ran — do not emit node.ended (excluded from sync / observation list).
-					continue
-				}
-				logger.Warn("runner process failure: embedded node neither failed nor downstream-never-ran; emitting as failed",
+			if !foundFailedDepth {
+				logger.Warn("runner process failure: structured embedded failure missing failed node depth; skipping embedded node re-emission",
 					zap.String("workflow_id", workflowID),
 					zap.String("run_id", runID),
-					zap.String("node_id", en.NodeID),
 					zap.String("embed_failed_node_id", failedEmbeddedID))
-				errorOut := map[string]interface{}{
-					embeddedrt.ErrorOutputKeyError:       true,
-					embeddedrt.ErrorOutputKeyDescription: rootCause,
-				}
-				if err := emitter.EmitNodeEnd(ctx, argusemitter.NodeEndEmitParams{
-					ClientID:     clientID,
-					ProjectID:    projectID,
-					WorkflowID:   workflowID,
-					RunID:        runID,
-					NodeID:       en.NodeID,
-					Label:        lbl,
-					Output:       errorOut,
-					HasError:     true,
-					ErrorMessage: rootCause,
-				}); err != nil {
-					logger.Warn("runner process failure: embedded node.ended emit failed",
-						zap.String("workflow_id", workflowID),
-						zap.String("run_id", runID),
-						zap.String("node_id", en.NodeID),
-						zap.Error(err))
-					return err
-				}
 			}
 			return nil
 		}
