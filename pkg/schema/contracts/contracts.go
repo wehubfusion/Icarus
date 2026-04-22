@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-
 // SchemaFormat identifies the schema definition format (JSON, CSV, HL7).
 type SchemaFormat string
 

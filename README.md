@@ -1579,12 +1579,8 @@ result, err := engine.ProcessWithSchema(
     inputData,           // JSON data to process
     schemaDefinition,    // Schema definition (JSON)
     schema.ProcessOptions{
-        ApplyDefaults:  true,  // Apply default values from schema
-        ValidateData:   true,  // Validate data against schema
-        StructureData:  false, // Restructure data to match schema
-        TruncateFields: true,  // Remove fields not in schema
-        TruncateLevel:  0,     // Truncation depth (0 = all levels)
-        StrictMode:     false, // Strict validation mode
+        ApplyDefaults: true,  // Apply default values from schema
+        StructureData: false, // Restructure data to match schema
     },
 )
 
@@ -1627,9 +1623,8 @@ result, err := engine.ProcessCSVWithSchema(
   rows,
   csvSchema,
   schema.ProcessOptions{
-    ApplyDefaults:    true,  // fill missing defaults
-    StructureData:    true,  // drop columns not in schema
-    Mode:             schema.ValidationModeStrict,  // fail fast on validation errors
+    ApplyDefaults: true, // fill missing defaults
+    StructureData: true, // drop columns not in schema
   },
 )
 ```
@@ -1652,7 +1647,6 @@ result, err := engine.ProcessHL7WithSchema(
     []byte(hl7SchemaJSON), // HL7 schema definition (JSON)
     schema.ProcessOptions{
         CollectAllErrors: true,
-        Mode:             schema.ValidationModeNormal,
     },
 )
 if err != nil {

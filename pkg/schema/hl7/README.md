@@ -289,9 +289,9 @@ When a helper cannot complete (invalid regex, unparseable `toDTM`/`toNumber` inp
 | Option | Effect on HL7 |
 |--------|---------------|
 | `CollectAllErrors` | `true` = collect all issues; `false` = stop after the first error-severity issue |
-| `Mode` | `STRICT`, `NORMAL` (default), or `LENIENT` — controls severity bucketing |
+| `CodeSeverityOverrides` | Map of HL7 error code → desired severity; use `SeverityDrop` to suppress a code entirely |
 
-**STRICT and `Process` errors:** When `Mode` is `STRICT` and `ProcessResult.Valid` is `false` (any ERROR-severity issue), `Process` also returns a non-nil Go error (`StrictProcessError`) while still populating `Errors` / `Warnings` / `Infos`. Warnings alone (including `HL7_CUSTOM_RULE_RUNTIME_ERROR` at WARNING) do not set `Valid` to false.
+All error codes default to `SeverityError`. The processor always returns `(result, nil)` for validation outcomes — a non-nil Go error is only returned for system-level failures (e.g., unparseable message or schema). Check `result.Valid` and `result.Errors` for validation results.
 
 ---
 
@@ -306,11 +306,14 @@ result, err := engine.ProcessHL7WithSchema(
     schemaDefBytes,
     schema.ProcessOptions{
         CollectAllErrors: true,
-        Mode:             schema.ValidationModeNormal,
+        // Optionally override severity for specific codes:
+        // CodeSeverityOverrides: map[string]schema.Severity{
+        //     "HL7_EXTRA_FIELD": schema.SeverityWarning,
+        // },
     },
 )
 // result.Data is always the original rawHL7Bytes
-// result.Errors / Warnings / Infos are bucketed by mode
+// result.Errors / Warnings / Infos are bucketed by severity
 ```
 
 ### Direct package use

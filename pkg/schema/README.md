@@ -18,7 +18,6 @@ result, err := engine.ProcessCSVWithSchema(csvRowsJSON, csvSchemaDef, options)
 // HL7 (validation only; result.Data = original bytes)
 result, err := engine.ProcessHL7WithSchema(hl7MessageBytes, hl7SchemaDef, schema.ProcessOptions{
     CollectAllErrors: true,
-    Mode:             schema.ValidationModeNormal,
 })
 ```
 
@@ -28,7 +27,7 @@ HL7 results are severity-bucketed into three slices:
 - `ProcessResult.Warnings` — WARNING severity issues
 - `ProcessResult.Infos` — INFO severity issues
 
-The bucket a code lands in depends on `ProcessOptions.Mode` (STRICT / NORMAL / LENIENT). For HL7, see `pkg/schema/hl7/README.md` for the full mapping, including **`HL7_CUSTOM_RULE_RUNTIME_ERROR`** (defaults to WARNING when the rule omits severity; otherwise follows the rule).
+Each HL7 error code has a default severity (ERROR by default). Use `ProcessOptions.CodeSeverityOverrides` to override the severity for specific codes (including using `SeverityDrop` to suppress a code entirely). See `pkg/schema/hl7/README.md` for the full code list.
 
 ## Schema formats
 
@@ -57,7 +56,7 @@ The bucket a code lands in depends on `ProcessOptions.Mode` (STRICT / NORMAL / L
 | `ApplyDefaults` | ✓ | ✓ | — | Fill in default values from the schema |
 | `StructureData` | ✓ | ✓ | — | Reshape data to match schema structure; remove undeclared keys |
 | `CollectAllErrors` | ✓ | ✓ | ✓ | Collect every issue (true) or stop at the first error-severity issue (false) |
-| `Mode` | ✓ | ✓ | ✓ | `STRICT` / `NORMAL` / `LENIENT` — controls fail-on-invalid (STRICT) and, for HL7, severity bucketing (see `hl7/README.md`) |
+| `CodeSeverityOverrides` | — | — | ✓ | Override per-code severity for HL7 codes; use `SeverityDrop` to suppress a code entirely |
 
 ## ProcessResult
 
