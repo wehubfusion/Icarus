@@ -74,7 +74,7 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 		raw := []contracts.ValidationIssue{
 			{Path: "message", Message: err.Error(), Code: code},
 		}
-		errs, warns, infos := contracts.ApplyAndBucket(raw, opts.CodeSeverityOverrides)
+		errs, warns, infos := contracts.ApplyAndBucket(raw, hl7EffectiveOverrides(opts.CodeSeverityOverrides))
 		valid := len(errs) == 0
 		result := &contracts.ProcessResult{Valid: valid, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}
 		return result, nil
@@ -132,10 +132,27 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 	}
 
 	// ── phase 2: apply overrides and bucket ──────────────────────────────────
-	errs, warns, infos := contracts.ApplyAndBucket(raw, opts.CodeSeverityOverrides)
+	errs, warns, infos := contracts.ApplyAndBucket(raw, hl7EffectiveOverrides(opts.CodeSeverityOverrides))
 	valid := len(errs) == 0
 	result := &contracts.ProcessResult{Valid: valid, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}
 	return result, nil
+}
+
+// hl7EffectiveOverrides returns the override map to pass to ApplyAndBucket, merging
+// HL7-specific default severities that differ from the global ERROR default:
+//
+//   - HL7_CUSTOM_RULE_RUNTIME_ERROR defaults to WARNING: "rule engine could not run" is advisory,
+//     not a hard validation failure. Callers can still override this to ERROR or DROP.
+func hl7EffectiveOverrides(userOverrides map[string]contracts.Severity) map[string]contracts.Severity {
+	if _, ok := userOverrides["HL7_CUSTOM_RULE_RUNTIME_ERROR"]; ok {
+		return userOverrides
+	}
+	merged := make(map[string]contracts.Severity, len(userOverrides)+1)
+	for k, v := range userOverrides {
+		merged[k] = v
+	}
+	merged["HL7_CUSTOM_RULE_RUNTIME_ERROR"] = contracts.SeverityWarning
+	return merged
 }
 
 // celSeverity converts the string severity stored on a CEL Violation to the
