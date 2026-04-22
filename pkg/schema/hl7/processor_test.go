@@ -150,7 +150,7 @@ func TestHL7SchemaProcessor_Process_ValidMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5\rPID|||12345^^^NHS^NH||DOE^JOHN"
-	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{Mode: contracts.ValidationModeNormal, CollectAllErrors: true})
+	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{CollectAllErrors: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestHL7SchemaProcessor_Process_ValidMessage(t *testing.T) {
 	}
 }
 
-func TestHL7StrictValidation_ExtraField(t *testing.T) {
+func TestHL7CustomSeverity_ExtraFieldWarning(t *testing.T) {
 	proc := NewHL7SchemaProcessor()
 	hl7Schema := `{
 		"segments": [
@@ -181,7 +181,12 @@ func TestHL7StrictValidation_ExtraField(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ORU^R01|MSG001|P|2.5|EXTRA"
-	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{Mode: contracts.ValidationModeStrict, CollectAllErrors: true})
+	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{
+		CollectAllErrors: true,
+		CodeSeverityOverrides: map[string]contracts.Severity{
+			"HL7_EXTRA_FIELD": contracts.SeverityWarning,
+		},
+	})
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -203,10 +208,10 @@ func TestHL7SchemaProcessor_Process_InvalidMSH(t *testing.T) {
 	compiled, _ := proc.ParseSchema([]byte(hl7Schema))
 	result, err := proc.Process([]byte("PID|||123"), compiled, contracts.ProcessOptions{CollectAllErrors: true})
 	if err != nil {
-		t.Fatalf("process should return result: %v", err)
+		t.Fatalf("Process must never return a non-nil error; got: %v", err)
 	}
-	if result.Valid {
-		t.Fatal("expected invalid result")
+	if result == nil || result.Valid {
+		t.Fatalf("expected invalid result: result=%v", result)
 	}
 	var hasCode bool
 	for _, e := range result.Errors {
@@ -216,23 +221,7 @@ func TestHL7SchemaProcessor_Process_InvalidMSH(t *testing.T) {
 		}
 	}
 	if !hasCode {
-		t.Errorf("expected HL7_INVALID_MSH: %v", result.Errors)
-	}
-}
-
-func TestHL7StrictMode_InvalidMSH_ReturnsError(t *testing.T) {
-	proc := NewHL7SchemaProcessor()
-	hl7Schema := `{"segments": [{"name": "MSH", "usage": "R", "rpt": "1", "fields": []}]}`
-	compiled, _ := proc.ParseSchema([]byte(hl7Schema))
-	result, err := proc.Process([]byte("PID|||123"), compiled, contracts.ProcessOptions{
-		Mode:             contracts.ValidationModeStrict,
-		CollectAllErrors: true,
-	})
-	if err == nil {
-		t.Fatal("expected non-nil error in strict mode when message is invalid")
-	}
-	if result == nil || result.Valid {
-		t.Fatalf("expected invalid result payload alongside error: result=%v", result)
+		t.Errorf("expected HL7_INVALID_MSH in errors: %v", result.Errors)
 	}
 }
 
@@ -243,7 +232,7 @@ func TestHL7SchemaProcessor_Type(t *testing.T) {
 	}
 }
 
-func TestHL7StrictMode_CELRuntimeError_UsesRuleSeverity(t *testing.T) {
+func TestHL7CustomSeverity_CELRuntimeError_UsesRuleSeverity(t *testing.T) {
 	proc := NewHL7SchemaProcessor()
 	schemaDef := []byte(`{
 		"segments": [
@@ -277,11 +266,10 @@ func TestHL7StrictMode_CELRuntimeError_UsesRuleSeverity(t *testing.T) {
 	}
 	msg := []byte("MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.8\rPID|||12345^^^NHS^NH||DOE^JOHN")
 	result, err := proc.Process(msg, compiled, contracts.ProcessOptions{
-		Mode:             contracts.ValidationModeStrict,
 		CollectAllErrors: true,
 	})
-	if err == nil {
-		t.Fatal("expected non-nil error in strict mode when rule severity is ERROR and runtime error is present")
+	if err != nil {
+		t.Fatalf("expected nil process error; got: %v", err)
 	}
 	if result == nil {
 		t.Fatal("Process must return a non-nil result")
@@ -298,6 +286,70 @@ func TestHL7StrictMode_CELRuntimeError_UsesRuleSeverity(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected HL7_CUSTOM_RULE_RUNTIME_ERROR in Errors, got errors=%v warnings=%v", result.Errors, result.Warnings)
+	}
+}
+
+func TestHL7CustomSeverity_InvalidMSH_DroppedIsValid(t *testing.T) {
+	proc := NewHL7SchemaProcessor()
+	hl7Schema := `{"segments": [{"name": "MSH", "usage": "R", "rpt": "1", "fields": []}]}`
+	compiled, _ := proc.ParseSchema([]byte(hl7Schema))
+	result, err := proc.Process([]byte("PID|||123"), compiled, contracts.ProcessOptions{
+		CollectAllErrors: true,
+		CodeSeverityOverrides: map[string]contracts.Severity{
+			"HL7_INVALID_MSH": contracts.Severity("DROP"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Process must never return a non-nil error; got: %v", err)
+	}
+	if result == nil || !result.Valid {
+		t.Fatalf("expected valid:true when only issue is dropped; result=%v", result)
+	}
+	for _, e := range append(append([]contracts.ValidationIssue{}, result.Errors...), append(result.Warnings, result.Infos...)...) {
+		if e.Code == "HL7_INVALID_MSH" {
+			t.Fatalf("expected HL7_INVALID_MSH to be dropped; got %+v", e)
+		}
+	}
+}
+
+func TestHL7CustomSeverity_DropSkipsIssue(t *testing.T) {
+	proc := NewHL7SchemaProcessor()
+	hl7Schema := `{
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": [
+				{"position": "MSH.1", "dataType": "ST", "usage": "R"},
+				{"position": "MSH.2", "dataType": "ST", "usage": "R"},
+				{"position": "MSH.3", "dataType": "ST", "usage": "O"},
+				{"position": "MSH.4", "dataType": "ST", "usage": "O"},
+				{"position": "MSH.5", "dataType": "ST", "usage": "O"},
+				{"position": "MSH.6", "dataType": "ST", "usage": "O"},
+				{"position": "MSH.7", "dataType": "ST", "usage": "O"},
+				{"position": "MSH.8", "dataType": "ST", "usage": "O"},
+				{"position": "MSH.9", "dataType": "ST", "usage": "R"}
+			]}
+		]
+	}`
+	compiled, err := proc.ParseSchema([]byte(hl7Schema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ORU^R01|MSG001|P|2.5|EXTRA"
+	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{
+		CollectAllErrors: true,
+		CodeSeverityOverrides: map[string]contracts.Severity{
+			"HL7_EXTRA_FIELD": contracts.Severity("DROP"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid:true when only dropped issue exists; errors=%v warnings=%v infos=%v", result.Errors, result.Warnings, result.Infos)
+	}
+	for _, e := range append(append([]contracts.ValidationIssue{}, result.Errors...), append(result.Warnings, result.Infos...)...) {
+		if e.Code == "HL7_EXTRA_FIELD" {
+			t.Fatalf("expected HL7_EXTRA_FIELD to be dropped; got %+v", e)
+		}
 	}
 }
 
@@ -361,4 +413,69 @@ func TestVersionsMatch(t *testing.T) {
 			t.Errorf("versionsMatch(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
 		}
 	}
+}
+
+// TestStrictMode_ReturnsErrorOnInvalid verifies that Mode=STRICT makes the HL7 processor
+// return a non-nil Go error (in addition to a populated ProcessResult) when the message
+// is invalid — consistent with the JSON and CSV processor behavior.
+func TestStrictMode_ReturnsErrorOnInvalid(t *testing.T) {
+	proc := NewHL7SchemaProcessor()
+	hl7Schema := `{
+		"segments": [
+			{"name": "MSH", "usage": "R", "rpt": "1", "fields": [
+				{"position": "MSH-9", "dataType": "ST", "usage": "R"}
+			]},
+			{"name": "PID", "usage": "R", "rpt": "1", "fields": [
+				{"position": "PID-3", "dataType": "CX", "usage": "R"}
+			]}
+		]
+	}`
+	compiled, err := proc.ParseSchema([]byte(hl7Schema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Message is missing required PID segment — should produce errors.
+	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5"
+
+	t.Run("NORMAL mode returns nil error even when invalid", func(t *testing.T) {
+		result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{
+			Mode:             contracts.ValidationModeNormal,
+			CollectAllErrors: true,
+		})
+		if err != nil {
+			t.Errorf("NORMAL mode: expected nil error, got: %v", err)
+		}
+		if result == nil {
+			t.Fatal("expected non-nil result")
+		}
+		if result.Valid {
+			t.Error("expected invalid result")
+		}
+	})
+
+	t.Run("STRICT mode returns non-nil error when invalid", func(t *testing.T) {
+		result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{
+			Mode:             contracts.ValidationModeStrict,
+			CollectAllErrors: true,
+		})
+		if err == nil {
+			t.Error("STRICT mode: expected non-nil error for invalid message, got nil")
+		}
+		if result == nil {
+			t.Error("STRICT mode: expected populated ProcessResult alongside the error")
+		}
+	})
+
+	t.Run("STRICT mode returns nil error when valid", func(t *testing.T) {
+		validMsg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5\rPID|||12345^^^NHS^NH"
+		result, err := proc.Process([]byte(validMsg), compiled, contracts.ProcessOptions{
+			Mode: contracts.ValidationModeStrict,
+		})
+		if err != nil {
+			t.Errorf("STRICT mode with valid message: expected nil error, got: %v", err)
+		}
+		if result == nil || !result.Valid {
+			t.Error("expected valid result")
+		}
+	})
 }
