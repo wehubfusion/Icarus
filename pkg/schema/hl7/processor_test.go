@@ -150,7 +150,10 @@ func TestHL7SchemaProcessor_Process_ValidMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5\rPID|||12345^^^NHS^NH||DOE^JOHN"
-	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{CollectAllErrors: true})
+	result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{
+		CollectAllErrors:      true,
+		CodeSeverityOverrides: map[string]contracts.Severity{"HL7_EXTRA_FIELD": contracts.SeverityWarning},
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -415,10 +418,10 @@ func TestVersionsMatch(t *testing.T) {
 	}
 }
 
-// TestStrictMode_ReturnsErrorOnInvalid verifies that Mode=STRICT makes the HL7 processor
-// return a non-nil Go error (in addition to a populated ProcessResult) when the message
-// is invalid — consistent with the JSON and CSV processor behavior.
-func TestStrictMode_ReturnsErrorOnInvalid(t *testing.T) {
+// TestProcessorReturnsBehavior verifies that the HL7 processor always returns
+// (result, nil) — invalid messages produce result.Valid=false with populated
+// Errors; system errors produce (nil, err).
+func TestProcessorReturnsBehavior(t *testing.T) {
 	proc := NewHL7SchemaProcessor()
 	hl7Schema := `{
 		"segments": [
@@ -434,48 +437,34 @@ func TestStrictMode_ReturnsErrorOnInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Message is missing required PID segment — should produce errors.
-	msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5"
 
-	t.Run("NORMAL mode returns nil error even when invalid", func(t *testing.T) {
-		result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{
-			Mode:             contracts.ValidationModeNormal,
-			CollectAllErrors: true,
-		})
+	t.Run("invalid message returns nil error and valid=false", func(t *testing.T) {
+		msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5"
+		result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{CollectAllErrors: true})
 		if err != nil {
-			t.Errorf("NORMAL mode: expected nil error, got: %v", err)
+			t.Errorf("expected nil error for validation failure, got: %v", err)
 		}
 		if result == nil {
 			t.Fatal("expected non-nil result")
 		}
 		if result.Valid {
-			t.Error("expected invalid result")
+			t.Error("expected valid=false for missing PID segment")
+		}
+		if len(result.Errors) == 0 {
+			t.Error("expected at least one error")
 		}
 	})
 
-	t.Run("STRICT mode returns non-nil error when invalid", func(t *testing.T) {
+	t.Run("valid message returns nil error and valid=true", func(t *testing.T) {
+		msg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5\rPID|||12345^^^NHS^NH"
 		result, err := proc.Process([]byte(msg), compiled, contracts.ProcessOptions{
-			Mode:             contracts.ValidationModeStrict,
-			CollectAllErrors: true,
-		})
-		if err == nil {
-			t.Error("STRICT mode: expected non-nil error for invalid message, got nil")
-		}
-		if result == nil {
-			t.Error("STRICT mode: expected populated ProcessResult alongside the error")
-		}
-	})
-
-	t.Run("STRICT mode returns nil error when valid", func(t *testing.T) {
-		validMsg := "MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5\rPID|||12345^^^NHS^NH"
-		result, err := proc.Process([]byte(validMsg), compiled, contracts.ProcessOptions{
-			Mode: contracts.ValidationModeStrict,
+			CodeSeverityOverrides: map[string]contracts.Severity{"HL7_EXTRA_FIELD": contracts.SeverityWarning},
 		})
 		if err != nil {
-			t.Errorf("STRICT mode with valid message: expected nil error, got: %v", err)
+			t.Errorf("expected nil error for valid message, got: %v", err)
 		}
 		if result == nil || !result.Valid {
-			t.Error("expected valid result")
+			t.Errorf("expected valid result, got errors: %v", result.Errors)
 		}
 	})
 }

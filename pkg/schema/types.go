@@ -47,7 +47,6 @@ const (
 type (
 	SchemaFormat     = contracts.SchemaFormat
 	Severity         = contracts.Severity
-	ValidationMode   = contracts.ValidationMode
 	ValidationIssue  = contracts.ValidationIssue
 	ValidationError  = contracts.ValidationError
 	ValidationResult = contracts.ValidationResult
@@ -59,12 +58,6 @@ const (
 	FormatJSON = contracts.FormatJSON
 	FormatCSV  = contracts.FormatCSV
 	FormatHL7  = contracts.FormatHL7
-)
-
-const (
-	ValidationModeStrict  = contracts.ValidationModeStrict
-	ValidationModeNormal  = contracts.ValidationModeNormal
-	ValidationModeLenient = contracts.ValidationModeLenient
 )
 
 const (

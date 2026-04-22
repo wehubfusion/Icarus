@@ -77,7 +77,7 @@ func (p *JSONSchemaProcessor) Process(inputData []byte, cs contracts.CompiledSch
 		Warnings:  warns,
 		Infos:     infos,
 	}
-	return result, contracts.StrictProcessError(result, contracts.EffectiveMode(options))
+	return result, nil
 }
 
 // compiledJSONSchema holds a parsed JSON schema.

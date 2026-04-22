@@ -22,7 +22,6 @@ func main() {
 	jsonRes, err := engine.ProcessWithSchema(jsonInput, jsonSchema, schema.ProcessOptions{
 		ApplyDefaults:    true,
 		StructureData:    true,
-		Mode:             schema.ValidationModeStrict,
 		CollectAllErrors: true,
 	})
 	if err != nil {
@@ -43,7 +42,6 @@ func main() {
 		{"Name":"Carol","Age":"not-a-number"}
 	]`)
 	csvRes, err := engine.ProcessCSVWithSchema(csvRows, csvSchema, schema.ProcessOptions{
-		Mode:             schema.ValidationModeNormal,
 		CollectAllErrors: true,
 	})
 	if err != nil {
@@ -75,11 +73,9 @@ func main() {
 	msg := []byte("MSH|^~\\&|SEND|FAC|RECV|FAC|20250305120000||ADT^A01|MSG001|P|2.5\rPID|||12345^^^NHS^NH|EXTRA")
 
 	res, err := engine.ProcessHL7WithSchema(msg, hl7Schema, schema.ProcessOptions{
-		Mode:             schema.ValidationModeNormal,
 		CollectAllErrors: true,
 	})
 	if err != nil {
-		// In NORMAL/LENIENT, many findings are non-fatal; err is typically nil.
 		fmt.Fprintf(os.Stderr, "process returned error: %v\n", err)
 	}
 

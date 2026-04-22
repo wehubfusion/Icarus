@@ -58,37 +58,16 @@ func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) ru
 		))
 	}
 
-	mode := schema.ValidationModeNormal
-	if cfg.GetStrictValidation() {
-		mode = schema.ValidationModeStrict
-	}
-
 	// Process with schema (no defaults on produce, structure and validate)
 	result, err := engine.ProcessWithSchema(
 		dataToProcess,
 		cfg.Schema,
 		schema.ProcessOptions{
-			ApplyDefaults: false, // Never apply defaults on produce
+			ApplyDefaults: false,
 			StructureData: cfg.GetStructureData(),
-			Mode:          mode,
 		},
 	)
 	if err != nil {
-		// In strict mode, the schema engine returns a non-nil error when validation fails.
-		// Preserve the jsonops behavior by surfacing this as a ValidationError (not a generic ProcessingError).
-		if result != nil && !result.Valid && cfg.GetStrictValidation() {
-			errorMessages := make([]string, len(result.Errors))
-			for i, ve := range result.Errors {
-				errorMessages[i] = fmt.Sprintf("%s: %s", ve.Path, ve.Message)
-			}
-			return runtime.ErrorOutput(NewValidationError(
-				n.NodeId(),
-				"produce",
-				"validation failed",
-				input.ItemIndex,
-				errorMessages,
-			))
-		}
 		return runtime.ErrorOutput(NewProcessingError(
 			n.NodeId(),
 			"produce",
@@ -98,7 +77,6 @@ func (n *JsonOpsNode) executeProduce(input runtime.ProcessInput, cfg *Config) ru
 		))
 	}
 
-	// When strict_validation is enabled, surface any validation failures as errors.
 	if !result.Valid && cfg.GetStrictValidation() {
 		errorMessages := make([]string, len(result.Errors))
 		for i, e := range result.Errors {

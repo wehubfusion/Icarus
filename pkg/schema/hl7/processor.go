@@ -9,7 +9,6 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/schema/hl7/datatypes"
 )
 
-
 // HL7SchemaProcessor implements SchemaProcessor for HL7 v2.x messages.
 type HL7SchemaProcessor struct{}
 
@@ -78,7 +77,7 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 		errs, warns, infos := contracts.ApplyAndBucket(raw, opts.CodeSeverityOverrides)
 		valid := len(errs) == 0
 		result := &contracts.ProcessResult{Valid: valid, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}
-		return result, contracts.StrictProcessError(result, contracts.EffectiveMode(opts))
+		return result, nil
 	}
 
 	// ── phase 1: collect all raw issues ─────────────────────────────────────
@@ -136,7 +135,7 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 	errs, warns, infos := contracts.ApplyAndBucket(raw, opts.CodeSeverityOverrides)
 	valid := len(errs) == 0
 	result := &contracts.ProcessResult{Valid: valid, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}
-	return result, contracts.StrictProcessError(result, contracts.EffectiveMode(opts))
+	return result, nil
 }
 
 // celSeverity converts the string severity stored on a CEL Violation to the

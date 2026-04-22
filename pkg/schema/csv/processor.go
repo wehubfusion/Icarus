@@ -75,7 +75,7 @@ func (p *CSVSchemaProcessor) Process(inputData []byte, cs contracts.CompiledSche
 		Warnings: warns,
 		Infos:    infos,
 	}
-	return result, contracts.StrictProcessError(result, contracts.EffectiveMode(options))
+	return result, nil
 }
 
 // compiledCSVSchema holds a parsed CSV schema.

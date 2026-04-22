@@ -5,6 +5,7 @@ import (
 	"strings"
 )
 
+
 // SchemaFormat identifies the schema definition format (JSON, CSV, HL7).
 type SchemaFormat string
 
@@ -21,14 +22,6 @@ const (
 	SeverityWarning Severity = "WARNING"
 	SeverityInfo    Severity = "INFO"
 	SeverityDrop    Severity = "DROP"
-)
-
-type ValidationMode string
-
-const (
-	ValidationModeStrict  ValidationMode = "STRICT"
-	ValidationModeNormal  ValidationMode = "NORMAL"
-	ValidationModeLenient ValidationMode = "LENIENT"
 )
 
 // ValidationIssue represents a single validation finding (error, warning, or info).
@@ -71,47 +64,10 @@ func (r *ValidationResult) ErrorMessage() string {
 	return msg
 }
 
-// EffectiveMode returns opts.Mode when it is STRICT, NORMAL, or LENIENT; otherwise NORMAL.
-func EffectiveMode(opts ProcessOptions) ValidationMode {
-	if opts.Mode != "" {
-		m := ValidationMode(strings.ToUpper(strings.TrimSpace(string(opts.Mode))))
-		switch m {
-		case ValidationModeStrict, ValidationModeNormal, ValidationModeLenient:
-			return m
-		}
-	}
-	return ValidationModeNormal
-}
-
-// StrictProcessError returns a non-nil error when mode is STRICT and the result is invalid
-// (Valid is false). The populated ProcessResult is still returned alongside this error.
-func StrictProcessError(result *ProcessResult, mode ValidationMode) error {
-	if mode != ValidationModeStrict || result == nil || result.Valid {
-		return nil
-	}
-	vr := &ValidationResult{Valid: false, Errors: result.Errors}
-	msg := vr.ErrorMessage()
-	if msg == "" {
-		msg = "schema validation failed"
-	}
-	nw, ni := len(result.Warnings), len(result.Infos)
-	if nw > 0 || ni > 0 {
-		msg = fmt.Sprintf("%s (also %d warning(s), %d info finding(s))", msg, nw, ni)
-	}
-	return fmt.Errorf("%s", msg)
-}
-
 // ProcessOptions controls schema processing behavior.
-//
-// All fields are respected by every processor unless noted otherwise:
 //
 //   - CollectAllErrors: when false (default) processing stops at the first error;
 //     when true every issue is gathered before returning.
-//
-//   - Mode: controls fail-on-invalid behavior for every processor.
-//     ValidationModeStrict returns a non-nil Go error (via StrictProcessError) when
-//     valid == false, in addition to the populated ProcessResult.
-//     ValidationModeNormal / ValidationModeLenient always return err == nil.
 //
 //   - CodeSeverityOverrides: maps validation error codes to explicit severities
 //     (ERROR / WARNING / INFO / DROP). Respected by all processors — codes are
@@ -128,7 +84,6 @@ func StrictProcessError(result *ProcessResult, mode ValidationMode) error {
 //     transformation pipeline (e.g. HL7).
 type ProcessOptions struct {
 	CollectAllErrors      bool
-	Mode                  ValidationMode
 	CodeSeverityOverrides map[string]Severity
 	ApplyDefaults         bool
 	StructureData         bool
@@ -137,9 +92,9 @@ type ProcessOptions struct {
 // ProcessResult contains the result of schema processing.
 //
 // Valid is false when Errors contains at least one issue (ERROR severity).
-// Warnings and infos do not affect Valid. For HL7, HL7_CUSTOM_RULE_RUNTIME_ERROR
-// defaults to WARNING when a rule omits severity; if the rule sets severity to ERROR,
-// the issue is an error and affects Valid.
+// Warnings and Infos never affect Valid — they are informational only.
+// Every ValidationIssue in all three slices has its Severity field populated
+// by ApplyAndBucket before being placed in the result.
 type ProcessResult struct {
 	Valid    bool              `json:"valid"`
 	Data     []byte            `json:"data"`

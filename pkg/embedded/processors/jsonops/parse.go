@@ -71,11 +71,6 @@ func (n *JsonOpsNode) executeParse(input runtime.ProcessInput, cfg *Config) runt
 	// Create schema engine
 	engine := schema.NewEngine()
 
-	mode := schema.ValidationModeNormal
-	if cfg.GetStrictValidation() {
-		mode = schema.ValidationModeStrict
-	}
-
 	// Process with schema
 	result, err := engine.ProcessWithSchema(
 		dataToValidate,
@@ -83,25 +78,9 @@ func (n *JsonOpsNode) executeParse(input runtime.ProcessInput, cfg *Config) runt
 		schema.ProcessOptions{
 			ApplyDefaults: cfg.GetApplyDefaults(),
 			StructureData: cfg.GetStructureData(),
-			Mode:          mode,
 		},
 	)
 	if err != nil {
-		// In strict mode, the schema engine returns a non-nil error when validation fails.
-		// Preserve the jsonops behavior by surfacing this as a ValidationError (not a generic ProcessingError).
-		if result != nil && !result.Valid && cfg.GetStrictValidation() {
-			errorMessages := make([]string, len(result.Errors))
-			for i, ve := range result.Errors {
-				errorMessages[i] = fmt.Sprintf("%s: %s", ve.Path, ve.Message)
-			}
-			return runtime.ErrorOutput(NewValidationError(
-				n.NodeId(),
-				"parse",
-				"validation failed",
-				input.ItemIndex,
-				errorMessages,
-			))
-		}
 		return runtime.ErrorOutput(NewProcessingError(
 			n.NodeId(),
 			"parse",
@@ -111,12 +90,10 @@ func (n *JsonOpsNode) executeParse(input runtime.ProcessInput, cfg *Config) runt
 		))
 	}
 
-	// Check validation result
 	if !result.Valid && cfg.GetStrictValidation() {
-		// Convert schema.ValidationError to strings
 		errorMessages := make([]string, len(result.Errors))
-		for i, err := range result.Errors {
-			errorMessages[i] = fmt.Sprintf("%s: %s", err.Path, err.Message)
+		for i, e := range result.Errors {
+			errorMessages[i] = fmt.Sprintf("%s: %s", e.Path, e.Message)
 		}
 		return runtime.ErrorOutput(NewValidationError(
 			n.NodeId(),
