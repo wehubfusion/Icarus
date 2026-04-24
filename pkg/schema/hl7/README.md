@@ -164,30 +164,39 @@ The `tableId` field is parsed and stored but not validated — terminology/value
 
 ---
 
-## Severity by mode
+## Default severities
 
-`STRICT` promotes several structural / field HL7 codes from WARNING to ERROR so unexpected segments, length, version mismatch, etc. surface as hard failures. **`HL7_CUSTOM_RULE_RUNTIME_ERROR`** uses the rule’s configured severity (default WARNING when omitted); it is not part of that structural promotion table.
+All codes default to `SeverityError` unless noted below. Use `ProcessOptions.CodeSeverityOverrides` to change the severity of any code for a specific deployment:
 
-| Code | STRICT | NORMAL | LENIENT |
-|------|--------|--------|---------|
-| HL7_EMPTY_MESSAGE | ERROR | ERROR | ERROR |
-| HL7_INVALID_MSH | ERROR | ERROR | ERROR |
-| HL7_INVALID_SCHEMA | ERROR | ERROR | ERROR |
-| HL7_INVALID_MESSAGE | ERROR | ERROR | ERROR |
-| HL7_MISSING_REQUIRED | ERROR | ERROR | WARNING |
-| HL7_MESSAGE_TYPE_MISMATCH | ERROR | ERROR | WARNING |
-| HL7_REPETITION_VIOLATION | ERROR | ERROR | WARNING |
-| HL7_DATATYPE | ERROR | ERROR | WARNING |
-| HL7_VERSION_MISMATCH | ERROR | WARNING | INFO |
-| HL7_REQUIRED | ERROR | WARNING | INFO |
-| HL7_NOT_USED | ERROR | WARNING | WARNING |
-| HL7_LENGTH | ERROR | WARNING | INFO |
-| HL7_UNEXPECTED_SEGMENT | ERROR | WARNING | INFO |
-| HL7_EXTRA_FIELD | WARNING | INFO | INFO |
-| HL7_EXTRA_COMPONENT | WARNING | INFO | INFO |
-| HL7_EXTRA_SUBCOMPONENT | WARNING | INFO | INFO |
-| HL7_CUSTOM_RULE_VIOLATION | per rule severity | per rule severity | per rule severity |
-| HL7_CUSTOM_RULE_RUNTIME_ERROR | per rule severity (default WARNING) | per rule severity (default WARNING) | per rule severity (default WARNING) |
+```go
+schema.ProcessOptions{
+    CodeSeverityOverrides: map[string]schema.Severity{
+        "HL7_EXTRA_FIELD":      schema.SeverityWarning, // treat extra fields as soft warning
+        "HL7_VERSION_MISMATCH": schema.SeverityWarning, // version differences are advisory
+        "HL7_LENGTH":           schema.SeverityDrop,    // suppress length checks entirely
+    },
+}
+```
+
+| Code | Default | Notes |
+|------|---------|-------|
+| `HL7_EMPTY_MESSAGE` | ERROR | Completely empty input |
+| `HL7_INVALID_MSH` | ERROR | Missing or malformed MSH segment |
+| `HL7_INVALID_MESSAGE` | ERROR | nil message passed to matcher |
+| `HL7_MISSING_REQUIRED` | ERROR | Required segment or field absent |
+| `HL7_REQUIRED` | ERROR | Required field present but empty |
+| `HL7_MESSAGE_TYPE_MISMATCH` | ERROR | MSH-9 does not match schema `messageType` |
+| `HL7_VERSION_MISMATCH` | ERROR | MSH-12 does not match schema `version` |
+| `HL7_REPETITION_VIOLATION` | ERROR | Segment or field exceeds `rpt` limit |
+| `HL7_NOT_USED` | ERROR | Value present in an X/W (not-used) field |
+| `HL7_DATATYPE` | ERROR | Value fails datatype format or range check |
+| `HL7_LENGTH` | ERROR | Wire field length exceeds schema `length` |
+| `HL7_UNEXPECTED_SEGMENT` | ERROR | Segment present but not in the schema at that position |
+| `HL7_EXTRA_FIELD` | ERROR | Segment has more fields than the schema defines |
+| `HL7_EXTRA_COMPONENT` | ERROR | Field has more components than the datatype allows |
+| `HL7_EXTRA_SUBCOMPONENT` | ERROR | Component has more subcomponents than the datatype allows |
+| `HL7_CUSTOM_RULE_VIOLATION` | per rule `severity` (default ERROR) | Rule ran and the check failed |
+| `HL7_CUSTOM_RULE_RUNTIME_ERROR` | per rule `severity` (**default WARNING**) | Rule could not complete (e.g. invalid regex, bad `toDTM` input); advisory by default |
 
 ---
 
@@ -289,9 +298,9 @@ When a helper cannot complete (invalid regex, unparseable `toDTM`/`toNumber` inp
 | Option | Effect on HL7 |
 |--------|---------------|
 | `CollectAllErrors` | `true` = collect all issues; `false` = stop after the first error-severity issue |
-| `Mode` | `STRICT`, `NORMAL` (default), or `LENIENT` — controls severity bucketing |
+| `CodeSeverityOverrides` | Map of HL7 error code → desired severity; use `SeverityDrop` to suppress a code entirely |
 
-**STRICT and `Process` errors:** When `Mode` is `STRICT` and `ProcessResult.Valid` is `false` (any ERROR-severity issue), `Process` also returns a non-nil Go error (`StrictProcessError`) while still populating `Errors` / `Warnings` / `Infos`. Warnings alone (including `HL7_CUSTOM_RULE_RUNTIME_ERROR` at WARNING) do not set `Valid` to false.
+All error codes default to `SeverityError`. The processor always returns `(result, nil)` for validation outcomes — a non-nil Go error is only returned for system-level failures (e.g., unparseable message or schema). Check `result.Valid` and `result.Errors` for validation results.
 
 ---
 
@@ -306,11 +315,14 @@ result, err := engine.ProcessHL7WithSchema(
     schemaDefBytes,
     schema.ProcessOptions{
         CollectAllErrors: true,
-        Mode:             schema.ValidationModeNormal,
+        // Optionally override severity for specific codes:
+        // CodeSeverityOverrides: map[string]schema.Severity{
+        //     "HL7_EXTRA_FIELD": schema.SeverityWarning,
+        // },
     },
 )
 // result.Data is always the original rawHL7Bytes
-// result.Errors / Warnings / Infos are bucketed by mode
+// result.Errors / Warnings / Infos are bucketed by severity
 ```
 
 ### Direct package use

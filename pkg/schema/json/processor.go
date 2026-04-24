@@ -69,13 +69,15 @@ func (p *JSONSchemaProcessor) Process(inputData []byte, cs contracts.CompiledSch
 		return nil, fmt.Errorf("failed to marshal output: %w", err)
 	}
 
-	mode := contracts.EffectiveMode(options)
+	errs, warns, infos := contracts.ApplyAndBucket(validationResult.Errors, options.CodeSeverityOverrides)
 	result := &contracts.ProcessResult{
-		Valid:  validationResult.Valid,
-		Data:   outputData,
-		Errors: validationResult.Errors,
+		Valid:     len(errs) == 0,
+		Data:      outputData,
+		Errors:    errs,
+		Warnings:  warns,
+		Infos:     infos,
 	}
-	return result, contracts.StrictProcessError(result, mode)
+	return result, nil
 }
 
 // compiledJSONSchema holds a parsed JSON schema.

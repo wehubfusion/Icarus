@@ -248,38 +248,27 @@ func (n *JSRunnerNode) validateInput(input runtime.ProcessInput, cfg *Config) (m
 	// Create schema engine
 	engine := schema.NewEngine()
 
-	mode := schema.ValidationModeNormal
-	if cfg.GetStrictValidation() {
-		mode = schema.ValidationModeStrict
-	}
-
 	// Process with schema (structure and validate)
 	schemaResult, err := engine.ProcessWithSchema(
 		inputJSON,
 		schemaJSON,
 		schema.ProcessOptions{
-			ApplyDefaults:    cfg.ApplySchemaDefaults,
-			StructureData:    cfg.StructureData,
-			Mode:             mode,
+			ApplyDefaults: cfg.ApplySchemaDefaults,
+			StructureData: cfg.StructureData,
 		},
 	)
 	if err != nil {
 		return nil, NewExecutionError(n.NodeId(), "input schema processing failed", input.ItemIndex, 0, 0, err)
 	}
-
-	// Check validation result
-	if !schemaResult.Valid {
+	if !schemaResult.Valid && cfg.GetStrictValidation() {
 		errorMessages := make([]string, len(schemaResult.Errors))
-		for i, err := range schemaResult.Errors {
-			errorMessages[i] = fmt.Sprintf("%s: %s", err.Path, err.Message)
+		for i, e := range schemaResult.Errors {
+			errorMessages[i] = fmt.Sprintf("%s: %s", e.Path, e.Message)
 		}
 		return nil, NewExecutionError(
 			n.NodeId(),
 			fmt.Sprintf("input validation failed: %v", errorMessages),
-			input.ItemIndex,
-			0,
-			0,
-			nil,
+			input.ItemIndex, 0, 0, nil,
 		)
 	}
 
@@ -326,38 +315,27 @@ func (n *JSRunnerNode) validateOutput(result map[string]interface{}, cfg *Config
 	// Create schema engine
 	engine := schema.NewEngine()
 
-	mode := schema.ValidationModeNormal
-	if cfg.GetStrictValidation() {
-		mode = schema.ValidationModeStrict
-	}
-
 	// Process with schema (structure and validate)
 	schemaResult, err := engine.ProcessWithSchema(
 		resultJSON,
 		schemaJSON,
 		schema.ProcessOptions{
-			ApplyDefaults:    cfg.ApplySchemaDefaults,
-			StructureData:    cfg.StructureData,
-			Mode:             mode,
+			ApplyDefaults: cfg.ApplySchemaDefaults,
+			StructureData: cfg.StructureData,
 		},
 	)
 	if err != nil {
-		return nil, NewExecutionError(n.NodeId(), "schema processing failed", itemIndex, 0, 0, err)
+		return nil, NewExecutionError(n.NodeId(), "output schema processing failed", itemIndex, 0, 0, err)
 	}
-
-	// Check validation result
-	if !schemaResult.Valid {
+	if !schemaResult.Valid && cfg.GetStrictValidation() {
 		errorMessages := make([]string, len(schemaResult.Errors))
-		for i, err := range schemaResult.Errors {
-			errorMessages[i] = fmt.Sprintf("%s: %s", err.Path, err.Message)
+		for i, e := range schemaResult.Errors {
+			errorMessages[i] = fmt.Sprintf("%s: %s", e.Path, e.Message)
 		}
 		return nil, NewExecutionError(
 			n.NodeId(),
-			fmt.Sprintf("validation failed: %v", errorMessages),
-			itemIndex,
-			0,
-			0,
-			nil,
+			fmt.Sprintf("output validation failed: %v", errorMessages),
+			itemIndex, 0, 0, nil,
 		)
 	}
 

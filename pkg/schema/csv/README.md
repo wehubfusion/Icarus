@@ -64,6 +64,18 @@ rows, _ = csv.ApplyCSVDefaults(rows, s)
 rows, _ = csv.StructureCSVRows(rows, s)
 ```
 
+## Severity overrides
+
+CSV validation delegates to the JSON validator, so validation codes are the same as those in `json.KnownErrorCodes` (e.g. `REQUIRED`, `TYPE_MISMATCH`). Pass `ProcessOptions.CodeSeverityOverrides` to remap any code:
+
+```go
+engine.ProcessCSVWithSchema(inputJSON, schemaDef, schema.ProcessOptions{
+    CodeSeverityOverrides: map[string]schema.Severity{
+        "REQUIRED": schema.SeverityWarning,
+    },
+})
+```
+
 ## Files
 
 | File           | Purpose                                    |

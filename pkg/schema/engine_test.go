@@ -110,7 +110,7 @@ func TestValidateHL7Only_InvalidMessage_MissingRequiredSegment(t *testing.T) {
 }
 
 func TestValidateHL7Only_InvalidMessage_RequiredFieldEmpty(t *testing.T) {
-	schema := []byte(`{
+	schemaBytes := []byte(`{
 		"segments": [
 			{"name": "MSH", "usage": "R", "rpt": "1", "fields": []},
 			{"name": "PID", "usage": "R", "rpt": "1", "fields": [
@@ -118,29 +118,34 @@ func TestValidateHL7Only_InvalidMessage_RequiredFieldEmpty(t *testing.T) {
 			]}
 		]
 	}`)
-	// PID-3 is required but empty (||||)
+	// PID-3 is required but empty (PID||||DOE^JOHN — field 3 is absent).
+	// HL7_EXTRA_FIELD overridden to WARNING so that extra MSH fields don't
+	// turn the result invalid; the test focuses on HL7_REQUIRED detection.
 	msg := []byte("MSH|^~\\&|A|B|C|D|20250101120000||ADT^A01|1|P|2.5\rPID||||DOE^JOHN")
 	engine := NewEngine()
-	result, err := engine.ValidateHL7Only(msg, schema)
+	result, err := engine.ProcessHL7WithSchema(msg, schemaBytes, ProcessOptions{
+		CollectAllErrors:      true,
+		CodeSeverityOverrides: map[string]Severity{"HL7_EXTRA_FIELD": SeverityWarning},
+	})
 	if err != nil {
-		t.Fatalf("ValidateHL7Only: %v", err)
+		t.Fatalf("ProcessHL7WithSchema: %v", err)
 	}
 	if result == nil {
 		t.Fatal("result is nil")
 	}
-	// HL7_REQUIRED (field present-but-empty) is WARNING in NORMAL mode, so Valid stays true.
-	if !result.Valid {
-		t.Errorf("expected valid=true (warning only), got false; errors=%v warnings=%v infos=%v", result.Errors, result.Warnings, result.Infos)
+	// HL7_REQUIRED defaults to ERROR, so valid=false.
+	if result.Valid {
+		t.Errorf("expected valid=false for missing required PID-3, got true; errors=%v warnings=%v", result.Errors, result.Warnings)
 	}
 	var found bool
-	for _, e := range append(append(result.Errors, result.Warnings...), result.Infos...) {
+	for _, e := range result.Errors {
 		if e.Code == "HL7_REQUIRED" && e.Path == "PID-3" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected HL7_REQUIRED for PID-3, got issues: %v", append(append(result.Errors, result.Warnings...), result.Infos...))
+		t.Errorf("expected HL7_REQUIRED error for PID-3, got errors: %v", result.Errors)
 	}
 }
 

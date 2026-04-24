@@ -9,82 +9,6 @@ import (
 	"github.com/wehubfusion/Icarus/pkg/schema/hl7/datatypes"
 )
 
-func resolveSeverity(code string, mode contracts.ValidationMode) contracts.Severity {
-	// Defaults are NORMAL mode, based on NIST/CDC/HL7apy patterns.
-	normal := func(code string) contracts.Severity {
-		switch code {
-		case "HL7_EMPTY_MESSAGE", "HL7_INVALID_MSH", "HL7_INVALID_SCHEMA",
-			"HL7_MISSING_REQUIRED", "HL7_MESSAGE_TYPE_MISMATCH", "HL7_REPETITION_VIOLATION",
-			"HL7_DATATYPE":
-			return contracts.SeverityError
-		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_NOT_USED", "HL7_LENGTH",
-			"HL7_UNEXPECTED_SEGMENT":
-			return contracts.SeverityWarning
-		case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
-			return contracts.SeverityInfo
-		case "HL7_CUSTOM_RULE_RUNTIME_ERROR":
-			return contracts.SeverityWarning
-		default:
-			return contracts.SeverityError
-		}
-	}
-
-	switch mode {
-	case contracts.ValidationModeStrict:
-		switch code {
-		case "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
-			return contracts.SeverityWarning
-		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_NOT_USED", "HL7_LENGTH",
-			"HL7_UNEXPECTED_SEGMENT":
-			return contracts.SeverityError
-		default:
-			return normal(code)
-		}
-	case contracts.ValidationModeLenient:
-		switch code {
-		case "HL7_MISSING_REQUIRED", "HL7_MESSAGE_TYPE_MISMATCH", "HL7_REPETITION_VIOLATION",
-			"HL7_DATATYPE", "HL7_NOT_USED", "HL7_CUSTOM_RULE_RUNTIME_ERROR":
-			return contracts.SeverityWarning
-		case "HL7_VERSION_MISMATCH", "HL7_REQUIRED", "HL7_LENGTH",
-			"HL7_UNEXPECTED_SEGMENT", "HL7_EXTRA_FIELD", "HL7_EXTRA_COMPONENT", "HL7_EXTRA_SUBCOMPONENT":
-			return contracts.SeverityInfo
-		default:
-			return normal(code)
-		}
-	default:
-		return normal(code)
-	}
-}
-
-func bucketize(issues *[]contracts.ValidationIssue, err contracts.ValidationError, mode contracts.ValidationMode) contracts.Severity {
-	sev := err.Severity
-	if sev == "" {
-		sev = resolveSeverity(err.Code, mode)
-	}
-	e := contracts.ValidationIssue{
-		Path:     err.Path,
-		Message:  err.Message,
-		Code:     err.Code,
-		Severity: sev,
-	}
-	*issues = append(*issues, e)
-	return sev
-}
-
-func splitBuckets(all []contracts.ValidationIssue) (errs, warns, infos []contracts.ValidationIssue) {
-	for _, e := range all {
-		switch e.Severity {
-		case contracts.SeverityInfo:
-			infos = append(infos, e)
-		case contracts.SeverityWarning:
-			warns = append(warns, e)
-		default:
-			errs = append(errs, e)
-		}
-	}
-	return errs, warns, infos
-}
-
 // HL7SchemaProcessor implements SchemaProcessor for HL7 v2.x messages.
 type HL7SchemaProcessor struct{}
 
@@ -125,73 +49,70 @@ func (p *HL7SchemaProcessor) ParseSchema(definition []byte) (contracts.CompiledS
 }
 
 // Process implements contracts.SchemaProcessor. Validation only; Data is the original input.
+//
+// The function runs in two phases:
+//  1. Collect all raw validation issues from every source (segment matching,
+//     header/version checks, field validation, CEL rules) into a flat list.
+//  2. Apply opts.CodeSeverityOverrides to every raw issue in a single pass,
+//     routing each into the correct severity bucket or dropping it entirely
+//     when the resolved severity is DROP.
 func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.CompiledSchema, opts contracts.ProcessOptions) (*contracts.ProcessResult, error) {
 	c, ok := compiled.(*CompiledHL7Schema)
 	if !ok {
 		return nil, fmt.Errorf("expected *hl7.CompiledHL7Schema, got %T", compiled)
 	}
-	mode := contracts.EffectiveMode(opts)
+
+	// ── parse-error fast path ────────────────────────────────────────────────
+	// Invalid/empty MSH is treated as a single raw issue; we still honour the
+	// override map for it before returning early.
 	msg, err := ParseMessage(inputData)
 	if err != nil {
 		code := "HL7_INVALID_MSH"
 		if err == ErrEmptyMessage {
 			code = "HL7_EMPTY_MESSAGE"
 		}
-		issue := contracts.ValidationIssue{
-			Path:     "message",
-			Message:  err.Error(),
-			Code:     code,
-			Severity: resolveSeverity(code, mode),
+		raw := []contracts.ValidationIssue{
+			{Path: "message", Message: err.Error(), Code: code},
 		}
-		result := &contracts.ProcessResult{
-			Valid:  false,
-			Data:   inputData,
-			Errors: []contracts.ValidationIssue{issue},
-		}
-		return result, contracts.StrictProcessError(result, mode)
+		errs, warns, infos := contracts.ApplyAndBucket(raw, hl7EffectiveOverrides(opts.CodeSeverityOverrides))
+		valid := len(errs) == 0
+		result := &contracts.ProcessResult{Valid: valid, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}
+		return result, nil
 	}
+
+	// ── phase 1: collect all raw issues ─────────────────────────────────────
+	var raw []contracts.ValidationIssue
+
 	match := MatchMessage(msg, c)
-	var all []contracts.ValidationIssue
 	for _, e := range match.Errors {
-		sev := bucketize(&all, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code}, mode)
-		if !opts.CollectAllErrors && sev == contracts.SeverityError {
-			errs, warns, infos := splitBuckets(all)
-			return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
-		}
+		raw = append(raw, contracts.ValidationIssue{Path: e.Path, Message: e.Message, Code: e.Code})
 	}
+
 	for _, e := range ValidateMessageTypeAndVersion(msg, c.Schema) {
-		sev := bucketize(&all, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code}, mode)
-		if !opts.CollectAllErrors && sev == contracts.SeverityError {
-			errs, warns, infos := splitBuckets(all)
-			return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
-		}
+		raw = append(raw, contracts.ValidationIssue{Path: e.Path, Message: e.Message, Code: e.Code})
 	}
-	fieldErrs := ValidateMatchResult(match, msg, opts.CollectAllErrors, c.Registry)
-	for _, e := range fieldErrs {
-		sev := bucketize(&all, contracts.ValidationError{Path: e.Path, Message: e.Message, Code: e.Code}, mode)
-		if !opts.CollectAllErrors && sev == contracts.SeverityError {
-			errs, warns, infos := splitBuckets(all)
-			return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
-		}
+
+	for _, e := range ValidateMatchResult(match, msg, opts.CollectAllErrors, c.Registry) {
+		raw = append(raw, contracts.ValidationIssue{Path: e.Path, Message: e.Message, Code: e.Code})
 	}
+
 	if cv := c.CELValidation; cv != nil && len(cv.Rules) > 0 {
 		iter := &celhl7.HL7ScopeIterator{Msg: msg, Reg: c.Registry}
 		violations, evalErrs := cv.Engine.EvaluateRules(cv.Rules, iter)
+
 		for _, v := range violations {
-			es := bucketize(&all, contracts.ValidationError{
+			// CEL rule violations carry their own severity; preserve it so that
+			// per-rule severity takes precedence over the override map.
+			raw = append(raw, contracts.ValidationIssue{
 				Path:     v.Path,
 				Message:  v.Message,
 				Code:     "HL7_CUSTOM_RULE_VIOLATION",
 				Severity: celSeverity(v.Severity),
-			}, mode)
-			if !opts.CollectAllErrors && es == contracts.SeverityError {
-				errs, warns, infos := splitBuckets(all)
-				return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
-			}
+			})
 		}
-		// Eval errors use the iterator HL7 path when available (e.g. REL[1]-5); otherwise
-		// rule[id].expr so the failure is still attributable. Distinct from
-		// HL7_CUSTOM_RULE_VIOLATION, where the expression ran and returned false.
+
+		// Eval errors use the iterator HL7 path when available (e.g. REL[1]-5);
+		// otherwise rule[id].expr so the failure is still attributable.
 		for _, e := range evalErrs {
 			path := strings.TrimSpace(e.Path)
 			if path == "" {
@@ -201,22 +122,37 @@ func (p *HL7SchemaProcessor) Process(inputData []byte, compiled contracts.Compil
 			if e.RuleName != "" {
 				errMsg = fmt.Sprintf("%s: %s", e.RuleName, errMsg)
 			}
-			sev := bucketize(&all, contracts.ValidationError{
+			raw = append(raw, contracts.ValidationIssue{
 				Path:     path,
 				Message:  errMsg,
 				Code:     "HL7_CUSTOM_RULE_RUNTIME_ERROR",
 				Severity: celRuntimeIssueSeverity(e.RuleSeverity),
-			}, mode)
-			if !opts.CollectAllErrors && sev == contracts.SeverityError {
-				errs, warns, infos := splitBuckets(all)
-				return &contracts.ProcessResult{Valid: false, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}, nil
-			}
+			})
 		}
 	}
-	errs, warns, infos := splitBuckets(all)
+
+	// ── phase 2: apply overrides and bucket ──────────────────────────────────
+	errs, warns, infos := contracts.ApplyAndBucket(raw, hl7EffectiveOverrides(opts.CodeSeverityOverrides))
 	valid := len(errs) == 0
 	result := &contracts.ProcessResult{Valid: valid, Data: inputData, Errors: errs, Warnings: warns, Infos: infos}
-	return result, contracts.StrictProcessError(result, mode)
+	return result, nil
+}
+
+// hl7EffectiveOverrides returns the override map to pass to ApplyAndBucket, merging
+// HL7-specific default severities that differ from the global ERROR default:
+//
+//   - HL7_CUSTOM_RULE_RUNTIME_ERROR defaults to WARNING: "rule engine could not run" is advisory,
+//     not a hard validation failure. Callers can still override this to ERROR or DROP.
+func hl7EffectiveOverrides(userOverrides map[string]contracts.Severity) map[string]contracts.Severity {
+	if _, ok := userOverrides["HL7_CUSTOM_RULE_RUNTIME_ERROR"]; ok {
+		return userOverrides
+	}
+	merged := make(map[string]contracts.Severity, len(userOverrides)+1)
+	for k, v := range userOverrides {
+		merged[k] = v
+	}
+	merged["HL7_CUSTOM_RULE_RUNTIME_ERROR"] = contracts.SeverityWarning
+	return merged
 }
 
 // celSeverity converts the string severity stored on a CEL Violation to the
@@ -232,8 +168,9 @@ func celSeverity(s string) contracts.Severity {
 	}
 }
 
-// celRuntimeIssueSeverity maps a rule's severity for HL7_CUSTOM_RULE_RUNTIME_ERROR.
-// Empty severity defers to resolveSeverity (WARNING in NORMAL mode).
+// celRuntimeIssueSeverity maps a rule's configured severity to the value stored
+// on a raw HL7_CUSTOM_RULE_RUNTIME_ERROR issue. An empty string means "defer to
+// the override map / ERROR default" (handled in contracts.ApplyAndBucket).
 func celRuntimeIssueSeverity(ruleSeverity string) contracts.Severity {
 	if strings.TrimSpace(ruleSeverity) == "" {
 		return ""

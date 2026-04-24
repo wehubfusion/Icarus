@@ -18,17 +18,16 @@ result, err := engine.ProcessCSVWithSchema(csvRowsJSON, csvSchemaDef, options)
 // HL7 (validation only; result.Data = original bytes)
 result, err := engine.ProcessHL7WithSchema(hl7MessageBytes, hl7SchemaDef, schema.ProcessOptions{
     CollectAllErrors: true,
-    Mode:             schema.ValidationModeNormal,
 })
 ```
 
-HL7 results are severity-bucketed into three slices:
+All processors route their issues through the same severity pipeline. Results are bucketed into three slices:
 
-- `ProcessResult.Errors` — ERROR severity issues
-- `ProcessResult.Warnings` — WARNING severity issues
-- `ProcessResult.Infos` — INFO severity issues
+- `ProcessResult.Errors` — ERROR-severity issues (make `Valid = false`)
+- `ProcessResult.Warnings` — WARNING-severity issues
+- `ProcessResult.Infos` — INFO-severity issues
 
-The bucket a code lands in depends on `ProcessOptions.Mode` (STRICT / NORMAL / LENIENT). For HL7, see `pkg/schema/hl7/README.md` for the full mapping, including **`HL7_CUSTOM_RULE_RUNTIME_ERROR`** (defaults to WARNING when the rule omits severity; otherwise follows the rule).
+Every code defaults to `SeverityError`. Use `ProcessOptions.CodeSeverityOverrides` to override the severity for any code across any format, or use `SeverityDrop` to suppress it entirely. Codes are format-specific: `json.KnownErrorCodes` for JSON/CSV, `hl7.KnownErrorCodes` for HL7.
 
 ## Schema formats
 
@@ -57,7 +56,7 @@ The bucket a code lands in depends on `ProcessOptions.Mode` (STRICT / NORMAL / L
 | `ApplyDefaults` | ✓ | ✓ | — | Fill in default values from the schema |
 | `StructureData` | ✓ | ✓ | — | Reshape data to match schema structure; remove undeclared keys |
 | `CollectAllErrors` | ✓ | ✓ | ✓ | Collect every issue (true) or stop at the first error-severity issue (false) |
-| `Mode` | ✓ | ✓ | ✓ | `STRICT` / `NORMAL` / `LENIENT` — controls fail-on-invalid (STRICT) and, for HL7, severity bucketing (see `hl7/README.md`) |
+| `CodeSeverityOverrides` | ✓ | ✓ | ✓ | Override per-code severity for any format; use `SeverityDrop` to suppress a code entirely |
 
 ## ProcessResult
 
@@ -66,8 +65,8 @@ The bucket a code lands in depends on `ProcessOptions.Mode` (STRICT / NORMAL / L
 | `Valid` | `true` when there are no ERROR-severity issues (warnings alone, including HL7 CEL eval warnings, do not set `Valid` to false) |
 | `Data` | Processed output — JSON/CSV: transformed bytes; HL7: original input bytes unchanged |
 | `Errors` | ERROR-severity validation issues (path, message, code) |
-| `Warnings` | WARNING-severity issues (HL7 only) |
-| `Infos` | INFO-severity issues (HL7 only) |
+| `Warnings` | WARNING-severity issues (populated when `CodeSeverityOverrides` downgrades a code, or for HL7 CEL rules) |
+| `Infos` | INFO-severity issues (populated when `CodeSeverityOverrides` sets INFO for a code) |
 
 ## Package layout
 

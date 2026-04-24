@@ -72,6 +72,18 @@ data, _ = transformer.StructureData(data, schema)
 
 For row-level validation with a custom root path (e.g. CSV rows), use `ValidateWithRootPath(data, schema, "rows[0]", collectAllErrors)`.
 
+## Severity overrides
+
+All validation issues emitted by this package use codes from `KnownErrorCodes` in `codes.go` (e.g. `REQUIRED`, `TYPE_MISMATCH`, `FORMAT_MISMATCH`). Pass `ProcessOptions.CodeSeverityOverrides` to the engine to remap any code to WARNING, INFO, or DROP:
+
+```go
+engine.ProcessWithSchema(data, schemaDef, schema.ProcessOptions{
+    CodeSeverityOverrides: map[string]schema.Severity{
+        "REQUIRED": schema.SeverityWarning, // treat missing required fields as warnings
+    },
+})
+```
+
 ## Files
 
 | File          | Purpose                                  |
@@ -82,3 +94,4 @@ For row-level validation with a custom root path (e.g. CSV rows), use `ValidateW
 | `formats.go`  | Format validators (email, URI, UUID, etc.) |
 | `transformer.go` | Apply defaults and structure data     |
 | `processor.go`  | SchemaProcessor implementation          |
+| `codes.go`      | `KnownErrorCodes` — the complete set of validation codes this package can emit |
