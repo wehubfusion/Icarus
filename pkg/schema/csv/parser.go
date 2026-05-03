@@ -4,6 +4,7 @@ import (
 	"bytes"
 	stdjson "encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/wehubfusion/Icarus/pkg/schema/json"
 )
@@ -98,6 +99,49 @@ func (p *Parser) decodeOrderedColumns(raw stdjson.RawMessage, dest map[string]*C
 	if len(order) == 0 {
 		return nil, fmt.Errorf("columnHeaders cannot be empty")
 	}
+
+	order, err = applyPositionColumnOrder(order, dest)
+	if err != nil {
+		return nil, err
+	}
+
+	return order, nil
+}
+
+// applyPositionColumnOrder sorts columns by explicit position when every column declares one.
+// If any column omits position, declaration order (JSON key stream order) is preserved.
+func applyPositionColumnOrder(order []string, dest map[string]*CSVColumn) ([]string, error) {
+	allHavePosition := true
+	for _, name := range order {
+		if dest[name] == nil || dest[name].Position == nil {
+			allHavePosition = false
+			break
+		}
+	}
+	if !allHavePosition {
+		return order, nil
+	}
+
+	seen := make(map[int]string, len(order))
+	for _, name := range order {
+		pos := *dest[name].Position
+		if pos < 0 {
+			return nil, fmt.Errorf("column '%s' has invalid negative position %d", name, pos)
+		}
+		if conflict, ok := seen[pos]; ok {
+			return nil, fmt.Errorf("duplicate position %d on columns %q and %q", pos, conflict, name)
+		}
+		seen[pos] = name
+	}
+
+	sort.SliceStable(order, func(i, j int) bool {
+		pi := *dest[order[i]].Position
+		pj := *dest[order[j]].Position
+		if pi != pj {
+			return pi < pj
+		}
+		return order[i] < order[j]
+	})
 
 	return order, nil
 }
