@@ -10,8 +10,9 @@ type CSVSchema struct {
 	ColumnOrder   []string              `json:"-"` // preserves declared column order
 }
 
-// CSVColumn describes a single CSV column 
+// CSVColumn describes a single CSV column
 type CSVColumn struct {
+	Position    *int                  `json:"position,omitempty"`
 	Type        json.SchemaType       `json:"type"`
 	Required    *bool                 `json:"required,omitempty"`
 	Default     interface{}           `json:"default,omitempty"`
