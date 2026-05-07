@@ -215,6 +215,32 @@ func (p *EmbeddedProcessor) ProcessEmbeddedNodes(
 	return output, extractEventOutputs(output, unit.NodeId), nil
 }
 
+// withImplicitNoErrorDefaults returns parentOutput unchanged when it already declares an
+// `error` key (failure paths inject `{error: true, errorDescription: "..."}` themselves and
+// must be preserved). Otherwise it returns a shallow copy with `error: false` and
+// `errorDescription: ""` added so embedded nodes consuming /error from a parent's
+// pluginError section see a deterministic "no error" event on the success path.
+func withImplicitNoErrorDefaults(parentOutput map[string]interface{}) map[string]interface{} {
+	if parentOutput == nil {
+		return map[string]interface{}{
+			ErrorOutputKeyError:       false,
+			ErrorOutputKeyDescription: "",
+		}
+	}
+	if _, hasErr := parentOutput[ErrorOutputKeyError]; hasErr {
+		return parentOutput
+	}
+	enriched := make(map[string]interface{}, len(parentOutput)+2)
+	for k, v := range parentOutput {
+		enriched[k] = v
+	}
+	enriched[ErrorOutputKeyError] = false
+	if _, hasDesc := enriched[ErrorOutputKeyDescription]; !hasDesc {
+		enriched[ErrorOutputKeyDescription] = ""
+	}
+	return enriched
+}
+
 // extractEventOutputs keeps embedded-node outputs (and parent error flags) so
 // schedulers can evaluate event triggers even when full unit output is blob-backed.
 func extractEventOutputs(stdOut StandardUnitOutput, parentNodeID string) EventOutputs {
@@ -293,7 +319,7 @@ func (p *EmbeddedProcessor) processSingleObject(
 	// Check if parentOutput has transposed array fields (e.g., {name: ["alex", "jordan"], age: [30, 25]})
 	// Note: $items reconstruction from transposed data is no longer supported since root-level arrays
 	// are not allowed. The transposed data will be passed through as-is.
-	enrichedParentOutput := parentOutput
+	enrichedParentOutput := withImplicitNoErrorDefaults(parentOutput)
 
 	// Create subflow processor with concurrency support for mid-flow iteration
 	subflowCfg := SubflowConfig{
@@ -413,6 +439,25 @@ func (p *EmbeddedProcessor) processWithConcurrency(
 	subflow, err := NewSubflowProcessor(subflowCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create subflow processor: %w", err)
+	}
+
+	// Pre-initialize the IO accumulator for parent-level array iteration so that
+	// each concurrent worker accumulates its per-item lifecycle events instead of
+	// calling EmitNodeEnd once per row. Without this, all workers fire separate
+	// NodeEnd events for the same embedded nodeId and Argus stores only the last
+	// concurrent write — monitoring then shows a single (arbitrary) row instead of
+	// all rows. A single aggregated event is emitted via flushAggregatedIterationIO
+	// after all workers complete, matching the behaviour of mid-flow concurrent iteration.
+	if p.config.LifecycleEmitter != nil {
+		subflow.iterIOAccumulator = &iterationIOAccumulator{
+			inputs:  make(map[string][]map[string]interface{}),
+			outputs: make(map[string][]map[string]interface{}),
+		}
+		subflow.iterIOAccumulator.init(len(items))
+		defer func() {
+			subflow.flushAggregatedIterationIO(ctx)
+			subflow.iterIOAccumulator = nil
+		}()
 	}
 
 	// Create worker pool
