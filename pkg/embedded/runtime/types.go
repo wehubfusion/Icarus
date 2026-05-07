@@ -114,11 +114,16 @@ func (e EmbeddedNodeConfig) GetEventMappings() []FieldMapping {
 	return events
 }
 
-// GetFieldMappings returns non-event field mappings
+// GetFieldMappings returns mappings that should be resolved as input data.
+// This includes ordinary FIELD mappings AND EVENT mappings that are not gating
+// triggers (IsEventTrigger=false). Event triggers are returned by GetEventMappings
+// and gate execution; non-trigger event mappings carry event values into input data
+// (e.g. routing /error from a parent's pluginError section into a downstream node's
+// input so it can branch on the value without being skipped).
 func (e EmbeddedNodeConfig) GetFieldMappings() []FieldMapping {
 	var fields []FieldMapping
 	for _, m := range e.FieldMappings {
-		if !m.IsEvent() {
+		if !m.IsEvent() || !m.IsEventTrigger {
 			fields = append(fields, m)
 		}
 	}

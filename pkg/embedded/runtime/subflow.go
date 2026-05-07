@@ -286,14 +286,14 @@ func (sp *SubflowProcessor) ProcessItem(ctx context.Context, item BatchItem) Bat
 			SourceNodeId:      sp.parentNodeId,
 			InitiatedByNodeId: sp.parentNodeId,
 			ArrayPath:         sp.arrayPath,
-			CurrentIndex:      0,
-			TotalItems:        1,
+			CurrentIndex:      item.Index,
+			TotalItems:        item.Index + 1,
 			Items:             []interface{}{item.Data},
 			ItemData:          item.Data,
 		}
 		iterStack.Push(syntheticCtx)
 		defer iterStack.Pop()
-		store.SetCurrentIterationItem(sp.parentNodeId, item.Data, 0)
+		store.SetCurrentIterationItem(sp.parentNodeId, item.Data, item.Index)
 	}
 
 	// Flatten parent data into shared output
